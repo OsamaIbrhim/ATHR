@@ -1,6 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { apiGet, apiPost } from '@/lib/api'
+import {
+  deliveryNotices,
+  type DeliveryChannel,
+  type DeliveryNotice,
+  type ReportDeliveryResponse,
+} from '@/lib/report-delivery'
 
 export default function Reports(){
   const [from,setFrom] = useState(new Date().toISOString().slice(0,10))
@@ -10,6 +16,7 @@ export default function Reports(){
   const [profitItems,setProfitItems] = useState<any[]>([])
   const [invVal,setInvVal] = useState<any>(null)
   const [sending,setSending] = useState(false)
+  const [delivery,setDelivery] = useState<DeliveryNotice[]>([])
   const [loading,setLoading] = useState(false)
   const [error,setError] = useState('')
   const [branches,setBranches] = useState<any[]>([])
@@ -36,10 +43,25 @@ export default function Reports(){
     const r = await apiGet(`/reports/inventory-valuation${branch?`?branch_id=${branch}`:''}`);
     setInvVal(r); setTab('inventory')
   })
-  const send = async (channels: string[]) => {
+  const send = async (channels: DeliveryChannel[]) => {
     setSending(true)
-    try { await apiPost('/reports/send', { from, to, branch_id: branch||undefined, channels }); alert('تم الإرسال ✓') }
-    catch(e:any){ alert('خطأ: '+e.message) }
+    setDelivery([])
+    try {
+      const result = await apiPost('/reports/send', {
+        from,
+        to,
+        branch_id: branch||undefined,
+        channels,
+      }) as ReportDeliveryResponse
+      setDelivery(deliveryNotices(channels, result))
+    }
+    catch(e:any){
+      setDelivery(channels.map(channel => ({
+        channel,
+        sent: false,
+        message: `تعذر طلب إرسال التقرير: ${e.message || 'خطأ غير متوقع'}`,
+      })))
+    }
     finally { setSending(false) }
   }
 
@@ -57,6 +79,19 @@ export default function Reports(){
         <button className="btn-accent" disabled={sending} onClick={()=>send(['whatsapp'])}>WhatsApp</button>
       </div>
 
+      {delivery.length > 0 && (
+        <div className="space-y-2" aria-live="polite">
+          {delivery.map(item => (
+            <div
+              key={item.channel}
+              className={`card border ${item.sent ? 'border-green-200 bg-green-50 text-green-800' : 'border-red-200 bg-red-50 text-red-800'}`}
+              role={item.sent ? 'status' : 'alert'}
+            >
+              {item.message}
+            </div>
+          ))}
+        </div>
+      )}
       {error&&<div className="card border border-red-200 bg-red-50 text-red-800" role="alert">{error}</div>}
       {loading&&<div className="card text-center text-gray-500">جارٍ إعداد التقرير…</div>}
       {!loading&&!error&&tab==='sales'&&!res&&<div className="card text-center text-gray-500 py-10">اختر الفترة والفرع، ثم اختر نوع التقرير لعرض النتائج هنا.</div>}
