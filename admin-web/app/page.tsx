@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { apiGet, getStoredUser } from '@/lib/api'
 import { loadDashboardData } from '@/lib/dashboard'
 import { hasCapability, type Capability } from '@/lib/permissions'
+import { businessDate } from '@/lib/business-time'
 
 export default function Dashboard(){
   const user = getStoredUser()
@@ -19,7 +20,7 @@ export default function Dashboard(){
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
-    const today = new Date().toISOString().slice(0,10)
+    const today = businessDate()
     try {
       const data = await loadDashboardData(apiGet, today)
       setStats(data.stats)

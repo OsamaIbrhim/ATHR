@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { lineMoney, moneyString } from '../common/money';
+import { formatBusinessDateTime } from '../common/business-time';
 
 // pdfkit is a CommonJS package.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -85,9 +86,7 @@ export class InvoicePdfService {
       const createdAt = new Date(invoice.created_at);
       const date = Number.isNaN(createdAt.getTime())
         ? '—'
-        : new Intl.DateTimeFormat(isArabic ? 'ar-EG' : 'en-GB', {
-          dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Cairo',
-        }).format(createdAt);
+        : formatBusinessDateTime(createdAt, isArabic ? 'ar-EG' : 'en-GB');
 
       doc.font('BoldStrong').fontSize(21).fillColor('#111827')
         .text(text('بولد – ملابس رجالي', 'Bold – Menswear'), MARGIN, 42, {

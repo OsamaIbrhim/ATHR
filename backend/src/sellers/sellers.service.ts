@@ -6,6 +6,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { money, moneyNumber } from '../common/money';
 import { AuthenticatedUser } from '../auth/authenticated-user';
+import { businessDateRange } from '../common/business-time';
 import {
   UpdateCommissionSettingsDto,
   UpdateSellerCommissionDto,
@@ -16,20 +17,7 @@ export class SellersService {
   constructor(private prisma: PrismaService) {}
 
   private dateRange(from: string, to: string) {
-    const start = new Date(from);
-    const end = new Date(to);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      throw new BadRequestException('Invalid seller report date range');
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(to)) {
-      end.setUTCDate(end.getUTCDate() + 1);
-    } else {
-      end.setMilliseconds(end.getMilliseconds() + 1);
-    }
-    if (start >= end) {
-      throw new BadRequestException('Report start must be before report end');
-    }
-    return { gte: start, lt: end };
+    return businessDateRange(from, to);
   }
 
   private periodBounds(from: string, to: string) {

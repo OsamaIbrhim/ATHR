@@ -2,14 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import { apiGet, apiPatch, apiPost, getStoredUser } from '@/lib/api'
+import { businessMonthRange } from '@/lib/business-time'
 
 function monthRange() {
-  const now = new Date()
-  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-  return {
-    from: from.toISOString().slice(0, 10),
-    to: now.toISOString().slice(0, 10),
-  }
+  return businessMonthRange()
 }
 
 export default function SellerReportsPage() {
