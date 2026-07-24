@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import axios from 'axios';
 import { moneyString } from '../common/money';
+import { formatBusinessDateTime } from '../common/business-time';
 
 @Injectable()
 export class NotificationsService {
@@ -78,7 +79,7 @@ export class NotificationsService {
       <p>التكلفة: ${totalCost} ج</p>
       <p>الربح: <b>${profit} ج</b></p>
       <p>عدد الفواتير: ${report.count||0}</p>
-      <hr><small>Bold POS – ${new Date().toLocaleString('ar-EG')}</small>
+      <hr><small>Bold POS – ${formatBusinessDateTime(new Date())}</small>
       </div>`;
     const results:any = {};
     if (channels.includes('email')) {
