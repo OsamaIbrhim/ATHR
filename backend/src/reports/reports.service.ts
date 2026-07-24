@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import {
@@ -8,23 +8,14 @@ import {
   moneyNumber,
   sumMoney,
 } from '../common/money';
+import { businessDateRange } from '../common/business-time';
 
 @Injectable()
 export class ReportsService {
   constructor(private prisma: PrismaService) {}
 
   private dateRange(from: string, to: string) {
-    const start = new Date(from);
-    const endExclusive = new Date(to);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(endExclusive.getTime())) {
-      throw new BadRequestException('Invalid report date range');
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(to)) {
-      endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
-    } else {
-      endExclusive.setMilliseconds(endExclusive.getMilliseconds() + 1);
-    }
-    return { gte: start, lt: endExclusive };
+    return businessDateRange(from, to);
   }
 
   async sales(from: string, to: string, branch_id?: string) {

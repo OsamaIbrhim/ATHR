@@ -7,10 +7,11 @@ import {
   type DeliveryNotice,
   type ReportDeliveryResponse,
 } from '@/lib/report-delivery'
+import { businessDate } from '@/lib/business-time'
 
 export default function Reports(){
-  const [from,setFrom] = useState(new Date().toISOString().slice(0,10))
-  const [to,setTo] = useState(new Date().toISOString().slice(0,10))
+  const [from,setFrom] = useState(businessDate())
+  const [to,setTo] = useState(businessDate())
   const [branch,setBranch] = useState('')
   const [res,setRes] = useState<any>(null)
   const [profitItems,setProfitItems] = useState<any[]>([])
