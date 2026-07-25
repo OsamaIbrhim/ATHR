@@ -1,6 +1,5 @@
-const API_BASE = process.env.NEXT_PUBLIC_API || 'http://localhost:3000/api/v1'
+const API_BASE = '/api/backend'
 
-let refreshPromise: Promise<boolean> | null = null
 const inFlightGets = new Map<string, Promise<any>>()
 
 export type ApiErrorPayload = {
@@ -50,41 +49,12 @@ async function readApiError(response: Response) {
   return new ApiError(body || {}, response.status)
 }
 
-function getToken() {
-  if (typeof window === 'undefined') return null
-  return localStorage.getItem('token')
-}
-
 function clearSession() {
   if (typeof window === 'undefined') return
-  localStorage.removeItem('token')
-  localStorage.removeItem('refresh_token')
   localStorage.removeItem('user')
 }
 
-async function refreshSession() {
-  if (typeof window === 'undefined') return false
-  const refreshToken = localStorage.getItem('refresh_token')
-  if (!refreshToken) return false
-  if (!refreshPromise) {
-    refreshPromise = fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    }).then(async (response) => {
-      if (!response.ok) return false
-      const session = await response.json()
-      localStorage.setItem('token', session.access_token)
-      localStorage.setItem('refresh_token', session.refresh_token)
-      localStorage.setItem('user', JSON.stringify(session.user))
-      return true
-    }).catch(() => false).finally(() => { refreshPromise = null })
-  }
-  return refreshPromise
-}
-
-async function authorizedFetch(path: string, init: RequestInit = {}, retry = true) {
-  const token = getToken()
+async function authorizedFetch(path: string, init: RequestInit = {}) {
   const requestId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
     : `web-${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -93,10 +63,10 @@ async function authorizedFetch(path: string, init: RequestInit = {}, retry = tru
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         'x-request-id': requestId,
         ...(init.headers || {}),
       },
+      credentials: 'same-origin',
       cache: 'no-store',
     })
   } catch {
@@ -106,9 +76,6 @@ async function authorizedFetch(path: string, init: RequestInit = {}, retry = tru
       message: 'The server cannot be reached. Check the server and network, then try again.',
       request_id: requestId,
     })
-  }
-  if (response.status === 401 && retry && await refreshSession()) {
-    return authorizedFetch(path, init, false)
   }
   return response
 }
@@ -120,7 +87,7 @@ async function handleResponse(res: Response, path: string) {
       const next = encodeURIComponent(window.location.pathname + window.location.search)
       window.location.href = `/login?next=${next}`
     }
-    throw new Error('Unauthorized')
+    throw new ApiError({ code: 'UNAUTHORIZED', message_ar: 'انتهت الجلسة. سجل الدخول مرة أخرى.' }, 401)
   }
   if (!res.ok) {
     throw await readApiError(res)
@@ -178,14 +145,7 @@ export function getStoredUser(): AdminUser | null {
 }
 
 export async function apiLogout() {
-  const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refresh_token') : null
-  if (refreshToken) {
-    await fetch(`${API_BASE}/auth/logout`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    }).catch(() => undefined)
-  }
+  await fetch('/api/session/logout', { method: 'POST' }).catch(() => undefined)
   clearSession()
 }
 

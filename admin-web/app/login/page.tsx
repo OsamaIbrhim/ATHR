@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { API, ApiError } from '@/lib/api'
+import { ApiError } from '@/lib/api'
 import { canAccessPath, firstAccessiblePath } from '@/lib/permissions'
 export default function Login(){
   const [phone,setPhone] = useState('')
@@ -15,14 +15,12 @@ export default function Login(){
     if (password.length < 8) { setField('password'); setMsg('كلمة المرور يجب أن تتكون من 8 أحرف على الأقل.'); return }
     setLoading(true)
     try {
-      const r = await fetch(`${API}/auth/login`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({phone:normalizedPhone,password})})
+      const r = await fetch('/api/session/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({phone:normalizedPhone,password})})
       if (!r.ok) {
         const payload = await r.json().catch(()=>({}))
         throw new ApiError(payload, r.status)
       }
       const j = await r.json()
-      localStorage.setItem('token', j.access_token)
-      localStorage.setItem('refresh_token', j.refresh_token)
       localStorage.setItem('user', JSON.stringify(j.user))
       setMsg('تم تسجيل الدخول ✓')
       const requested = new URLSearchParams(location.search).get('next') || '/'
