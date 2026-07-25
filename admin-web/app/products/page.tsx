@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiDelete, apiGet, apiPost, getStoredUser } from '@/lib/api'
 import { hasCapability } from '@/lib/permissions'
+import { parseProductCost } from '@/lib/product-cost'
 
 type ProductResponse = { items:any[]; page:number; page_size:number; total:number; total_pages:number; suggestions?:{value:string;label:string}[] }
 
@@ -25,12 +26,15 @@ export default function ProductsPage(){
   const [name_en,setName] = useState(''), [sku,setSku] = useState('')
   const [barcode_ean,setEan] = useState(''), [barcode_int,setInt] = useState('')
   const [size,setSize] = useState(''), [color,setColor] = useState(''), [cost,setCost] = useState('')
+  const [zeroCostConfirmed,setZeroCostConfirmed] = useState(false)
   const [msg,setMsg] = useState('')
 
   const create = async()=>{
+    const parsedCost = parseProductCost(cost, zeroCostConfirmed)
+    if ('error' in parsedCost) { setMsg(parsedCost.error); return }
     try {
-      const result = await apiPost('/products',{name_en,sku,barcode_ean13:barcode_ean||undefined,barcode_internal:barcode_int||undefined,size:size||undefined,color:color||undefined,cost_price:Number(cost)||0})
-      setMsg('تم الحفظ ✓ '+(result.variants?.[0]?.sku || sku)); setName(''); setSku(''); setEan(''); setInt(''); setSize(''); setColor(''); setCost(''); setPage(1); load()
+      const result = await apiPost('/products',{name_en,sku,barcode_ean13:barcode_ean||undefined,barcode_internal:barcode_int||undefined,size:size||undefined,color:color||undefined,cost_price:parsedCost.value})
+      setMsg('تم الحفظ ✓ '+(result.variants?.[0]?.sku || sku)); setName(''); setSku(''); setEan(''); setInt(''); setSize(''); setColor(''); setCost(''); setZeroCostConfirmed(false); setPage(1); load()
     } catch(e:any){ setMsg('خطأ: '+e.message) }
   }
   const del = async(id:string)=>{ if(!confirm('حذف الصنف؟')) return; try{ await apiDelete(`/products/variants/${id}`); load() }catch(e:any){ alert('فشل الحذف: '+e.message) } }
@@ -42,8 +46,8 @@ export default function ProductsPage(){
       <input className="input" placeholder="Name EN*" value={name_en} onChange={e=>setName(e.target.value)}/><input className="input" placeholder="SKU*" value={sku} onChange={e=>setSku(e.target.value)}/>
       <input className="input" placeholder="EAN-13 مورد" value={barcode_ean} onChange={e=>setEan(e.target.value)}/><input className="input" placeholder="باركود داخلي Bold" value={barcode_int} onChange={e=>setInt(e.target.value)}/>
       <input className="input" placeholder="المقاس" value={size} onChange={e=>setSize(e.target.value)}/><input className="input" placeholder="اللون" value={color} onChange={e=>setColor(e.target.value)}/>
-      <input className="input" placeholder="سعر التكلفة EGP" value={cost} onChange={e=>setCost(e.target.value)}/><button className="btn-accent" onClick={create} disabled={!name_en||!sku}>حفظ</button>
-    </div><div className="text-xs text-gray-500 mt-2">{msg || 'الاسم بالإنجليزية – الصورة اختيارية – يدعم Simple و Variant'}</div></div>}
+      <label><span className="text-sm">سعر التكلفة EGP*</span><input className="input mt-1" type="number" min="0" step="0.01" value={cost} onChange={e=>{setCost(e.target.value);if(Number(e.target.value)!==0)setZeroCostConfirmed(false)}}/></label><button className="btn-accent self-end" onClick={create} disabled={!name_en||!sku||!cost.trim()}>حفظ</button>
+    </div>{cost.trim()!==''&&Number(cost)===0&&<label className="flex items-center gap-2 mt-3 text-sm"><input type="checkbox" checked={zeroCostConfirmed} onChange={event=>setZeroCostConfirmed(event.target.checked)}/>أؤكد أن تكلفة هذا المنتج صفر فعلًا، وليست تكلفة مفقودة.</label>}<div className={`text-xs mt-2 ${msg.startsWith('خطأ')||msg.includes('التكلفة')?'text-red-700':'text-gray-500'}`}>{msg || 'الاسم بالإنجليزية – تكلفة البداية مطلوبة – يدعم Simple و Variant'}</div></div>}
     <div className="card"><form className="flex gap-2" onSubmit={e=>{e.preventDefault();search()}}><input className="input" placeholder="ابحث بالباركود / SKU / الاسم، أو اتركه فارغاً لعرض الكل" value={query} onChange={e=>setQuery(e.target.value)}/><button className="btn">بحث</button><button type="button" className="btn-secondary" onClick={()=>{setQuery('');setAppliedQuery('');setPage(1)}}>الكل</button></form></div>
     <div className="card overflow-auto">
       {error && <div className="text-red-700 py-4">{error} <button className="underline" onClick={load}>إعادة المحاولة</button></div>}
