@@ -168,6 +168,70 @@ jobs:
       - run: npm run test:soft
       - run: npm audit --audit-level=high
 
+  admin-e2e-smoke:
+    name: admin-e2e-smoke
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bold_admin_smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bold_admin_smoke"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_admin_smoke
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_admin_smoke
+      JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      PRICE_SNAPSHOT_KEYS: price-ci-202607=8a93d2f15b7c4e609d2a8f3c6e1b75049c2d8e6f1a7b3905d4c8e2f6a1b7d903
+      POS_OFFLINE_TICKET_KEYS: offline-ci-202607=4f7b1d8e93c2a6507d4e9f1b6c8a3052e7d9b4f1c6a8e2035d7f9b2c4a6e8013
+      ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
+      API_INTERNAL_BASE: http://localhost:3000/api/v1
+      ADMIN_SMOKE_PHONE: "+200100000000"
+      ADMIN_SMOKE_PASSWORD: Bold1234
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.11
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            admin-web/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npm ci
+        working-directory: admin-web
+      - run: npx prisma migrate deploy
+        working-directory: backend
+      - run: npm run prisma:seed
+        working-directory: backend
+      - run: npm run build
+        working-directory: backend
+      - run: npm run build
+        working-directory: admin-web
+      - name: Start Backend and Admin
+        run: |
+          npm --prefix backend run start:prod > /tmp/bold-api.log 2>&1 &
+          npm --prefix admin-web run start > /tmp/bold-admin.log 2>&1 &
+          for attempt in {1..30}; do
+            curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null \
+              && curl --silent --fail http://localhost:3001/login >/dev/null \
+              && exit 0
+            sleep 1
+          done
+          cat /tmp/bold-api.log
+          cat /tmp/bold-admin.log
+          exit 1
+      - run: npm run test:e2e:smoke
+        working-directory: admin-web
+
   pos:
     runs-on: ubuntu-latest
     defaults:
@@ -245,6 +309,7 @@ jobs:
       - backend
       - migration-gate
       - admin
+      - admin-e2e-smoke
       - pos
       - hard-smoke
     runs-on: ubuntu-latest
@@ -254,12 +319,14 @@ jobs:
           BACKEND_RESULT: ${{ needs.backend.result }}
           MIGRATION_RESULT: ${{ needs.migration-gate.result }}
           ADMIN_RESULT: ${{ needs.admin.result }}
+          ADMIN_E2E_RESULT: ${{ needs.admin-e2e-smoke.result }}
           POS_RESULT: ${{ needs.pos.result }}
           HARD_SMOKE_RESULT: ${{ needs.hard-smoke.result }}
         run: |
           test "$BACKEND_RESULT" = "success"
           test "$MIGRATION_RESULT" = "success"
           test "$ADMIN_RESULT" = "success"
+          test "$ADMIN_E2E_RESULT" = "success"
           test "$POS_RESULT" = "success"
           test "$HARD_SMOKE_RESULT" = "success"
 
