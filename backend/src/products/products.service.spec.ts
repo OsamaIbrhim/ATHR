@@ -20,6 +20,27 @@ function productReadPrisma(variants: any[], total = variants.length) {
 }
 
 describe('ProductsService pagination', () => {
+  it('preserves an explicitly confirmed zero initial cost', async () => {
+    const create = jest.fn().mockResolvedValue({ id: 'p1', variants: [] });
+    const service = new ProductsService({
+      product: { create },
+    } as any);
+
+    await service.createProduct({
+      name_en: 'Free sample',
+      sku: 'SAMPLE-0',
+      cost_price: 0,
+    });
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        variants: {
+          create: [expect.objectContaining({ cost_price: 0 })],
+        },
+      }),
+    }));
+  });
+
   it('hydrates the first page in one parallel relation wave', async () => {
     const variants = [{ id: 'v1', product_id: 'p1', cost_price: 100 }];
     const prisma = productReadPrisma(variants, 41);

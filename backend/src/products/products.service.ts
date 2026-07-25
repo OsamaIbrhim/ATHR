@@ -171,7 +171,7 @@ export class ProductsService {
             size: dto.size || null,
             color: dto.color || null,
             style: dto.style || null,
-            cost_price: dto.cost_price || 0,
+            cost_price: dto.cost_price,
           }]
         }
       },

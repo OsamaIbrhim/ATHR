@@ -71,11 +71,10 @@ export class CreateProductDto extends VariantIdentityFieldsDto {
 
   // Initial cost is allowed only before the variant has stock. Every later
   // cost change is posted by the purchasing cost ledger.
-  @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   @Max(9999999999.99)
-  cost_price?: number;
+  cost_price: number;
 }
 
 export class UpdateVariantDto extends VariantIdentityFieldsDto {
