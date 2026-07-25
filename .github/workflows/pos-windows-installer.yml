@@ -69,3 +69,10 @@ jobs:
           compression-level: 0
 
       - name: Upload effective builder config on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bold-pos-builder-debug-${{ github.sha }}
+          path: pos-electron/release/builder-effective-config.yaml
+          if-no-files-found: ignore
+          retention-days: 7
