@@ -5,7 +5,7 @@ watchPatterns = ["/backend/**"]
 
 [deploy]
 preDeployCommand = ["npx prisma migrate deploy"]
-healthcheckPath = "/api/v1/health/ready"
+healthcheckPath = "/api/v1/health/live"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
