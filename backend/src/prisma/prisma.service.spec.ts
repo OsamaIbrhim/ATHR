@@ -8,7 +8,7 @@ describe('PrismaService pool warm-up', () => {
     jest.restoreAllMocks()
   })
 
-  it('opens the configured bounded pool before serving requests', async () => {
+  it('warms the configured bounded pool without blocking server startup', async () => {
     process.env.DATABASE_URL =
       'postgresql://user:pass@localhost:5432/bold?connection_limit=3&pool_timeout=10&connect_timeout=15'
     process.env.DIRECT_URL =
@@ -27,9 +27,9 @@ describe('PrismaService pool warm-up', () => {
 
     expect(connect).toHaveBeenCalledTimes(1)
     expect(query).toHaveBeenCalledTimes(3)
-    expect(query).toHaveBeenCalledWith(
-      'SELECT 1::integer AS value FROM pg_sleep(0.05)',
-    )
+    for (const call of query.mock.calls) {
+      expect(call).toEqual(['SELECT 1::integer AS value'])
+    }
     await service.$disconnect()
   })
 })
