@@ -3,7 +3,9 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -19,6 +21,12 @@ import { CreateReturnDto } from './dto/create-return.dto';
 import { ListReturnsDto } from './dto/list-returns.dto';
 import { OfflineAccountingTicketService } from '../shifts/offline-accounting-ticket.service';
 import {
+  getErrorMessage,
+  getPrismaErrorCode,
+  getSaleTransactionOptions,
+  isExpiredSaleTransactionError,
+} from './sale-transaction';
+import {
   decimal,
   lineMoney,
   money,
@@ -30,6 +38,7 @@ import {
 
 @Injectable()
 export class SalesService {
+  private readonly logger = new Logger(SalesService.name);
   private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
 
   constructor(
@@ -192,6 +201,64 @@ export class SalesService {
     return { mode: signed ? 'signed' as const : 'legacy' as const, lines: [...lines.values()] };
   }
 
+  private async runSaleTransaction<T>(
+    dto: CreateSaleDto,
+    terminal: Pick<PosTerminal, 'id'>,
+    operation: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    const options = getSaleTransactionOptions();
+    const startedAt = Date.now();
+
+    try {
+      return await this.prisma.$transaction(operation, options);
+    } catch (error: unknown) {
+      const prismaCode = getPrismaErrorCode(error);
+      const expired = isExpiredSaleTransactionError(error);
+
+      if (expired || prismaCode) {
+        this.logger.error(
+          JSON.stringify({
+            level: 'error',
+            errorCode: expired
+              ? 'SALE_TRANSACTION_EXPIRED'
+              : 'SALE_DATABASE_OPERATION_FAILED',
+            component: 'database',
+            status: 'rolled_back',
+            operation: 'create_sale',
+            syncId: dto.sync_id,
+            branchId: dto.branch_id,
+            terminalId: terminal.id,
+            terminalSequence: dto.terminal_sequence,
+            itemCount: dto.items.length,
+            prismaCode,
+            elapsedMs: Date.now() - startedAt,
+            maxWaitMs: options.maxWait,
+            timeoutMs: options.timeout,
+            message: expired
+              ? 'The sale transaction expired before completion and was rolled back.'
+              : 'The sale transaction failed during a database operation and was rolled back.',
+            originalMessage: getErrorMessage(error),
+          }),
+          error instanceof Error ? error.stack : undefined,
+        );
+      }
+
+      if (expired) {
+        throw new ServiceUnavailableException({
+          code: 'SALE_TRANSACTION_EXPIRED',
+          retryable: true,
+          retry_after_ms: 2_000,
+          message_ar:
+            'تعذر إتمام عملية البيع داخل مهلة قاعدة البيانات. أعد المحاولة بنفس رقم المزامنة.',
+          message:
+            'The sale transaction exceeded the database timeout and was rolled back. Retry using the same sync_id.',
+        });
+      }
+
+      throw error;
+    }
+  }
+
   async createSale(
     dto: CreateSaleDto,
     actor: AuthenticatedUser,
@@ -235,7 +302,7 @@ export class SalesService {
       });
     }
 
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.runSaleTransaction(dto, terminal, async (tx) => {
       const existing = await tx.salesInvoice.findUnique({
         where: { sync_id: dto.sync_id },
         include: { items: true },
