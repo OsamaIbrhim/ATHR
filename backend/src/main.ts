@@ -46,11 +46,31 @@ async function bootstrap() {
   SwaggerModule.setup('api/docs', app, document);
 
   await app.listen(environment.port, '0.0.0.0');
-  console.log(`Bold API running on port ${environment.port}`);
+  console.log(
+    JSON.stringify({
+      level: 'info',
+      errorCode: null,
+      component: 'server',
+      status: 'running',
+      port: environment.port,
+      message: `Bold API is running on port ${environment.port}`,
+    }),
+  )
 }
 bootstrap().catch((error: unknown) => {
   const message =
-    error instanceof Error ? error.message : 'Unknown startup failure';
-  console.error(`Bold API failed to start: ${message}`);
-  process.exitCode = 1;
-});
+    error instanceof Error ? error.message : 'Unknown server startup failure'
+
+  console.error(
+    JSON.stringify({
+      level: 'fatal',
+      errorCode: 'SERVER_STARTUP_FAILED',
+      component: 'server',
+      status: 'crashed',
+      message,
+      stack: error instanceof Error ? error.stack : undefined,
+    }),
+  )
+
+  process.exit(1)
+})
