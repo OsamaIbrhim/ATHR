@@ -110,3 +110,95 @@
   min-width: 72px;
   text-align: center;
 }
+
+/* Release-candidate monochrome identity. Appended after the base styles so business
+   layout behavior remains untouched while the visual system becomes black/white. */
+:root {
+  color: #0a0a0a;
+  background: #f4f4f4;
+  --ink: #0a0a0a;
+  --muted: #626262;
+  --line: #d7d7d7;
+  --surface: #ffffff;
+  --soft: #f4f4f4;
+  --primary: #0a0a0a;
+  --primary-dark: #000000;
+  --shadow: 0 14px 42px rgba(0, 0, 0, .12);
+}
+
+body {
+  background: #f4f4f4;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #111111;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, .10);
+}
+
+.auth-shell,
+.shift-shell {
+  background:
+    radial-gradient(circle at 15% 15%, rgba(0, 0, 0, .08), transparent 32%),
+    linear-gradient(135deg, #ffffff, #ededed);
+}
+
+.brand-mark,
+.brand-mark.small {
+  color: #ffffff;
+  background: #050505;
+  border: 1px solid #222222;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .22);
+}
+
+.brand-mark.error {
+  background: #ffffff;
+  color: #111111;
+  border-color: #111111;
+}
+
+.eyebrow,
+.product-card strong,
+.customer-card strong {
+  color: #111111;
+}
+
+.button.primary,
+.checkout-button {
+  color: #ffffff;
+  background: #0a0a0a;
+}
+
+.button.primary:hover,
+.checkout-button:hover {
+  background: #242424;
+}
+
+.main-nav button.active {
+  border-bottom-color: #ffffff;
+}
+
+.product-card:hover,
+.payment-methods button.active {
+  border-color: #111111;
+}
+
+.payment-methods button.active {
+  color: #111111;
+  background: #f1f1f1;
+}
+
+.spinner {
+  border-top-color: #111111;
+}
+
+.checkout-total,
+.app-header {
+  background: #090909;
+}
+
+.sync-pill {
+  border-color: #444444;
+  background: #181818;
+}
