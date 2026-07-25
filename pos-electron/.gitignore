@@ -7,3 +7,9 @@ out/
 .env
 .env.local
 *.log
+release/
+
+!pos-electron/build/
+!pos-electron/build/icon.ico
+!pos-electron/build/icon.png
+!pos-electron/build/icon.svg

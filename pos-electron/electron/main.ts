@@ -3,6 +3,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
 import { randomUUID } from 'crypto'
+import { configureAutoUpdates } from './auto-update'
 import {
   isValidOfflineAccountingContext,
   maxTerminalSequence,
@@ -836,13 +837,21 @@ async function initDb() {
   saveDb()
 }
 
+function appIconPath() {
+  const candidate = app.isPackaged
+    ? path.join(process.resourcesPath, 'app-icon.png')
+    : path.join(__dirname, '../build/icon.png')
+  return fs.existsSync(candidate) ? candidate : undefined
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1366,
     height: 768,
     minWidth: 1100,
     minHeight: 680,
-    backgroundColor: '#f3f5f8',
+    backgroundColor: '#ffffff',
+    icon: appIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -870,7 +879,20 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(async () => { await initDb(); createWindow() })
+app.whenReady().then(async () => {
+  await initDb()
+  createWindow()
+  configureAutoUpdates({
+    manifestUrl: `${API_BASE}/pos-updates/latest`,
+    window: () => win,
+    pendingOutboxCount: () =>
+      Number(
+        get(
+          `SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending','failed')`,
+        )?.count || 0,
+      ),
+  })
+})
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

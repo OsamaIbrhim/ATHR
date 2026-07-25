@@ -23,6 +23,7 @@ import { TerminalsModule } from './terminals/terminals.module';
 import { PerformanceInterceptor } from './common/performance.interceptor';
 import { HealthModule } from './health/health.module';
 import { SellersModule } from './sellers/sellers.module';
+import { UpdatesModule } from './updates/updates.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { SellersModule } from './sellers/sellers.module';
     TerminalsModule,
     HealthModule,
     SellersModule,
+    UpdatesModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

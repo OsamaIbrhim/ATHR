@@ -1,0 +1,78 @@
+name: POS Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - pos-rc
+    paths:
+      - "pos-electron/**"
+      - ".github/workflows/pos-windows-installer.yml"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "pos-electron/**"
+      - ".github/workflows/pos-windows-installer.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pos-windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-installer:
+    name: Build Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: pos-electron
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: pos-electron/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Build Windows installer
+        run: npm run dist
+
+      - name: Show generated files
+        shell: pwsh
+        run: Get-ChildItem -Path release -Recurse -File | Select-Object FullName, Length
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: bold-pos-windows-${{ github.sha }}
+          path: |
+            pos-electron/release/*.exe
+            pos-electron/release/*.blockmap
+            pos-electron/release/latest*.yml
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload effective builder config on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bold-pos-builder-debug-${{ github.sha }}
+          path: pos-electron/release/builder-effective-config.yaml
+          if-no-files-found: ignore
+          retention-days: 7
