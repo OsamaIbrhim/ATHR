@@ -4,6 +4,7 @@ dockerfilePath = "Dockerfile"
 watchPatterns = ["/backend/**"]
 
 [deploy]
+startCommand = "dumb-init -- node dist/src/main.js"
 healthcheckPath = "/api/v1/health/live"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
