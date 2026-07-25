@@ -6,12 +6,20 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+async function assertResponseOk(response, label) {
+  if (response.ok) return
+
+  const body = await response.text()
+  const details = body ? ` ${body}` : ''
+  throw new Error(`${label}: ${response.status}${details}`)
+}
+
 const login = await fetch(`${adminBase}/api/session/login`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ phone, password }),
 })
-assert(login.ok, `Admin BFF login failed: ${login.status} ${await login.text()}`)
+await assertResponseOk(login, 'Admin BFF login failed')
 const getSetCookie = login.headers.getSetCookie?.bind(login.headers)
 const setCookies = getSetCookie ? getSetCookie() : [login.headers.get('set-cookie') || '']
 const cookie = setCookies
@@ -26,14 +34,14 @@ assert(setCookies.every(value => /HttpOnly/i.test(value)), 'Session cookies must
 const me = await fetch(`${adminBase}/api/backend/auth/me`, {
   headers: { cookie },
 })
-assert(me.ok, `Authenticated /auth/me failed: ${me.status} ${await me.text()}`)
+await assertResponseOk(me, 'Authenticated /auth/me failed')
 const user = await me.json()
 assert(Array.isArray(user.capabilities), 'Authenticated user has no capabilities')
 
 const products = await fetch(`${adminBase}/api/backend/products?page=1&page_size=1`, {
   headers: { cookie },
 })
-assert(products.ok, `Seeded product smoke failed: ${products.status} ${await products.text()}`)
+await assertResponseOk(products, 'Seeded product smoke failed')
 const catalog = await products.json()
 assert(Array.isArray(catalog.items), 'Product response is not a paginated catalog')
 
