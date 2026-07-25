@@ -6,6 +6,8 @@
     "dev": "next dev -p 3001",
     "build": "next build",
     "test": "vitest run",
+    "test:behavior": "vitest run app components lib",
+    "test:e2e:smoke": "node scripts/e2e-smoke.mjs",
     "test:soft": "npm test && npm run build",
     "start": "next start -p 3001"
   },
@@ -19,9 +21,13 @@
     "sonner": "^1.4.0"
   },
   "devDependencies": {
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
     "@types/node": "^20.0.0",
     "@types/react": "^18.3.0",
     "autoprefixer": "^10.4.0",
+    "jsdom": "26.1.0",
     "postcss": "8.5.23",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.4.0",
