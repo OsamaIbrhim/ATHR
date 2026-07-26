@@ -1,10 +1,11 @@
-import { BadRequestException, Controller, Get, Headers, NotImplementedException, Post, Query, Req } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Headers, NotImplementedException, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { SyncService } from './sync.service';
 import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 import { TerminalsService } from '../terminals/terminals.service';
+import { PosProtocolGuard } from '../updates/pos-protocol.guard';
 @Controller('sync')
 @Roles('owner', 'branch_manager', 'cashier')
 @RequireCapabilities('sales.create')
@@ -14,6 +15,7 @@ export class SyncController {
     throw new NotImplementedException('Batch push is disabled; use the idempotent command endpoints');
   }
   @Get('pull')
+  @UseGuards(new PosProtocolGuard())
   async pull(
     @Query('branch_id') branch_id: string,
     @Query('cursor') cursor: string | undefined,

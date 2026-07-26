@@ -4,6 +4,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
+import { readPosCompatibilityManifest } from './pos-compatibility';
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
@@ -77,5 +78,14 @@ export class UpdatesController {
   @Get('latest')
   latest() {
     return readPosUpdateManifest();
+  }
+}
+
+@Controller('pos')
+export class PosCompatibilityController {
+  @Public()
+  @Get('compatibility')
+  compatibility() {
+    return readPosCompatibilityManifest();
   }
 }
