@@ -1,9 +1,18 @@
 import { PrismaService } from './prisma.service'
 
+type PrismaRuntime = {
+  $connect: () => Promise<void>
+  $disconnect: () => Promise<void>
+  $queryRawUnsafe: (
+    query: string,
+    ...values: unknown[]
+  ) => Promise<unknown>
+}
+
 describe('PrismaService pool warm-up', () => {
   const original = { ...process.env }
 
-  afterEach(async () => {
+  afterEach(() => {
     process.env = { ...original }
     jest.restoreAllMocks()
   })
@@ -16,20 +25,55 @@ describe('PrismaService pool warm-up', () => {
     process.env.DB_POOL_WARM_CONNECTIONS = '3'
 
     const service = new PrismaService()
-    const connect = jest
-      .spyOn(service, '$connect')
-      .mockResolvedValue(undefined)
-    const query = jest
-      .spyOn(service, '$queryRawUnsafe')
-      .mockResolvedValue([{ value: 1 }] as any)
 
-    await service.onModuleInit()
+    const connect = jest.fn(
+      async (): Promise<void> => undefined,
+    )
+
+    const disconnect = jest.fn(
+      async (): Promise<void> => undefined,
+    )
+
+    const query = jest.fn(
+      async (
+        _query: string,
+        ..._values: unknown[]
+      ): Promise<unknown> => [{ value: 1 }],
+    )
+
+    const prisma = service as unknown as PrismaRuntime
+
+    Object.defineProperties(prisma, {
+      $connect: {
+        configurable: true,
+        value: connect,
+      },
+      $disconnect: {
+        configurable: true,
+        value: disconnect,
+      },
+      $queryRawUnsafe: {
+        configurable: true,
+        value: query,
+      },
+    })
+
+    const startupResult = service.onModuleInit()
+
+    expect(startupResult).toBeUndefined()
+
+    // initializeDatabase runs asynchronously in the background.
+    await new Promise<void>((resolve) => setImmediate(resolve))
 
     expect(connect).toHaveBeenCalledTimes(1)
     expect(query).toHaveBeenCalledTimes(3)
+
     for (const call of query.mock.calls) {
       expect(call).toEqual(['SELECT 1::integer AS value'])
     }
-    await service.$disconnect()
+
+    await service.onApplicationShutdown()
+
+    expect(disconnect).toHaveBeenCalledTimes(1)
   })
 })

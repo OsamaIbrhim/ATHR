@@ -14,6 +14,45 @@ function sha256(content) {
   return createHash('sha256').update(content).digest('hex');
 }
 
+function stripGeneratorBlocks(schema) {
+  const lines = schema.split(/\r?\n/);
+  const result = [];
+
+  let insideGenerator = false;
+  let braceDepth = 0;
+
+  for (const line of lines) {
+    if (!insideGenerator && /^\s*generator\s+\w+\s*\{/.test(line)) {
+      insideGenerator = true;
+      braceDepth =
+        (line.match(/\{/g) || []).length -
+        (line.match(/\}/g) || []).length;
+
+      if (braceDepth <= 0) {
+        insideGenerator = false;
+      }
+
+      continue;
+    }
+
+    if (insideGenerator) {
+      braceDepth +=
+        (line.match(/\{/g) || []).length -
+        (line.match(/\}/g) || []).length;
+
+      if (braceDepth <= 0) {
+        insideGenerator = false;
+      }
+
+      continue;
+    }
+
+    result.push(line);
+  }
+
+  return result.join('\n').trim();
+}
+
 function parseArgs(argv) {
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -44,6 +83,12 @@ function evaluateMigrationChanges({
   const schemaChanged = changes.some(
     (change) => change.path === 'prisma/schema.prisma',
   );
+
+  const schemaRequiresMigration =
+    schemaChanged &&
+    stripGeneratorBlocks(readBaseFile('prisma/schema.prisma')) !==
+    stripGeneratorBlocks(readCurrentFile('prisma/schema.prisma'));
+
   const addedMigrations = [];
   const approvedRepairs = [];
 
@@ -106,7 +151,7 @@ function evaluateMigrationChanges({
   }
 
   if (
-    schemaChanged &&
+    schemaRequiresMigration &&
     addedMigrations.length === 0 &&
     approvedRepairs.length === 0
   ) {
@@ -281,4 +326,5 @@ module.exports = {
   evaluateMigrationChanges,
   parseGitChanges,
   sha256,
+  stripGeneratorBlocks,
 };
