@@ -11,8 +11,6 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/src/main.js",
     "pretest": "prisma generate",
-    "test": "jest --runInBand",
-    "test:soft": "npm test -- --runInBand && npm run build",
     "prebuild": "prisma generate",
     "test:hard": "node perf/run-hard-suite.mjs",
     "test:hard:smoke": "node perf/run-hard-suite.mjs --smoke",
@@ -22,7 +20,10 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:migrations:policy": "node scripts/check-migration-policy.cjs",
-    "prisma:seed": "ts-node prisma/reset-development-accounting.ts && ts-node prisma/seed.ts && node prisma/ensure-seeded-inventory-ledger.mjs && node prisma/ensure-seeded-cost-ledger.mjs"
+    "prisma:seed": "ts-node prisma/reset-development-accounting.ts && ts-node prisma/seed.ts && node prisma/ensure-seeded-inventory-ledger.mjs && node prisma/ensure-seeded-cost-ledger.mjs",
+    "typecheck": "tsc --noEmit --pretty false",
+    "test": "jest --runInBand",
+    "test:soft": "npm test && npm run typecheck && npm run build"
   },
   "prisma": {
     "seed": "ts-node prisma/reset-development-accounting.ts && ts-node prisma/seed.ts && node prisma/ensure-seeded-inventory-ledger.mjs && node prisma/ensure-seeded-cost-ledger.mjs"
@@ -52,11 +53,19 @@
     "zod": "^3.23.0"
   },
   "jest": {
-    "moduleFileExtensions": ["js", "json", "ts"],
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
-    "transform": {"^.+\\.(t|j)s$": "ts-jest"},
-    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   },

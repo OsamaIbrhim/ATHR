@@ -84,17 +84,97 @@ describe('migration release policy', () => {
     ]);
   });
 
-  it('requires a migration when the Prisma schema changes', () => {
+  it('requires a migration when the database-facing Prisma schema changes', () => {
+    const baseSchema = `
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id String @id
+}
+`;
+
+    const currentSchema = `
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id   String @id
+  name String
+}
+`;
+
     const result = evaluateMigrationChanges({
       changes: [{ status: 'M', path: 'prisma/schema.prisma' }],
       repairs: [],
-      readBaseFile: () => '',
-      readCurrentFile: () => '',
+      readBaseFile: (path: string) => {
+        expect(path).toBe('prisma/schema.prisma');
+        return baseSchema;
+      },
+      readCurrentFile: (path: string) => {
+        expect(path).toBe('prisma/schema.prisma');
+        return currentSchema;
+      },
     });
 
     expect(result.errors).toEqual([
       expect.stringContaining('changed without a new migration'),
     ]);
+  });
+
+  it('allows generator-only Prisma schema changes without a migration', () => {
+    const baseSchema = `
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id String @id
+}
+`;
+
+    const currentSchema = `
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id String @id
+}
+`;
+
+    const result = evaluateMigrationChanges({
+      changes: [{ status: 'M', path: 'prisma/schema.prisma' }],
+      repairs: [],
+      readBaseFile: () => baseSchema,
+      readCurrentFile: () => currentSchema,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.addedMigrations).toEqual([]);
   });
 
   it('keeps the incident repair manifest immutable after release', () => {
