@@ -2,7 +2,7 @@ import { Body, Controller, Get, Headers, Param, Patch, Post, Req, UseGuards } fr
 import { Request } from 'express';
 import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
-import { CreateTerminalEnrollmentDto, EnrollTerminalDto, TerminalHeartbeatDto, UpdateTerminalDto } from './dto/terminal.dto';
+import { CreateTerminalEnrollmentDto, DecommissionTerminalDto, EnrollTerminalDto, TerminalHeartbeatDto, UpdateTerminalDto } from './dto/terminal.dto';
 import { TerminalsService } from './terminals.service';
 import { Public } from '../auth/public.decorator';
 import { PosProtocolGuard } from '../updates/pos-protocol.guard';
@@ -37,6 +37,18 @@ export class TerminalsController {
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     return this.service.heartbeat(dto, deviceToken, req.user);
+  }
+
+  @Roles('branch_manager')
+  @RequireCapabilities('terminals.manage')
+  @UseGuards(new PosProtocolGuard())
+  @Post('self-decommission')
+  selfDecommission(
+    @Body() dto: DecommissionTerminalDto,
+    @Headers('x-pos-device-token') deviceToken: string | undefined,
+    @Req() req: Request & { user: AuthenticatedUser },
+  ) {
+    return this.service.selfDecommission(dto, deviceToken, req.user);
   }
 
   @Roles('owner', 'branch_manager')

@@ -11,6 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import {
   CreateTerminalEnrollmentDto,
+  DecommissionTerminalDto,
   EnrollTerminalDto,
   TerminalHeartbeatDto,
   UpdateTerminalDto,
@@ -122,6 +123,82 @@ export class TerminalsService {
       include: { branch: { select: { code: true, name_ar: true, name_en: true } } },
     });
     return { terminal, online: true, server_time: now.toISOString() };
+  }
+
+  async selfDecommission(
+    dto: DecommissionTerminalDto,
+    deviceToken: string | undefined,
+    actor: AuthenticatedUser,
+  ) {
+    if (actor.role !== 'branch_manager') {
+      throw new ForbiddenException('Only a branch manager can decommission this POS terminal');
+    }
+
+    if (!actor.branch_id) throw new ForbiddenException('POS manager must be linked to a branch');
+    const existing = await this.prisma.posTerminal.findUnique({
+      where: { device_id: dto.device_id },
+    });
+    if (!existing) throw new UnauthorizedException('This POS terminal must be enrolled before use');
+    if (existing.branch_id !== actor.branch_id) {
+      throw new ConflictException('This POS terminal is registered to another branch');
+    }
+    if (existing.terminal_code !== dto.terminal_code.trim().toUpperCase()) {
+      throw new ConflictException({
+        code: 'TERMINAL_DECOMMISSION_CONFIRMATION_MISMATCH',
+        message: 'The terminal confirmation code does not match this device',
+      });
+    }
+    const serverPendingCount = Number(existing.pending_count || 0);
+    if (dto.pending_count > 0 || dto.held_count > 0 || serverPendingCount > 0) {
+      throw new ConflictException({
+        code: 'TERMINAL_DECOMMISSION_LOCAL_DATA_PENDING',
+        message: 'Local sales or held invoices must be resolved before terminal decommissioning',
+        pending_count: dto.pending_count,
+        held_count: dto.held_count,
+        server_pending_count: serverPendingCount,
+      });
+    }
+    if (existing.is_revoked || !existing.device_token_hash) {
+      return {
+        decommissioned: true,
+        replayed: true,
+        terminal: {
+          id: existing.id,
+          device_id: existing.device_id,
+          terminal_code: existing.terminal_code,
+          branch_id: existing.branch_id,
+          is_revoked: true,
+        },
+        server_time: new Date().toISOString(),
+      };
+    }
+    if (!deviceToken || !this.matches(deviceToken, existing.device_token_hash)) {
+      throw new UnauthorizedException('Invalid POS terminal credential');
+    }
+
+    const terminal = await this.prisma.posTerminal.update({
+      where: { id: existing.id },
+      data: {
+        is_revoked: true,
+        device_token_hash: null,
+        pending_count: 0,
+        last_sync_status: 'decommissioned',
+        last_error: null,
+        last_seen_at: new Date(),
+      },
+    });
+
+    return {
+      decommissioned: true,
+      terminal: {
+        id: terminal.id,
+        device_id: terminal.device_id,
+        terminal_code: terminal.terminal_code,
+        branch_id: terminal.branch_id,
+        is_revoked: terminal.is_revoked,
+      },
+      server_time: new Date().toISOString(),
+    };
   }
 
   async authenticate(deviceId: string | undefined, deviceToken: string | undefined, actor: AuthenticatedUser) {

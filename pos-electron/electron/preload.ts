@@ -39,6 +39,10 @@ contextBridge.exposeInMainWorld('bold', {
   api_request: (request: any) => ipcRenderer.invoke('api:request', request),
   api_clear_session: () => ipcRenderer.invoke('api:clear_session'),
   api_clear_device: () => ipcRenderer.invoke('api:clear_device'),
+  api_factory_reset_status: () =>
+    ipcRenderer.invoke('api:factory_reset_status'),
+  api_factory_reset: (terminalCode: string) =>
+    ipcRenderer.invoke('api:factory_reset', terminalCode),
   api_issue_accounting: (shiftId: string) =>
     ipcRenderer.invoke('api:issue_accounting', shiftId),
   api_clear_accounting: () => ipcRenderer.invoke('api:clear_accounting'),

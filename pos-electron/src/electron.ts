@@ -87,6 +87,18 @@ export type PosDiagnostics = {
   }
 }
 
+export type FactoryResetStatus = {
+  manager: boolean
+  enrolled: boolean
+  in_progress: boolean
+  terminal_code: string | null
+  pending_count: number
+  held_count: number
+  sync_status: string
+  blockers: string[]
+  can_reset: boolean
+}
+
 export type BoldBridge = {
   search(query: string): Promise<Product[]>
   stock(variantId: string): Promise<number>
@@ -158,6 +170,10 @@ export type BoldBridge = {
   }): Promise<IpcEnvelope<any>>
   api_clear_session(): Promise<IpcEnvelope<any>>
   api_clear_device(): Promise<IpcEnvelope<any>>
+  api_factory_reset_status(): Promise<IpcEnvelope<FactoryResetStatus>>
+  api_factory_reset(terminalCode: string): Promise<IpcEnvelope<{
+    restarting: boolean
+  }>>
   api_issue_accounting(shiftId: string): Promise<IpcEnvelope<any>>
   api_clear_accounting(): Promise<IpcEnvelope<any>>
 }

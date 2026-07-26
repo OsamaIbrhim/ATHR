@@ -339,3 +339,52 @@ textarea:focus {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+.diagnostics-reset {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #fda29b;
+  border-radius: 14px;
+  background: #fff5f4;
+  padding: 16px;
+}
+
+.diagnostics-reset h3 {
+  margin: 0 0 6px;
+  color: #912018;
+}
+
+.diagnostics-reset p {
+  margin: 0;
+  color: #7a271a;
+  line-height: 1.7;
+}
+
+.diagnostics-reset-counts {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.diagnostics-reset-counts span {
+  border: 1px solid #fecdca;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 8px 12px;
+}
+
+.diagnostics-reset label {
+  display: grid;
+  gap: 8px;
+  font-weight: 800;
+}
+
+.diagnostics-reset input {
+  direction: ltr;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.diagnostics-reset .button {
+  justify-self: start;
+}
