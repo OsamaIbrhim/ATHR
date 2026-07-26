@@ -1,6 +1,15 @@
 import { api, ApiError } from './api'
 import { bold, BoldBridge } from './electron'
 import { SyncState } from './types'
+import {
+  assertPosCompatibility,
+  PosCompatibilityError,
+} from './pos-compatibility'
+import {
+  classifySyncError,
+  formatSyncError,
+  outboxItemDueAt,
+} from './sync-policy'
 
 type SyncBridge = Pick<
   BoldBridge,
@@ -15,11 +24,13 @@ type SyncBridge = Pick<
 
 type SyncApi = Pick<
   typeof api,
-  'sale' | 'pull' | 'heartbeat'
+  'sale' | 'pull' | 'heartbeat' | 'compatibility'
 >
 
 let activeSync: Promise<SyncState> | null = null
+let consecutiveSyncFailures = 0
 const MAX_SYNC_PULL_PAGES = 100
+const SUCCESS_SYNC_INTERVAL_MS = 15_000
 
 export class SyncIntegrityError extends Error {
   constructor(message: string) {
@@ -47,31 +58,8 @@ function cursorTransitionIsValid(
   }
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error
-    ? error.message
-    : String(
-        error || 'Unknown synchronization error',
-      )
-}
-
 export function isRetryableSyncError(error: unknown) {
-  if (error instanceof SyncIntegrityError) return false
-  if (error instanceof SyntaxError) return false
-  if (!(error instanceof ApiError)) return true
-  if (error.code === 'NETWORK_ERROR') return true
-  if (
-    [
-      'TERMINAL_NOT_ENROLLED',
-      'TERMINAL_CREDENTIAL_INVALID',
-      'TOKEN_EXPIRED',
-      'AUTH_EXPIRED',
-    ].includes(error.code)
-  ) {
-    return true
-  }
-  if (error.status === 408 || error.status === 429) return true
-  return !!error.status && error.status >= 500
+  return classifySyncError(error).retryable
 }
 
 function serverDocument(result: any) {
@@ -98,12 +86,35 @@ async function publishHeartbeat(
   })
 }
 
+function compatibilityFailure(error: unknown) {
+  if (error instanceof ApiError && error.status === 404) {
+    return new PosCompatibilityError(
+      'POS_BACKEND_TOO_OLD',
+      'نسخة الخادم أقدم من عقد التوافق المطلوب بواسطة نقطة البيع. تم إيقاف المزامنة حتى تحديث الخادم.',
+    )
+  }
+  return error
+}
+
 export async function performSync(
   branchId: string,
   local: SyncBridge,
   client: SyncApi,
+  options: { force?: boolean } = {},
 ): Promise<SyncState> {
   let state = await local.sync_get_status()
+
+  let compatibilityPayload: unknown
+  try {
+    compatibilityPayload = await client.compatibility()
+  } catch (error) {
+    throw compatibilityFailure(error)
+  }
+
+  const compatible = assertPosCompatibility(
+    compatibilityPayload,
+    state.app_version,
+  )
 
   await local.sync_set_status({
     sync_status: 'syncing',
@@ -114,13 +125,42 @@ export async function performSync(
     ...state,
     sync_status: 'syncing',
     last_error: null,
+    next_sync_at: null,
+    blocked_reason: null,
+    backend_version: compatible.backendVersion,
+    backend_deployment_sha: compatible.deploymentSha,
+    api_protocol: compatible.protocol,
   }
 
   await publishHeartbeat(client, state)
 
   const outbox = await local.sync_get_outbox()
+  const nowMs = Date.now()
+  const dueOutbox = outbox.filter(
+    (item) =>
+      options.force ||
+      outboxItemDueAt(item, nowMs) <= nowMs,
+  )
 
-  for (const item of outbox) {
+  if (outbox.length > 0 && dueOutbox.length === 0) {
+    const nextAttempt = Math.min(
+      ...outbox.map((item) => outboxItemDueAt(item, nowMs)),
+    )
+    const waiting: SyncState = {
+      ...state,
+      sync_status: 'offline',
+      last_error:
+        'المزامنة مؤجلة تلقائيًا بعد فشل مؤقت لحماية الخادم من تكرار الطلبات.',
+      pending_count: outbox.length,
+      next_sync_at: new Date(nextAttempt).toISOString(),
+      blocked_reason: null,
+    }
+    await local.sync_set_status(waiting)
+    await publishHeartbeat(client, waiting).catch(() => undefined)
+    return waiting
+  }
+
+  for (const item of dueOutbox) {
     try {
       await local.sync_mark_sending(item.id)
       const stored = JSON.parse(item.payload)
@@ -137,11 +177,18 @@ export async function performSync(
         ...serverDocument(result),
       })
     } catch (error) {
-      const retryable = isRetryableSyncError(error)
+      const decision = classifySyncError(
+        error,
+        Number(item.attempt_count || 0) + 1,
+        Date.now(),
+        String(item.id),
+      )
+      const message = formatSyncError(error)
+
       await local.sync_mark_failed({
         id: item.id,
-        error: errorMessage(error),
-        retryable,
+        error: message,
+        retryable: decision.retryable,
       }).catch(() => undefined)
 
       const current =
@@ -149,11 +196,13 @@ export async function performSync(
 
       const failed: SyncState = {
         ...state,
-        sync_status: 'error',
-        last_error: retryable
-          ? errorMessage(error)
-          : `عملية مرفوضة وتحتاج مراجعة: ${errorMessage(error)}`,
+        sync_status: decision.retryable ? 'offline' : 'error',
+        last_error: decision.retryable
+          ? message
+          : `عملية مرفوضة وتحتاج مراجعة: ${message}`,
         pending_count: current.pending_count,
+        next_sync_at: decision.nextAttemptAt,
+        blocked_reason: decision.blockedReason,
       }
 
       await local.sync_set_status(failed)
@@ -167,18 +216,26 @@ export async function performSync(
     }
   }
 
-  // قد يضيف الكاشير عملية بيع جديدة أثناء
-  // وجود طلبات المزامنة قيد التنفيذ.
+  // قد يضيف الكاشير عملية بيع جديدة أثناء المزامنة، أو قد تبقى عملية
+  // أخرى مؤجلة بسبب backoff سابق. لا نسحب مخزونًا جديدًا قبل حسمها.
   const remaining =
     await local.sync_get_outbox()
 
   if (remaining.length) {
+    const remainingNow = Date.now()
+    const nextAttempt = Math.min(
+      ...remaining.map((item) => outboxItemDueAt(item, remainingNow)),
+    )
     const pending: SyncState = {
       ...state,
-      sync_status: 'error',
+      sync_status: 'offline',
       last_error:
-        'تمت إضافة عملية جديدة أثناء المزامنة؛ ستُرسل قبل تحديث المخزون.',
+        'توجد عملية محلية أخرى في انتظار موعد إعادة المحاولة قبل تحديث المخزون.',
       pending_count: remaining.length,
+      next_sync_at: new Date(
+        Math.max(remainingNow + 1_000, nextAttempt),
+      ).toISOString(),
+      blocked_reason: null,
     }
 
     await local.sync_set_status(pending)
@@ -198,6 +255,8 @@ export async function performSync(
       sync_status: 'error',
       last_error: 'توجد عمليات فاشلة تحتاج مراجعة قبل اكتمال المزامنة.',
       pending_count: unresolved.pending_count,
+      next_sync_at: null,
+      blocked_reason: 'OUTBOX_REVIEW_REQUIRED',
     }
     await local.sync_set_status(failed)
     await publishHeartbeat(client, failed).catch(() => undefined)
@@ -261,6 +320,8 @@ export async function performSync(
       new Date().toISOString(),
     last_error: null,
     pending_count: 0,
+    next_sync_at: null,
+    blocked_reason: null,
     sync_cursor: cursor,
     catalog_valid_until: response.catalog_valid_until || state.catalog_valid_until || null,
   }
@@ -274,6 +335,7 @@ export async function performSync(
 export function syncLoop(
   branchId: string,
   onStatus?: (state: SyncState) => void,
+  options: { force?: boolean } = {},
 ): Promise<SyncState> {
   if (activeSync) {
     return activeSync
@@ -283,19 +345,25 @@ export function syncLoop(
     branchId,
     bold,
     api,
+    options,
   )
     .catch(async error => {
       const previous =
         await bold.sync_get_status()
 
-      const retryable =
-        isRetryableSyncError(error)
+      consecutiveSyncFailures += 1
+      const decision = classifySyncError(
+        error,
+        consecutiveSyncFailures,
+      )
       const failed: SyncState = {
         ...previous,
-        sync_status: retryable
+        sync_status: decision.retryable
           ? 'offline'
           : 'error',
-        last_error: errorMessage(error),
+        last_error: formatSyncError(error),
+        next_sync_at: decision.nextAttemptAt,
+        blocked_reason: decision.blockedReason,
       }
 
       await bold.sync_set_status(failed)
@@ -303,6 +371,9 @@ export function syncLoop(
       return failed
     })
     .then(state => {
+      if (state.sync_status === 'success') {
+        consecutiveSyncFailures = 0
+      }
       onStatus?.(state)
       return state
     })
@@ -317,19 +388,47 @@ export function startSync(
   branchId: string,
   onStatus?: (state: SyncState) => void,
 ) {
-  bold
-    .sync_get_status()
-    .then(state => onStatus?.(state))
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | null = null
 
-  syncLoop(branchId, onStatus)
+  const schedule = (state: SyncState) => {
+    if (stopped) return
+    if (timer) clearTimeout(timer)
 
-  const timer = setInterval(
-    () => syncLoop(branchId, onStatus),
-    15_000,
-  )
+    if (state.blocked_reason && !state.next_sync_at) {
+      timer = null
+      return
+    }
+
+    const target = Date.parse(String(state.next_sync_at || ''))
+    const delay = Number.isFinite(target)
+      ? Math.max(1_000, target - Date.now())
+      : SUCCESS_SYNC_INTERVAL_MS
+
+    timer = setTimeout(() => {
+      void run(false)
+    }, delay)
+  }
+
+  const run = async (force: boolean) => {
+    if (stopped) return
+    const state = await syncLoop(
+      branchId,
+      onStatus,
+      { force },
+    )
+    schedule(state)
+  }
+
+  bold.sync_get_status()
+    .then((state) => {
+      onStatus?.(state)
+      void run(false)
+    })
+    .catch(() => void run(false))
 
   const online = () => {
-    syncLoop(branchId, onStatus)
+    void run(false)
   }
 
   if (typeof window !== 'undefined') {
@@ -340,7 +439,8 @@ export function startSync(
   }
 
   return () => {
-    clearInterval(timer)
+    stopped = true
+    if (timer) clearTimeout(timer)
 
     if (typeof window !== 'undefined') {
       window.removeEventListener(

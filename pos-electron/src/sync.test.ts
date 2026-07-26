@@ -15,7 +15,7 @@ describe('Phase 5A synchronization', () => {
       isRetryableSyncError(
         new ApiError({ code: 'TERMINAL_CREDENTIAL_INVALID' }, 401),
       ),
-    ).toBe(true)
+    ).toBe(false)
     expect(isRetryableSyncError(new ApiError({}, 409))).toBe(false)
     expect(isRetryableSyncError(new ApiError({}, 422))).toBe(false)
     expect(isRetryableSyncError(new SyntaxError('bad payload'))).toBe(false)
@@ -26,7 +26,7 @@ describe('Phase 5A synchronization', () => {
     const status = {
       device_id: 'device',
       terminal_name: 'POS',
-      app_version: '1',
+      app_version: '1.3.1',
       sync_status: 'never',
       last_sync_at: null,
       last_error: null,
@@ -62,6 +62,11 @@ describe('Phase 5A synchronization', () => {
       sync_apply_pull: async () => ({ ok: true }),
     }
     const client: any = {
+      compatibility: async () => ({
+        api_protocol: { minimum: 1, maximum: 1 },
+        minimum_pos_version: '1.3.0',
+        backend_version: 'test',
+      }),
       heartbeat: async () => ({}),
       sale: async () => ({
         id: 'server-id',
@@ -97,7 +102,7 @@ describe('Phase 5A synchronization', () => {
     const status = {
       device_id: 'device',
       terminal_name: 'POS',
-      app_version: '1',
+      app_version: '1.3.1',
       sync_status: 'success',
       last_sync_at: null,
       last_error: null,
@@ -119,6 +124,11 @@ describe('Phase 5A synchronization', () => {
     }
     let page = 0
     const client: any = {
+      compatibility: async () => ({
+        api_protocol: { minimum: 1, maximum: 1 },
+        minimum_pos_version: '1.3.0',
+        backend_version: 'test',
+      }),
       heartbeat: async () => ({}),
       sale: async () => ({}),
       pull: async () => {
@@ -163,7 +173,7 @@ describe('Phase 5A synchronization', () => {
       sync_get_status: async () => ({
         device_id: 'device',
         terminal_name: 'POS',
-        app_version: '1',
+        app_version: '1.3.1',
         sync_status: 'success',
         last_sync_at: null,
         last_error: null,
@@ -179,6 +189,11 @@ describe('Phase 5A synchronization', () => {
       },
     }
     const client: any = {
+      compatibility: async () => ({
+        api_protocol: { minimum: 1, maximum: 1 },
+        minimum_pos_version: '1.3.0',
+        backend_version: 'test',
+      }),
       heartbeat: async () => ({}),
       pull: async () => ({
         products: [],
@@ -201,7 +216,7 @@ describe('Phase 5A synchronization', () => {
       sync_get_status: async () => ({
         device_id: 'device',
         terminal_name: 'POS',
-        app_version: '1',
+        app_version: '1.3.1',
         sync_status: 'success',
         last_sync_at: null,
         last_error: null,
@@ -218,6 +233,11 @@ describe('Phase 5A synchronization', () => {
       },
     }
     const client: any = {
+      compatibility: async () => ({
+        api_protocol: { minimum: 1, maximum: 1 },
+        minimum_pos_version: '1.3.0',
+        backend_version: 'test',
+      }),
       heartbeat: async () => ({}),
       pull: async () => ({
         products: [],
@@ -233,4 +253,109 @@ describe('Phase 5A synchronization', () => {
       SyncIntegrityError,
     )
   })
+
+  it('persists a delayed retry after a transient sale failure', async () => {
+    const failures: any[] = []
+    let reads = 0
+    const local: any = {
+      sync_get_status: async () => ({
+        device_id: 'device',
+        terminal_name: 'POS',
+        app_version: '1.3.1',
+        sync_status: 'success',
+        last_sync_at: null,
+        last_error: null,
+        pending_count: 1,
+        sync_cursor: '0',
+      }),
+      sync_set_status: async () => ({ ok: true }),
+      sync_get_outbox: async () => {
+        reads += 1
+        return reads === 1
+          ? [{
+              id: 'sync-retry',
+              payload: JSON.stringify({ sync_id: 'sync-retry', items: [] }),
+              attempt_count: 0,
+              last_attempt_at: null,
+            }]
+          : []
+      },
+      sync_mark_sending: async () => ({ ok: true }),
+      sync_mark_sent: async () => ({ ok: true }),
+      sync_mark_failed: async (value: any) => {
+        failures.push(value)
+        return { ok: true }
+      },
+      sync_apply_pull: async () => ({ ok: true }),
+    }
+    const client: any = {
+      compatibility: async () => ({
+        api_protocol: { minimum: 1, maximum: 1 },
+        minimum_pos_version: '1.3.0',
+        backend_version: 'test',
+      }),
+      heartbeat: async () => ({}),
+      sale: async () => {
+        throw new ApiError({ code: 'SERVER_DOWN' }, 503)
+      },
+      pull: async () => {
+        throw new Error('pull must not run after failed push')
+      },
+    }
+
+    const result = await performSync('branch-1', local, client)
+
+    expect(result.sync_status).toBe('offline')
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toMatchObject({
+      id: 'sync-retry',
+      retryable: true,
+    })
+    expect(Date.parse(String(result.next_sync_at))).toBeGreaterThan(Date.now())
+  })
+
+  it('pauses a permanently rejected sale instead of retrying it forever', async () => {
+    const failures: any[] = []
+    const local: any = {
+      sync_get_status: async () => ({
+        device_id: 'device', terminal_name: 'POS', app_version: '1.3.1',
+        sync_status: 'success', last_sync_at: null, last_error: null,
+        pending_count: 1, sync_cursor: '0',
+      }),
+      sync_set_status: async () => ({ ok: true }),
+      sync_get_outbox: async () => [{
+        id: 'sync-blocked',
+        payload: JSON.stringify({ sync_id: 'sync-blocked', items: [] }),
+        attempt_count: 0,
+      }],
+      sync_mark_sending: async () => ({ ok: true }),
+      sync_mark_sent: async () => ({ ok: true }),
+      sync_mark_failed: async (value: any) => {
+        failures.push(value)
+        return { ok: true }
+      },
+      sync_apply_pull: async () => ({ ok: true }),
+    }
+    const client: any = {
+      compatibility: async () => ({
+        api_protocol: { minimum: 1, maximum: 1 },
+        minimum_pos_version: '1.3.0',
+        backend_version: 'test',
+      }),
+      heartbeat: async () => ({}),
+      sale: async () => {
+        throw new ApiError({ code: 'PERMISSION_DENIED' }, 403)
+      },
+      pull: async () => ({}),
+    }
+
+    const result = await performSync('branch-1', local, client)
+
+    expect(result.sync_status).toBe('error')
+    expect(result.blocked_reason).toBe('PERMISSION_DENIED')
+    expect(failures[0]).toMatchObject({
+      retryable: false,
+    })
+  })
+
 })

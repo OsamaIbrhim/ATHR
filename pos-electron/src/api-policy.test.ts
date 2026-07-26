@@ -16,6 +16,12 @@ describe('Electron main API policy', () => {
       method: 'GET',
     })
     expect(
+      assertAllowedApiRequest('/pos/compatibility', 'GET'),
+    ).toEqual({
+      pathname: '/pos/compatibility',
+      method: 'GET',
+    })
+    expect(
       assertAllowedApiRequest('/pos/sale', 'POST'),
     ).toEqual({
       pathname: '/pos/sale',
@@ -29,6 +35,9 @@ describe('Electron main API policy', () => {
         'https://attacker.example/collect',
         'POST',
       ),
+    ).toThrow(PosApiPolicyError)
+    expect(() =>
+      assertAllowedApiRequest('/pos/compatibility', 'POST'),
     ).toThrow(PosApiPolicyError)
     expect(() =>
       assertAllowedApiRequest('/sales/123', 'DELETE'),

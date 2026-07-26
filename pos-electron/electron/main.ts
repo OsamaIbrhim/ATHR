@@ -4,6 +4,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import { randomUUID } from 'crypto'
 import { configureAutoUpdates } from './auto-update'
+import { POS_PROTOCOL_VERSION } from './pos-protocol'
 import {
   isValidOfflineAccountingContext,
   maxTerminalSequence,
@@ -108,6 +109,7 @@ type ApiFailure = {
   field?: string
   request_id?: string
   status?: number
+  retry_after_ms?: number
   details?: string[]
 }
 
@@ -199,6 +201,9 @@ function apiFailure(error: any): ApiFailure {
     field: error?.field,
     request_id: error?.request_id,
     status: error?.status,
+    retry_after_ms: Number.isFinite(Number(error?.retry_after_ms))
+      ? Number(error.retry_after_ms)
+      : undefined,
     details: Array.isArray(error?.details)
       ? error.details.map(String)
       : undefined,
@@ -253,6 +258,9 @@ async function parseApiFailure(response: Response) {
     field: payload.field,
     request_id: payload.request_id,
     status: response.status,
+    retry_after_ms: Number.isFinite(Number(payload.retry_after_ms))
+      ? Number(payload.retry_after_ms)
+      : undefined,
     details: Array.isArray(payload.details)
       ? payload.details.map(String)
       : undefined,
@@ -412,6 +420,8 @@ async function authenticatedFetch(
             'x-pos-device-id': state.device.device_id,
           }
         : {}),
+      'x-pos-app-version': app.getVersion(),
+      'x-pos-protocol-version': String(POS_PROTOCOL_VERSION),
       'x-request-id': randomUUID(),
     },
     body:
