@@ -6,6 +6,13 @@ describe('role capabilities', () => {
     expect(capabilitiesFor('cashier')).not.toContain('products.manage');
   });
 
+  it('allows cashiers to read the branch invoices they are already allowed to create', () => {
+    expect(capabilitiesFor('cashier')).toEqual(expect.arrayContaining([
+      'sales.read',
+      'sales.create',
+    ]));
+  });
+
   it('advertises the terminal actions already authorized for branch managers', () => {
     expect(capabilitiesFor('branch_manager')).toEqual(expect.arrayContaining([
       'terminals.read',
