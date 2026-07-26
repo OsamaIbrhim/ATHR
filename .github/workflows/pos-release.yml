@@ -1,0 +1,128 @@
+name: POS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: POS version from pos-electron/package.json (example 1.3.3)
+        required: true
+        type: string
+      notes:
+        description: Release notes shown by the POS updater
+        required: true
+        type: string
+      mandatory:
+        description: Set the manifest mandatory flag (the current app still asks for confirmation)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pos-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_NOTES: ${{ inputs.notes }}
+      RELEASE_MANDATORY: ${{ inputs.mandatory }}
+      RELEASE_TAG: pos-v${{ inputs.version }}
+      CSC_LINK: ${{ secrets.POS_WINDOWS_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.POS_WINDOWS_CSC_KEY_PASSWORD }}
+
+    steps:
+      - name: Check out the selected master commit
+        uses: actions/checkout@v4
+
+      - name: Require master
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
+            echo "::error::POS releases must be started from the master branch."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.11.1'
+          cache: npm
+          cache-dependency-path: pos-electron/package-lock.json
+
+      - name: Validate release version and immutability
+        run: |
+          node scripts/pos-release.mjs validate \
+            --version "$RELEASE_VERSION" \
+            --package pos-electron/package.json \
+            --lock pos-electron/package-lock.json \
+            --tag "$RELEASE_TAG"
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Published POS releases are immutable."
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $RELEASE_TAG already exists. Use a new POS version."
+            exit 1
+          fi
+
+      - name: Test and build the Windows installer
+        working-directory: pos-electron
+        run: |
+          npm ci
+          npm run test:soft
+          npm run dist
+
+      - name: Generate and verify the updater manifest
+        run: |
+          INSTALLER="pos-electron/release/Bold-POS-Setup-${RELEASE_VERSION}.exe"
+          test -f "$INSTALLER"
+
+          node scripts/pos-release.mjs create \
+            --installer "$INSTALLER" \
+            --version "$RELEASE_VERSION" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --notes-env RELEASE_NOTES \
+            --mandatory "$RELEASE_MANDATORY" \
+            --source-sha "$GITHUB_SHA" \
+            --output pos-update.json \
+            --notes-output pos-release-notes.md
+
+          node scripts/pos-release.mjs verify \
+            --manifest pos-update.json \
+            --installer "$INSTALLER"
+
+          node --test scripts/pos-release.test.mjs
+
+      - name: Publish immutable GitHub Release
+        run: |
+          INSTALLER="pos-electron/release/Bold-POS-Setup-${RELEASE_VERSION}.exe"
+          gh release create "$RELEASE_TAG" \
+            "$INSTALLER#Bold POS Windows installer" \
+            "pos-update.json#POS updater manifest" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Bold POS ${RELEASE_VERSION}" \
+            --notes-file pos-release-notes.md \
+            --latest
+
+      - name: Write release summary
+        run: |
+          {
+            echo "## Bold POS ${RELEASE_VERSION} published"
+            echo
+            echo "- Tag: \`${RELEASE_TAG}\`"
+            echo "- Source: \`${GITHUB_SHA}\`"
+            echo "- Stable manifest: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/pos-update.json"
+            echo "- Installer: https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Bold-POS-Setup-${RELEASE_VERSION}.exe"
+          } >> "$GITHUB_STEP_SUMMARY"
