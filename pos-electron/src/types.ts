@@ -137,9 +137,14 @@ export type SyncState = {
   last_sync_at: string | null
   last_error: string | null
   pending_count: number
+  next_sync_at?: string | null
+  blocked_reason?: string | null
   terminal_sale_sequence?: string
   sync_cursor?: string | null
   catalog_valid_until?: string | null
+  backend_version?: string | null
+  backend_deployment_sha?: string | null
+  api_protocol?: number | null
 }
 
 export type AppView = 'register' | 'sales'

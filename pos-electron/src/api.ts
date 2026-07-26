@@ -39,6 +39,7 @@ export class ApiError extends Error {
   field?: string
   requestId?: string
   status?: number
+  retryAfterMs?: number
   details: string[]
 
   constructor(payload: any = {}, status?: number) {
@@ -52,6 +53,9 @@ export class ApiError extends Error {
     this.field = payload.field
     this.requestId = payload.request_id
     this.status = status
+    this.retryAfterMs = Number.isFinite(Number(payload.retry_after_ms))
+      ? Number(payload.retry_after_ms)
+      : undefined
     this.details = Array.isArray(payload.details)
       ? payload.details.map(String)
       : []
@@ -394,6 +398,9 @@ export const api = {
         branchId ? `&branch_id=${branchId}` : ''
       }`,
     ),
+
+  compatibility: () =>
+    request<any>('/pos/compatibility'),
 
   sale: (payload: any) =>
     request<any>('/pos/sale', {

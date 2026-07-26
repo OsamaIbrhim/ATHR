@@ -1,6 +1,7 @@
 const ALLOWED_API_ROUTES = [
   ['GET', /^\/auth\/me$/],
   ['GET', /^\/products\/search\?/],
+  ['GET', /^\/pos\/compatibility$/],
   ['POST', /^\/pos\/sale$/],
   ['POST', /^\/pricing\/calculate$/],
   ['GET', /^\/customers\/lookup\?/],

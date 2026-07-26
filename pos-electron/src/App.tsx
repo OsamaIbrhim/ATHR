@@ -25,6 +25,8 @@ const emptySync: SyncState = {
   last_sync_at: null,
   last_error: null,
   pending_count: 0,
+  next_sync_at: null,
+  blocked_reason: null,
   terminal_sale_sequence: '0',
 }
 
@@ -190,7 +192,11 @@ export default function App() {
 
   const syncNow = useCallback(() => {
     if (!device) return
-    syncLoop(device.branch_id, setSyncState).then((state) => {
+    syncLoop(
+      device.branch_id,
+      setSyncState,
+      { force: true },
+    ).then((state) => {
       if (state.sync_status === 'success') notify('اكتملت المزامنة', 'success')
       else if (state.last_error) notify(state.last_error, 'error')
     })

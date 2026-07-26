@@ -108,6 +108,7 @@ export type IpcEnvelope<T> =
         field?: string
         request_id?: string
         status?: number
+        retry_after_ms?: number
         details?: string[]
       }
     }
