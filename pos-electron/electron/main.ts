@@ -5,6 +5,7 @@ import * as os from 'os'
 import { randomUUID } from 'crypto'
 import { configureAutoUpdates } from './auto-update'
 import { POS_PROTOCOL_VERSION } from './pos-protocol'
+import { registerDiagnosticsIpc } from './diagnostics-runtime'
 import {
   isValidOfflineAccountingContext,
   maxTerminalSequence,
@@ -891,6 +892,14 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   await initDb()
+  registerDiagnosticsIpc({
+    apiBase: API_BASE,
+    protocolVersion: POS_PROTOCOL_VERSION,
+    dbPath,
+    getSecureState: readSecureState,
+    getMeta,
+    query: q,
+  })
   createWindow()
   configureAutoUpdates({
     manifestUrl: `${API_BASE}/pos-updates/latest`,
