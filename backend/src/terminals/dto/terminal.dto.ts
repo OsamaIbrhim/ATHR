@@ -67,6 +67,27 @@ export class TerminalHeartbeatDto {
   pending_count?: number;
 }
 
+export class DecommissionTerminalDto {
+  @IsUUID('4', { message: 'device_id must be a valid terminal identifier' })
+  device_id: string;
+
+  @IsString()
+  @Length(12, 12, { message: 'terminal_code must contain 12 characters' })
+  terminal_code: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(1000000)
+  pending_count: number;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(1000000)
+  held_count: number;
+}
+
 export class UpdateTerminalDto {
   @IsOptional()
   @IsString()

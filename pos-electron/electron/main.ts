@@ -7,6 +7,11 @@ import { configureAutoUpdates } from './auto-update'
 import { POS_PROTOCOL_VERSION } from './pos-protocol'
 import { registerDiagnosticsIpc } from './diagnostics-runtime'
 import {
+  assertFactoryResetIdle,
+  cleanupFactoryResetArtifacts,
+  registerFactoryResetIpc,
+} from './factory-reset-runtime'
+import {
   isValidOfflineAccountingContext,
   maxTerminalSequence,
   nextTerminalSequence,
@@ -891,6 +896,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  cleanupFactoryResetArtifacts()
   await initDb()
   registerDiagnosticsIpc({
     apiBase: API_BASE,
@@ -899,6 +905,27 @@ app.whenReady().then(async () => {
     getSecureState: readSecureState,
     getMeta,
     query: q,
+  })
+  registerFactoryResetIpc({
+    dbPath,
+    secureStatePath,
+    getSecureState: readSecureState,
+    query: q,
+    getMeta,
+    saveDb,
+    closeDb: () => db.close(),
+    reopenDb: () => {
+      const file = dbPath()
+      db = fs.existsSync(file)
+        ? new SQL.Database(fs.readFileSync(file))
+        : new SQL.Database()
+    },
+    decommission: (payload) =>
+      authenticatedFetch('/terminals/self-decommission', {
+        method: 'POST',
+        body: payload,
+      }),
+    envelope,
   })
   createWindow()
   configureAutoUpdates({
@@ -1299,6 +1326,7 @@ ipcMain.handle('pos:list_held_sales', () => {
 })
 
 ipcMain.handle('pos:hold_sale', (_event, input: any) => {
+  assertFactoryResetIdle()
   const scope = currentHeldSaleScope()
   const items = validateHeldSaleItems(
     input?.items,
@@ -1375,6 +1403,7 @@ ipcMain.handle('pos:hold_sale', (_event, input: any) => {
 ipcMain.handle(
   'pos:resume_held_sale',
   (_event, id: string) => {
+    assertFactoryResetIdle()
     const scope = currentHeldSaleScope()
     const row = get(
       `SELECT *
@@ -1418,6 +1447,7 @@ ipcMain.handle(
 ipcMain.handle(
   'pos:delete_held_sale',
   (_event, id: string) => {
+    assertFactoryResetIdle()
     const scope = currentHeldSaleScope()
     return persistedMutation(() => {
       run(
@@ -1441,6 +1471,7 @@ ipcMain.handle(
 )
 
 ipcMain.handle('pos:sale', (_e, sale: any) => {
+  assertFactoryResetIdle()
   const secure = readSecureState()
   const authSession = secure.auth?.session
   const context = secure.accounting
@@ -1607,6 +1638,7 @@ ipcMain.handle('sync:get_outbox', () =>
 )
 
 ipcMain.handle('sync:mark_sending', (_e, id: string) => {
+  assertFactoryResetIdle()
   return persistedMutation(() => {
     const now = new Date().toISOString()
     run(
@@ -1633,6 +1665,7 @@ ipcMain.handle('sync:mark_sent', (_e, result: {
   server_document_id?: string | null,
   server_document_number?: string | null,
 }) => {
+  assertFactoryResetIdle()
   const now = new Date().toISOString()
   const terminalSequence = String(
     get(`SELECT terminal_sequence FROM outbox WHERE id=?`, [result.id])?.terminal_sequence || '',
@@ -1679,6 +1712,7 @@ ipcMain.handle('sync:mark_failed', (_e, input: {
   error: string,
   retryable: boolean,
 }) => {
+  assertFactoryResetIdle()
   return persistedMutation(() => {
     const now = new Date().toISOString()
     run(
@@ -1727,6 +1761,7 @@ ipcMain.handle('sync:get_status', () => {
 })
 
 ipcMain.handle('sync:set_status', (_e, status: any) => {
+  assertFactoryResetIdle()
   return persistedMutation(() => {
     if (status.sync_status) {
       setMeta(
@@ -1759,6 +1794,7 @@ ipcMain.handle('sync:set_status', (_e, status: any) => {
 })
 
 ipcMain.handle('sync:apply_pull', (_e, data: any) => {
+  assertFactoryResetIdle()
   const products = Array.isArray(data?.products) ? data.products : []
   const stock = Array.isArray(data?.stock) ? data.stock : []
   const sellers = Array.isArray(data?.sellers) ? data.sellers : []

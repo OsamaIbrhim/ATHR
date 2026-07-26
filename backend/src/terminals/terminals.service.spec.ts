@@ -82,6 +82,68 @@ describe('TerminalsService', () => {
     await expect(new TerminalsService(prisma as any).heartbeat(dto, token, actor)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
+  it('revokes the current terminal only after manager confirmation and empty local queues', async () => {
+    const token = 'device-secret';
+    const existing = {
+      id: 'terminal-1',
+      device_id: dto.device_id,
+      terminal_code: 'POS-93DE7EB8',
+      branch_id: 'branch-1',
+      is_revoked: false,
+      device_token_hash: hash(token),
+    };
+    const prisma = {
+      posTerminal: {
+        findUnique: jest.fn().mockResolvedValue(existing),
+        update: jest.fn().mockImplementation(({ data }) => Promise.resolve({ ...existing, ...data })),
+      },
+    };
+
+    const result = await new TerminalsService(prisma as any).selfDecommission({
+      device_id: dto.device_id,
+      terminal_code: existing.terminal_code,
+      pending_count: 0,
+      held_count: 0,
+    }, token, manager);
+
+    expect(result.decommissioned).toBe(true);
+    expect(prisma.posTerminal.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: existing.id },
+      data: expect.objectContaining({
+        is_revoked: true,
+        device_token_hash: null,
+        pending_count: 0,
+        last_sync_status: 'decommissioned',
+      }),
+    }));
+  });
+
+  it('refuses terminal decommission while local operations remain unresolved', async () => {
+    const token = 'device-secret';
+    const existing = {
+      id: 'terminal-1',
+      device_id: dto.device_id,
+      terminal_code: 'POS-93DE7EB8',
+      branch_id: 'branch-1',
+      is_revoked: false,
+      device_token_hash: hash(token),
+    };
+    const prisma = {
+      posTerminal: {
+        findUnique: jest.fn().mockResolvedValue(existing),
+        update: jest.fn(),
+      },
+    };
+
+    await expect(new TerminalsService(prisma as any).selfDecommission({
+      device_id: dto.device_id,
+      terminal_code: existing.terminal_code,
+      pending_count: 1,
+      held_count: 0,
+    }, token, manager)).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.posTerminal.update).not.toHaveBeenCalled();
+  });
+
   it('derives online state from the heartbeat time instead of persisting a stale boolean', async () => {
     const prisma = { posTerminal: { findMany: jest.fn().mockResolvedValue([
       { id: 'online', is_revoked: false, last_seen_at: new Date(Date.now() - 1000) },

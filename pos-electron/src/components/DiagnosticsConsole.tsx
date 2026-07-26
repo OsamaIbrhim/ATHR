@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { bold, PosDiagnostics } from '../electron'
+import { bold, FactoryResetStatus, IpcEnvelope, PosDiagnostics } from '../electron'
 import {
   DeviceCredential,
   Session,
@@ -12,6 +12,11 @@ function display(value: unknown) {
   if (value === null || value === undefined || value === '') return '—'
   if (typeof value === 'boolean') return value ? 'نعم' : 'لا'
   return String(value)
+}
+
+function unwrap<T>(result: IpcEnvelope<T>): T {
+  if (result.ok) return result.data
+  throw new Error(result.error.message)
 }
 
 function localDate(value: unknown) {
@@ -37,6 +42,9 @@ export function DiagnosticsConsole({
   const [data, setData] = useState<PosDiagnostics | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [resetStatus, setResetStatus] = useState<FactoryResetStatus | null>(null)
+  const [confirmation, setConfirmation] = useState('')
+  const [resetting, setResetting] = useState(false)
 
   const rendererState = useMemo(() => ({
     device: {
@@ -64,6 +72,11 @@ export function DiagnosticsConsole({
     setError('')
     try {
       setData(await bold.diagnostics_get())
+      if (session.user.role === 'branch_manager') {
+        setResetStatus(unwrap(
+          await bold.api_factory_reset_status(),
+        ))
+      }
     } catch (caught) {
       setError(
         caught instanceof Error
@@ -100,6 +113,39 @@ export function DiagnosticsConsole({
       )
     } catch (caught) {
       setError((caught as Error).message)
+    }
+  }
+
+  const resetTerminal = async () => {
+    setResetting(true)
+    setError('')
+    setNotice('')
+    try {
+      const latest = unwrap(
+        await bold.api_factory_reset_status(),
+      )
+      setResetStatus(latest)
+      if (!latest.can_reset) {
+        throw new Error(
+          'لا يمكن إلغاء تسجيل الجهاز قبل حسم كل المبيعات والفواتير المعلقة.',
+        )
+      }
+      if (
+        confirmation.trim().toUpperCase() !==
+        device.terminal_code.toUpperCase()
+      ) {
+        throw new Error('اكتب كود الجهاز كاملًا للتأكيد.')
+      }
+      localStorage.clear()
+      unwrap(await bold.api_factory_reset(confirmation))
+      setNotice('تم إلغاء تسجيل الجهاز. سيعاد تشغيل نقطة البيع الآن.')
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : 'تعذر إلغاء تسجيل الجهاز.',
+      )
+      setResetting(false)
     }
   }
 
@@ -210,6 +256,49 @@ export function DiagnosticsConsole({
                 </table>
               )}
             </section>
+
+            {session.user.role === 'branch_manager' && resetStatus && (
+              <section className="diagnostics-reset">
+                <div>
+                  <h3>إلغاء تسجيل الجهاز ومسح البيانات المحلية</h3>
+                  <p>
+                    استخدم هذا الإجراء فقط عند إخراج الجهاز من الخدمة أو نقله.
+                    لن يعمل إلا بعد عدم وجود مبيعات غير محسومة أو فواتير معلقة.
+                  </p>
+                </div>
+                <div className="diagnostics-reset-counts">
+                  <span>عمليات المزامنة: <b>{resetStatus.pending_count}</b></span>
+                  <span>فواتير معلقة: <b>{resetStatus.held_count}</b></span>
+                </div>
+                {!!resetStatus.blockers.length && (
+                  <div className="field-error">
+                    الإجراء متوقف: {resetStatus.blockers.join('، ')}
+                  </div>
+                )}
+                <label>
+                  اكتب كود الجهاز <b className="mono">{device.terminal_code}</b>
+                  <input
+                    value={confirmation}
+                    onChange={(event) => setConfirmation(event.target.value)}
+                    placeholder={device.terminal_code}
+                    autoComplete="off"
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="button danger"
+                  disabled={
+                    resetting ||
+                    !resetStatus.can_reset ||
+                    confirmation.trim().toUpperCase() !==
+                      device.terminal_code.toUpperCase()
+                  }
+                  onClick={() => void resetTerminal()}
+                >
+                  {resetting ? 'جارٍ إلغاء التسجيل…' : 'إلغاء التسجيل ومسح الجهاز'}
+                </button>
+              </section>
+            )}
           </div>
         )}
       </Modal>
