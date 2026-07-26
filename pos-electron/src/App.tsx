@@ -16,6 +16,7 @@ import { CloseShiftScreen, OpenShiftScreen } from './screens/ShiftScreens'
 import { RegisterScreen } from './screens/RegisterScreen'
 import { SalesScreen } from './screens/SalesScreen'
 import { ScreenLoader, Toasts, ToastValue } from './components/ui'
+import { DiagnosticsConsole } from './components/DiagnosticsConsole'
 
 const emptySync: SyncState = {
   device_id: '',
@@ -336,6 +337,12 @@ export default function App() {
           notify={notify}
         />
       )}
+      <DiagnosticsConsole
+        device={device}
+        session={session}
+        shift={shift}
+        syncState={syncState}
+      />
       <Toasts
         values={toasts}
         dismiss={(id) =>

@@ -30,6 +30,63 @@ export type LocalSale = {
   last_error?: string | null
 }
 
+export type PosDiagnostics = {
+  schema_version: number
+  generated_at: string
+  application: {
+    name: string
+    version: string
+    protocol_version: number
+    api_base: string
+    packaged: boolean
+  }
+  runtime: {
+    platform: string
+    architecture: string
+    os_release: string
+    electron_version: string | null
+    node_version: string
+  }
+  paths: {
+    user_data: string
+    database: string
+    database_size_bytes: number
+  }
+  terminal: {
+    enrolled: boolean
+    device_id?: string | null
+    terminal_id?: string | null
+    terminal_code?: string | null
+    branch_id?: string | null
+  }
+  sync: {
+    status: string
+    last_sync_at: string | null
+    last_error: string | null
+    pending_count: number
+  }
+  outbox: {
+    counts: Record<string, number>
+    unresolved: Array<{
+      id: string
+      type: string
+      status: string
+      created_at: string | null
+      attempt_count: number
+      last_attempt_at: string | null
+      next_attempt_at: string | null
+      terminal_sequence: string | null
+      last_error: string | null
+      error_details: {
+        code: string | null
+        http_status: number | null
+        request_id: string | null
+      }
+      updated_at: string | null
+    }>
+  }
+}
+
 export type BoldBridge = {
   search(query: string): Promise<Product[]>
   stock(variantId: string): Promise<number>
@@ -82,6 +139,13 @@ export type BoldBridge = {
   sync_set_status(
     status: Partial<SyncState>,
   ): Promise<{ ok: boolean }>
+  diagnostics_get(): Promise<PosDiagnostics>
+  diagnostics_copy(rendererState: unknown): Promise<{ ok: boolean; bytes: number }>
+  diagnostics_export(rendererState: unknown): Promise<{
+    ok: boolean
+    canceled: boolean
+    filename?: string
+  }>
 
   api_bootstrap(): Promise<IpcEnvelope<any>>
   api_enroll(code: string, terminal: unknown): Promise<IpcEnvelope<any>>

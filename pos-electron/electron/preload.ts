@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld('bold', {
   sync_apply_pull: (data: any) => ipcRenderer.invoke('sync:apply_pull', data),
   sync_get_status: () => ipcRenderer.invoke('sync:get_status'),
   sync_set_status: (status: any) => ipcRenderer.invoke('sync:set_status', status),
+  diagnostics_get: () => ipcRenderer.invoke('diagnostics:get'),
+  diagnostics_copy: (rendererState: any) =>
+    ipcRenderer.invoke('diagnostics:copy', rendererState),
+  diagnostics_export: (rendererState: any) =>
+    ipcRenderer.invoke('diagnostics:export', rendererState),
   api_bootstrap: () => ipcRenderer.invoke('api:bootstrap'),
   api_enroll: (code: string, terminal: any) =>
     ipcRenderer.invoke('api:enroll', code, terminal),
