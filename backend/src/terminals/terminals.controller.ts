@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { CreateTerminalEnrollmentDto, EnrollTerminalDto, TerminalHeartbeatDto, UpdateTerminalDto } from './dto/terminal.dto';
 import { TerminalsService } from './terminals.service';
 import { Public } from '../auth/public.decorator';
+import { PosProtocolGuard } from '../updates/pos-protocol.guard';
 
 @Controller('terminals')
 export class TerminalsController {
@@ -28,6 +29,7 @@ export class TerminalsController {
 
   @Roles('branch_manager', 'cashier')
   @RequireCapabilities('sales.create')
+  @UseGuards(new PosProtocolGuard())
   @Post('heartbeat')
   heartbeat(
     @Body() dto: TerminalHeartbeatDto,

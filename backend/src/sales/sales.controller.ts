@@ -10,6 +10,7 @@ import {
   Query,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common'
 import { Request, Response } from 'express'
 import { SalesService } from './sales.service'
@@ -23,6 +24,7 @@ import { ListSalesDto } from './dto/list-sales.dto'
 import { resolveBranchScope } from '../auth/branch-access'
 import { TerminalsService } from '../terminals/terminals.service'
 import { ListReturnsDto } from './dto/list-returns.dto'
+import { PosProtocolGuard } from '../updates/pos-protocol.guard'
 
 @Controller()
 export class SalesController {
@@ -61,6 +63,7 @@ export class SalesController {
 
   @Roles('branch_manager', 'cashier')
   @RequireCapabilities('sales.create')
+  @UseGuards(new PosProtocolGuard())
   @Post('pos/sale')
   async sale(
     @Body() dto: CreateSaleDto,
@@ -85,6 +88,7 @@ export class SalesController {
 
   @Roles('owner', 'branch_manager', 'cashier')
   @RequireCapabilities('returns.create')
+  @UseGuards(new PosProtocolGuard())
   @Post('pos/return')
   async ret(
     @Body() dto: CreateReturnDto,
@@ -105,6 +109,7 @@ export class SalesController {
 
   @Roles('owner', 'branch_manager', 'cashier')
   @RequireCapabilities('returns.create')
+  @UseGuards(new PosProtocolGuard())
   @Get('pos/invoices/lookup')
   async lookupInvoice(
     @Query('reference') reference: string,
