@@ -1,4 +1,7 @@
 import {
+  materializeSaleReviewCommand,
+  parseStoredSaleReviewCommand,
+  saleReviewCommandJson,
   saleReviewFingerprint,
   saleReviewRejectionConfirmed,
   sanitizeSaleReviewCommand,
@@ -15,7 +18,10 @@ const command: any = {
   terminal_sequence: '1',
   occurred_at: '2026-07-25T17:47:21.666Z',
   offline_accounting_token: 'old-key.payload.signature',
-  items: [{ variant_id: '77777777-7777-4777-8777-777777777777', qty: 1 }],
+  items: [{
+    variant_id: '77777777-7777-4777-8777-777777777777',
+    qty: 1,
+  }],
   payment_method: 'cash',
   local_total: 320.12,
 };
@@ -25,6 +31,44 @@ describe('sale review policy', () => {
     const safe = sanitizeSaleReviewCommand(command) as any;
     expect(safe.offline_accounting_token).toBeUndefined();
     expect(safe.offline_accounting_token_hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('persists a plain Prisma-compatible JSON command', () => {
+    const json = saleReviewCommandJson(
+      sanitizeSaleReviewCommand(command),
+    );
+    expect(JSON.parse(JSON.stringify(json))).toMatchObject({
+      sync_id: command.sync_id,
+      items: [{
+        variant_id: command.items[0].variant_id,
+        qty: 1,
+      }],
+    });
+    expect(json).not.toHaveProperty('offline_accounting_token');
+  });
+
+  it('validates stored JSON before restoring an executable sale command', () => {
+    const stored = parseStoredSaleReviewCommand(
+      saleReviewCommandJson(sanitizeSaleReviewCommand(command)),
+    );
+    const restored = materializeSaleReviewCommand(
+      stored,
+      'new-key.payload.signature',
+    );
+    expect(restored).toMatchObject({
+      sync_id: command.sync_id,
+      branch_id: command.branch_id,
+      offline_accounting_token: 'new-key.payload.signature',
+      items: command.items,
+    });
+  });
+
+  it('rejects malformed stored commands instead of casting them', () => {
+    expect(() => parseStoredSaleReviewCommand({
+      offline_accounting_token_hash: 'a'.repeat(64),
+      sync_id: command.sync_id,
+      items: [],
+    })).toThrow('Stored sale review command failed validation');
   });
 
   it('uses a deterministic command and terminal fingerprint', () => {

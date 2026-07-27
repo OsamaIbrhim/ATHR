@@ -24,6 +24,9 @@ import {
   SubmitSaleReviewDto,
 } from './dto/sale-review.dto';
 import {
+  materializeSaleReviewCommand,
+  parseStoredSaleReviewCommand,
+  saleReviewCommandJson,
   saleReviewFingerprint,
   saleReviewRejectionConfirmed,
   sanitizeSaleReviewCommand,
@@ -56,6 +59,13 @@ const reviewInclude = {
 } as const;
 
 const PROCESSING_STALE_MS = 2 * 60_000;
+
+function isResolvedReviewStatus(status: PosSaleReviewStatus) {
+  return (
+    status === PosSaleReviewStatus.approved ||
+    status === PosSaleReviewStatus.linked
+  );
+}
 
 @Injectable()
 export class SaleReviewsService {
@@ -119,9 +129,7 @@ export class SaleReviewsService {
   }
 
   private posView(review: any) {
-    const resolved =
-      review.status === PosSaleReviewStatus.approved ||
-      review.status === PosSaleReviewStatus.linked;
+    const resolved = isResolvedReviewStatus(review.status);
     return {
       id: review.id,
       sync_id: review.sync_id,
@@ -170,10 +178,7 @@ export class SaleReviewsService {
   ) {
     this.assertInvoiceContext(invoice, review);
     if (
-      [
-        PosSaleReviewStatus.approved,
-        PosSaleReviewStatus.linked,
-      ].includes(review.status) &&
+      isResolvedReviewStatus(review.status) &&
       review.linked_invoice_id === invoice.id
     ) {
       return review;
@@ -309,6 +314,7 @@ export class SaleReviewsService {
     this.assertPosContext(dto, actor, terminal);
     const fingerprint = saleReviewFingerprint(dto.command, terminal.id);
     const safeCommand = sanitizeSaleReviewCommand(dto.command);
+    const safeCommandJson = saleReviewCommandJson(safeCommand);
     const identity = {
       branch_id: dto.command.branch_id,
       terminal_id: terminal.id,
@@ -340,7 +346,7 @@ export class SaleReviewsService {
             ...identity,
             local_invoice_number: dto.local_invoice_number,
             local_total: dto.local_total,
-            command: safeCommand as Prisma.InputJsonValue,
+            command: safeCommandJson,
             command_fingerprint: fingerprint,
             ticket_key_id: ticketKeyId(
               dto.command.offline_accounting_token,
@@ -367,7 +373,7 @@ export class SaleReviewsService {
             ...identity,
             local_invoice_number: dto.local_invoice_number,
             local_total: dto.local_total,
-            command: safeCommand as Prisma.InputJsonValue,
+            command: safeCommandJson,
             command_fingerprint: fingerprint,
             ticket_key_id: ticketKeyId(
               dto.command.offline_accounting_token,
@@ -452,10 +458,7 @@ export class SaleReviewsService {
     const invoice = await this.findInvoice(syncId);
     if (
       invoice &&
-      ![
-        PosSaleReviewStatus.approved,
-        PosSaleReviewStatus.linked,
-      ].includes(review.status)
+      !isResolvedReviewStatus(review.status)
     ) {
       return this.posView(
         await this.linkExisting(review, invoice, actor),
@@ -571,11 +574,7 @@ export class SaleReviewsService {
 
     review = await this.getRaw(id, actor);
     try {
-      const stored = review.command as unknown as Record<string, any>;
-      const {
-        offline_accounting_token_hash: _hash,
-        ...command
-      } = stored;
+      const command = parseStoredSaleReviewCommand(review.command);
       const role = review.origin_cashier.role;
       if (!['cashier', 'branch_manager'].includes(role)) {
         throw new UnprocessableEntityException(
@@ -592,10 +591,7 @@ export class SaleReviewsService {
         occurred_at: new Date(String(command.occurred_at)),
       });
       const invoice = await this.sales.createSale(
-        {
-          ...command,
-          offline_accounting_token: ticket.token,
-        },
+        materializeSaleReviewCommand(command, ticket.token),
         actor,
         {
           id: review.terminal_id,

@@ -67,7 +67,10 @@
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "setupFiles": [
+      "reflect-metadata"
+    ]
   },
   "devDependencies": {
     "@nestjs/cli": "11.0.24",
