@@ -49,6 +49,42 @@ export class OfflineAccountingTicketService {
     };
   }
 
+  /**
+   * Issues a one-operation replacement ticket after an audited manager review.
+   * The replacement remains bound to the original cashier, branch, terminal,
+   * shift, session id and occurred_at; it cannot authorize another command.
+   */
+  issueReconciliation(input: {
+    session_id: string;
+    user_id: string;
+    role: OfflineAccountingRole;
+    branch_id: string;
+    terminal_id: string;
+    shift_id: string;
+    occurred_at: Date;
+  }) {
+    const occurredAtMs = input.occurred_at.getTime();
+    if (!Number.isFinite(occurredAtMs)) {
+      throw new Error('Reconciliation sale occurred_at is invalid');
+    }
+    const expiresAt = new Date(
+      occurredAtMs + this.configuration.ttlMs,
+    ).toISOString();
+    return signOfflineAccountingTicket(
+      this.configuration.activeKey,
+      {
+        session_id: input.session_id,
+        user_id: input.user_id,
+        role: input.role,
+        branch_id: input.branch_id,
+        terminal_id: input.terminal_id,
+        shift_id: input.shift_id,
+        issued_at: input.occurred_at.toISOString(),
+        expires_at: expiresAt,
+      },
+    );
+  }
+
   verifySaleContext(input: {
     token: string;
     offline_session_id: string;

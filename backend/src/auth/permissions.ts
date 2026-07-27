@@ -7,6 +7,7 @@ export const CAPABILITIES = [
   'inventory.read',
   'sales.read',
   'sales.create',
+  'sales.reconcile',
   'returns.create',
   'customers.read',
   'customers.manage',
@@ -35,7 +36,7 @@ const roleCapabilities: Record<Role, Capability[]> = {
   owner: [...CAPABILITIES],
   branch_manager: [
     'dashboard.read', 'products.read', 'products.manage', 'inventory.read',
-    'sales.read', 'sales.create', 'returns.create', 'customers.read',
+    'sales.read', 'sales.create', 'sales.reconcile', 'returns.create', 'customers.read',
     'customers.manage', 'purchasing.read', 'purchasing.manage',
     'suppliers.manage', 'pricing.manage', 'offers.manage', 'transfers.manage',
     'reports.read', 'reports.send', 'shifts.manage', 'terminals.read',

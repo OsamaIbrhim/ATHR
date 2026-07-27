@@ -71,6 +71,34 @@ describe('OfflineAccountingTicketService', () => {
     ).toThrow(UnprocessableEntityException);
   });
 
+  it('issues a manager-approved replacement ticket bound to the original sale context', () => {
+    const service = createService();
+    const occurredAt = new Date('2026-07-22T10:30:00.000Z');
+    const ticket = service.issueReconciliation({
+      session_id: '66666666-6666-4666-8666-666666666666',
+      user_id: identity.user_id,
+      role: identity.role,
+      branch_id: identity.branch_id,
+      terminal_id: identity.terminal_id,
+      shift_id: identity.shift_id,
+      occurred_at: occurredAt,
+    });
+
+    expect(service.verifySaleContext({
+      token: ticket.token,
+      offline_session_id: ticket.session_id,
+      origin_cashier_id: identity.user_id,
+      branch_id: identity.branch_id,
+      terminal_id: identity.terminal_id,
+      shift_id: identity.shift_id,
+      occurred_at: occurredAt,
+      received_at: new Date('2026-07-27T10:30:00.000Z'),
+    })).toMatchObject({
+      session_id: ticket.session_id,
+      user_id: identity.user_id,
+    });
+  });
+
   it('treats the ticket expiry as an exclusive payment boundary', () => {
     const service = createService();
     const now = Date.parse('2026-07-22T10:00:00.000Z');
