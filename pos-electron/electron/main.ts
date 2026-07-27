@@ -50,6 +50,10 @@ import {
   sameMoney,
   toCents,
 } from './money'
+import {
+  saleReviewSubmission,
+  validateSaleReviewResolution,
+} from './sale-review-policy'
 // @ts-ignore
 import initSqlJs from 'sql.js'
 
@@ -751,6 +755,10 @@ async function initDb() {
       server_document_id TEXT,
       server_document_number TEXT,
       terminal_sequence TEXT,
+      review_id TEXT,
+      review_status TEXT,
+      review_reason TEXT,
+      review_updated_at TEXT,
       updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS sales_local (
@@ -768,7 +776,9 @@ async function initDb() {
       terminal_sequence TEXT,
       server_invoice_id TEXT,
       server_invoice_number TEXT,
-      synced_at TEXT
+      synced_at TEXT,
+      voided_at TEXT,
+      void_reason TEXT
     );
     CREATE TABLE IF NOT EXISTS held_sales (
       id TEXT PRIMARY KEY,
@@ -816,7 +826,13 @@ async function initDb() {
     `ALTER TABLE outbox ADD COLUMN server_document_id TEXT`,
     `ALTER TABLE outbox ADD COLUMN server_document_number TEXT`,
     `ALTER TABLE outbox ADD COLUMN terminal_sequence TEXT`,
+    `ALTER TABLE outbox ADD COLUMN review_id TEXT`,
+    `ALTER TABLE outbox ADD COLUMN review_status TEXT`,
+    `ALTER TABLE outbox ADD COLUMN review_reason TEXT`,
+    `ALTER TABLE outbox ADD COLUMN review_updated_at TEXT`,
     `ALTER TABLE outbox ADD COLUMN updated_at TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN voided_at TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN void_reason TEXT`,
   ]) {
     try { db.exec(migration) } catch {}
   }
@@ -1310,7 +1326,13 @@ ipcMain.handle('pos:list_local_sales', () =>
        COALESCE(o.sync_status,'sent') AS sync_status,
        COALESCE(o.attempt_count,0) AS attempt_count,
        o.last_attempt_at,
-       o.last_error
+       o.last_error,
+       o.review_id,
+       o.review_status,
+       o.review_reason,
+       o.review_updated_at,
+       s.voided_at,
+       s.void_reason
      FROM sales_local s
      LEFT JOIN outbox o ON o.id=s.sync_id
      ORDER BY COALESCE(s.occurred_at,s.created_at) DESC
@@ -1635,6 +1657,214 @@ ipcMain.handle('sync:get_outbox', () =>
        LENGTH(COALESCE(o.terminal_sequence,'')),
        o.terminal_sequence,
        o.created_at`),
+)
+
+ipcMain.handle(
+  'api:reconcile_sale_reviews',
+  () =>
+    envelope(async () => {
+      assertFactoryResetIdle()
+      const rows = q(
+        `SELECT
+           o.*,
+           s.total AS local_total,
+           s.invoice_number AS local_invoice_number
+         FROM outbox o
+         LEFT JOIN sales_local s ON s.sync_id=o.id
+         WHERE o.type='sale'
+           AND o.sync_status='failed'
+         ORDER BY o.created_at`,
+      )
+      let awaiting = 0
+      let resolved = 0
+
+      for (const row of rows) {
+        let rawResolution: any
+
+        try {
+          rawResolution = await authenticatedFetch(
+            `/pos/sale-reviews/${encodeURIComponent(String(row.id))}`,
+          )
+        } catch (error) {
+          if (Number((error as ApiFailure)?.status || 0) !== 404) {
+            throw error
+          }
+        }
+
+        if (!rawResolution) {
+          rawResolution = await authenticatedFetch(
+            '/pos/sale-reviews',
+            {
+              method: 'POST',
+              body: saleReviewSubmission(row),
+            },
+          )
+        }
+
+        const resolution = validateSaleReviewResolution(
+          rawResolution,
+          String(row.id),
+        )
+        const reviewReason = String(
+          resolution.review_reason ||
+            resolution.resolution_error ||
+            '',
+        ).slice(0, 1000)
+        const reviewUpdatedAt = String(
+          resolution.updated_at || new Date().toISOString(),
+        )
+        const now = new Date().toISOString()
+        let acknowledgedSequence = ''
+
+        persistedMutation(() => {
+          const current = get(
+            `SELECT id,payload,sync_status,terminal_sequence
+             FROM outbox
+             WHERE id=?`,
+            [row.id],
+          )
+          if (!current) return
+          if (
+            current.sync_status === 'sent' ||
+            current.sync_status === 'reversed'
+          ) {
+            return
+          }
+          if (current.sync_status !== 'failed') {
+            throw new Error(
+              'Only a failed sale can receive a review decision',
+            )
+          }
+
+          if (resolution.action === 'wait') {
+            run(
+              `UPDATE outbox
+               SET review_id=?, review_status=?, review_reason=?,
+                   review_updated_at=?, updated_at=?
+               WHERE id=? AND sync_status='failed'`,
+              [
+                resolution.id,
+                resolution.status,
+                reviewReason || null,
+                reviewUpdatedAt,
+                now,
+                row.id,
+              ],
+            )
+            return
+          }
+
+          if (resolution.action === 'mark_sent') {
+            const invoiceId = String(resolution.invoice?.id || '')
+            const invoiceNumber = String(
+              resolution.invoice?.invoice_number || '',
+            )
+            run(
+              `UPDATE outbox
+               SET sync_status='sent', server_document_id=?,
+                   server_document_number=?, review_id=?, review_status=?,
+                   review_reason=?, review_updated_at=?, last_error=NULL,
+                   updated_at=?
+               WHERE id=? AND sync_status='failed'`,
+              [
+                invoiceId,
+                invoiceNumber,
+                resolution.id,
+                resolution.status,
+                reviewReason || null,
+                reviewUpdatedAt,
+                now,
+                row.id,
+              ],
+            )
+            if (db.getRowsModified() !== 1) {
+              throw new Error(
+                'Failed sale changed before approval was applied',
+              )
+            }
+            run(
+              `UPDATE sales_local
+               SET server_invoice_id=?, server_invoice_number=?, synced_at=?,
+                   voided_at=NULL, void_reason=NULL
+               WHERE sync_id=?`,
+              [invoiceId, invoiceNumber, now, row.id],
+            )
+            acknowledgedSequence = String(
+              current.terminal_sequence || '',
+            )
+            resolved += 1
+            return
+          }
+
+          const command = JSON.parse(String(current.payload || ''))
+          const items = Array.isArray(command?.items) ? command.items : []
+          if (!items.length) {
+            throw new Error(
+              'Rejected sale has no immutable items to reverse',
+            )
+          }
+
+          for (const item of items) {
+            const variantId = String(item?.variant_id || '')
+            const qty = Number(item?.qty)
+            if (!variantId || !Number.isInteger(qty) || qty <= 0) {
+              throw new Error(
+                'Rejected sale contains an invalid local stock line',
+              )
+            }
+            run(
+              `INSERT INTO stock (variant_id,qty)
+               VALUES (?,?)
+               ON CONFLICT(variant_id)
+               DO UPDATE SET qty=qty+excluded.qty`,
+              [variantId, qty],
+            )
+          }
+
+          run(
+            `UPDATE outbox
+             SET sync_status='reversed', review_id=?, review_status=?,
+                 review_reason=?, review_updated_at=?, last_error=NULL,
+                 updated_at=?
+             WHERE id=? AND sync_status='failed'`,
+            [
+              resolution.id,
+              resolution.status,
+              reviewReason || 'Rejected by branch management',
+              reviewUpdatedAt,
+              now,
+              row.id,
+            ],
+          )
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              'Failed sale changed before reversal was applied',
+            )
+          }
+          run(
+            `UPDATE sales_local
+             SET voided_at=?, void_reason=?
+             WHERE sync_id=?`,
+            [
+              now,
+              reviewReason || 'Rejected by branch management',
+              row.id,
+            ],
+          )
+          acknowledgedSequence = String(
+            current.terminal_sequence || '',
+          )
+          resolved += 1
+        })
+
+        if (acknowledgedSequence) {
+          updateSecureAcknowledgedSequence(acknowledgedSequence)
+        }
+        if (resolution.action === 'wait') awaiting += 1
+      }
+
+      return { awaiting, resolved }
+    }),
 )
 
 ipcMain.handle('sync:mark_sending', (_e, id: string) => {

@@ -253,6 +253,22 @@ export default function App() {
     setClosingShift(true)
   }, [notify, syncState.pending_count, syncState.sync_status])
 
+  const logoutCashier = useCallback(async () => {
+    try {
+      await api.logout()
+      setSession(null)
+      setShift(null)
+      setAccountingContext(null)
+      setView('register')
+      notify(
+        'تم تسجيل خروج الكاشير. الوردية والعمليات المحلية محفوظة ولم يتم حذفها.',
+        'success',
+      )
+    } catch (error) {
+      notify((error as Error).message, 'error')
+    }
+  }, [notify])
+
   if (booting) {
     return <ScreenLoader message="جارٍ فحص الجهاز والجلسة الآمنة…" />
   }
@@ -323,6 +339,7 @@ export default function App() {
           onSync={syncNow}
           onSales={() => setView('sales')}
           onCloseShift={requestShiftClose}
+          onLogout={logoutCashier}
           notify={notify}
         />
       ) : (
@@ -334,6 +351,7 @@ export default function App() {
           onRegister={() => setView('register')}
           onSync={syncNow}
           onCloseShift={requestShiftClose}
+          onLogout={logoutCashier}
           notify={notify}
         />
       )}

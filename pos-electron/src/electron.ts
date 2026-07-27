@@ -28,6 +28,12 @@ export type LocalSale = {
   attempt_count?: number
   last_attempt_at?: string | null
   last_error?: string | null
+  review_id?: string | null
+  review_status?: string | null
+  review_reason?: string | null
+  review_updated_at?: string | null
+  voided_at?: string | null
+  void_reason?: string | null
 }
 
 export type PosDiagnostics = {
@@ -135,6 +141,10 @@ export type BoldBridge = {
   delete_held_sale(id: string): Promise<{ ok: boolean }>
 
   sync_get_outbox(): Promise<any[]>
+  api_reconcile_sale_reviews(): Promise<IpcEnvelope<{
+    awaiting: number
+    resolved: number
+  }>>
   sync_mark_sending(id: string): Promise<{ ok: boolean }>
   sync_mark_sent(result: {
     id: string

@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('bold', {
   delete_held_sale: (id: string) =>
     ipcRenderer.invoke('pos:delete_held_sale', id),
   sync_get_outbox: () => ipcRenderer.invoke('sync:get_outbox'),
+  api_reconcile_sale_reviews: () =>
+    ipcRenderer.invoke('api:reconcile_sale_reviews'),
   sync_mark_sending: (id: string) =>
     ipcRenderer.invoke('sync:mark_sending', id),
   sync_mark_sent: (result: any) =>

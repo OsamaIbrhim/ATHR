@@ -20,11 +20,11 @@ function hasSignedPrice(item: Pick<Product, 'price_version' | 'price_token'>) {
 }
 
 export function RegisterScreen({
-  session, device, shift, accountingContext, syncState, onSync, onSales, onCloseShift, notify,
+  session, device, shift, accountingContext, syncState, onSync, onSales, onCloseShift, onLogout, notify,
 }:{
   session:Session, device:DeviceCredential, shift:Shift,
   accountingContext:OfflineAccountingContext|null, syncState:SyncState,
-  onSync:()=>void, onSales:()=>void, onCloseShift:()=>void,
+  onSync:()=>void, onSales:()=>void, onCloseShift:()=>void, onLogout:()=>void,
   notify:(message:string,tone?:'success'|'error'|'info')=>void,
 }) {
   const [cart,setCart]=useState<CartItem[]>([])
@@ -207,7 +207,7 @@ export function RegisterScreen({
     <header className="app-header">
       <div className="header-brand"><div className="brand-mark small">B</div><div><b>Bold POS</b><span>{device.terminal_code}</span></div></div>
       <nav className="main-nav"><button className="active">نقطة البيع</button><button onClick={onSales}>الفواتير والمرتجعات</button></nav>
-      <div className="header-status"><button className={`sync-pill ${syncState.sync_status}`} onClick={onSync}><span/><b>{syncState.sync_status==='success'?'متصل':syncState.sync_status==='syncing'?'مزامنة…':syncState.sync_status==='offline'?'غير متصل':'تنبيه'}</b><small>{syncState.pending_count} معلّق</small></button><div className="cashier-chip"><b>{session.user.name}</b><span>وردية منذ {new Date(shift.opened_at).toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})}</span></div><button className="button secondary compact" onClick={onCloseShift}>إغلاق الوردية</button></div>
+      <div className="header-status"><button className={`sync-pill ${syncState.sync_status}`} onClick={onSync}><span/><b>{syncState.sync_status==='success'?'متصل':syncState.sync_status==='syncing'?'مزامنة…':syncState.sync_status==='offline'?'غير متصل':'تنبيه'}</b><small>{syncState.pending_count} معلّق</small></button><div className="cashier-chip"><b>{session.user.name}</b><span>وردية منذ {new Date(shift.opened_at).toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})}</span></div><button className="button secondary compact" onClick={onLogout}>تسجيل الخروج</button><button className="button secondary compact" onClick={onCloseShift}>إغلاق الوردية</button></div>
     </header>
 
     <main className="register-layout">

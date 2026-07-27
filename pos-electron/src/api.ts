@@ -408,6 +408,9 @@ export const api = {
       body: payload,
     }),
 
+  reconcileSaleReviews: async () =>
+    unwrap(await bold.api_reconcile_sale_reviews()),
+
   pricing: (variantId: string) =>
     request<any>('/pricing/calculate', {
       method: 'POST',
