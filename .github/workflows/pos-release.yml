@@ -54,7 +54,10 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.11.1'
+          # electron-builder 26.15.x currently resolves build-time packages
+          # that require Node >=22.12. Pin the release runtime so npm ci and
+          # installer generation use the same supported toolchain every run.
+          node-version: '22.12.0'
           cache: npm
           cache-dependency-path: pos-electron/package-lock.json
 
@@ -79,6 +82,9 @@ jobs:
         working-directory: pos-electron
         run: |
           npm ci
+          node --version
+          node -e "const [major, minor] = process.versions.node.split('.').map(Number); if (major < 22 || (major === 22 && minor < 12)) throw new Error('POS release build requires Node.js >=22.12.0')"
+          node -e "require('@noble/hashes/blake2.js'); console.log('electron-builder hash dependency OK')"
           npm run test:soft
           npm run dist
 
