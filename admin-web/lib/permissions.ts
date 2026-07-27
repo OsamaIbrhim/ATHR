@@ -3,6 +3,7 @@ import type { AdminUser } from './api'
 export const NAV_ITEMS = [
   { href: '/', label: 'لوحة التحكم', capability: 'dashboard.read' },
   { href: '/sales', label: 'فواتير المبيعات', capability: 'sales.read' },
+  { href: '/sale-reviews', label: 'مراجعة عمليات POS', capability: 'sales.reconcile' },
   { href: '/products', label: 'المنتجات', capability: 'products.read' },
   { href: '/inventory', label: 'المخزون', capability: 'inventory.read' },
   { href: '/customers', label: 'العملاء', capability: 'customers.read' },
@@ -22,6 +23,7 @@ export const NAV_ITEMS = [
 
 export type Capability = typeof NAV_ITEMS[number]['capability']
   | 'products.manage'
+  | 'sales.reconcile'
   | 'customers.manage'
   | 'purchasing.manage'
   | 'terminals.manage'

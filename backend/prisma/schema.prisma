@@ -33,6 +33,8 @@ model Branch {
   offer_suggestions     OfferSuggestion[]
   pos_terminals         PosTerminal[]
   pos_enrollment_codes  PosTerminalEnrollment[]
+  sale_reviews          PosSaleReview[]
+  terminal_sequence_voids PosTerminalSequenceVoid[]
 }
 
 model User {
@@ -72,6 +74,11 @@ model User {
   seller_commission_override SellerCommissionOverride?
   closed_seller_periods SellerCommissionPeriod[] @relation("SellerPeriodClosedBy")
   seller_period_rows SellerCommissionPeriodRow[] @relation("SellerPeriodSeller")
+  submitted_sale_reviews PosSaleReview[] @relation("SaleReviewSubmittedBy")
+  reviewed_sale_reviews PosSaleReview[] @relation("SaleReviewReviewedBy")
+  origin_sale_reviews PosSaleReview[] @relation("SaleReviewOriginCashier")
+  seller_sale_reviews PosSaleReview[] @relation("SaleReviewSeller")
+  approved_sequence_voids PosTerminalSequenceVoid[] @relation("TerminalSequenceVoidApprovedBy")
 }
 
 model RefreshToken {
@@ -403,6 +410,7 @@ model SalesInvoice {
   items               SalesInvoiceItem[]
   original_returns    Return[]            @relation("OriginalInvoiceReturns")
   exchange_returns    Return[]            @relation("ExchangeInvoiceReturns")
+  sale_review         PosSaleReview?       @relation("SaleReviewLinkedInvoice")
 
   @@unique([terminal_id, terminal_sequence])
   @@index([branch_id, occurred_at])
@@ -440,6 +448,8 @@ model PosTerminal {
   created_at          DateTime                @default(now())
   updated_at          DateTime                @updatedAt
   sales               SalesInvoice[]
+  sale_reviews        PosSaleReview[]
+  sequence_voids      PosTerminalSequenceVoid[]
 
   @@index([branch_id, last_seen_at])
 }
@@ -808,6 +818,82 @@ model Shift {
   notes           String?
   sales           SalesInvoice[]
   returns         Return[]
+  sale_reviews    PosSaleReview[]
 
   @@index([branch_id, opened_at])
+}
+
+enum PosSaleReviewStatus {
+  pending
+  processing
+  approved
+  rejected
+  linked
+}
+
+enum PosSaleReviewDecision {
+  approve_reissue
+  reject_void
+  link_existing
+}
+
+model PosSaleReview {
+  id                       String                @id @default(uuid()) @db.Uuid
+  sync_id                  String                @unique @db.Uuid
+  branch_id                String                @db.Uuid
+  branch                   Branch                @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  terminal_id              String                @db.Uuid
+  terminal                 PosTerminal           @relation(fields: [terminal_id], references: [id], onDelete: Restrict)
+  origin_cashier_id        String                @db.Uuid
+  origin_cashier           User                  @relation("SaleReviewOriginCashier", fields: [origin_cashier_id], references: [id], onDelete: Restrict)
+  seller_id                String                @db.Uuid
+  seller                   User                  @relation("SaleReviewSeller", fields: [seller_id], references: [id], onDelete: Restrict)
+  shift_id                 String                @db.Uuid
+  shift                    Shift                 @relation(fields: [shift_id], references: [id], onDelete: Restrict)
+  terminal_sequence        BigInt
+  local_invoice_number     String                @db.VarChar(120)
+  local_total              Decimal               @db.Decimal(12, 2)
+  command                  Json
+  command_fingerprint      String                @db.VarChar(64)
+  ticket_key_id            String?               @db.VarChar(32)
+  error_code               String                @db.VarChar(100)
+  error_message            String                @db.VarChar(1000)
+  source_request_id        String?               @db.VarChar(100)
+  attempt_count            Int                   @default(0)
+  status                   PosSaleReviewStatus   @default(pending)
+  decision                 PosSaleReviewDecision?
+  submitted_by             String                @db.Uuid
+  submitter                User                  @relation("SaleReviewSubmittedBy", fields: [submitted_by], references: [id], onDelete: Restrict)
+  reviewed_by              String?               @db.Uuid
+  reviewer                 User?                 @relation("SaleReviewReviewedBy", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  review_reason            String?               @db.VarChar(500)
+  resolution_error         String?               @db.VarChar(1000)
+  linked_invoice_id        String?               @unique @db.Uuid
+  linked_invoice           SalesInvoice?         @relation("SaleReviewLinkedInvoice", fields: [linked_invoice_id], references: [id], onDelete: SetNull)
+  reviewed_at              DateTime?
+  created_at               DateTime              @default(now())
+  updated_at               DateTime              @updatedAt
+
+  @@index([branch_id, status, created_at(sort: Desc)], map: "PosSaleReview_branch_status_created_idx")
+  @@index([terminal_id, status, created_at(sort: Desc)], map: "PosSaleReview_terminal_status_created_idx")
+  @@index([shift_id, status], map: "PosSaleReview_shift_status_idx")
+  @@index([origin_cashier_id, created_at(sort: Desc)], map: "PosSaleReview_origin_cashier_created_idx")
+}
+
+model PosTerminalSequenceVoid {
+  id             String      @id @default(uuid()) @db.Uuid
+  sync_id        String      @unique @db.Uuid
+  branch_id      String      @db.Uuid
+  branch         Branch      @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  terminal_id    String      @db.Uuid
+  terminal       PosTerminal @relation(fields: [terminal_id], references: [id], onDelete: Restrict)
+  sequence       BigInt
+  approved_by    String      @db.Uuid
+  approver       User        @relation("TerminalSequenceVoidApprovedBy", fields: [approved_by], references: [id], onDelete: Restrict)
+  reason         String      @db.VarChar(500)
+  created_at     DateTime    @default(now())
+
+  @@unique([terminal_id, sequence], map: "PosTerminalSequenceVoid_terminal_sequence_key")
+  @@index([branch_id, created_at(sort: Desc)], map: "PosTerminalSequenceVoid_branch_created_idx")
+  @@index([terminal_id, created_at(sort: Desc)], map: "PosTerminalSequenceVoid_terminal_created_idx")
 }
