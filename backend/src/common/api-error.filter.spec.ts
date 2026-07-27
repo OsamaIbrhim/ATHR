@@ -1,4 +1,10 @@
-import { BadRequestException, ConflictException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { toFriendlyError } from './api-error.filter';
 
 describe('friendly API errors', () => {
@@ -24,6 +30,33 @@ describe('friendly API errors', () => {
       status: 409,
       code: 'INSUFFICIENT_STOCK',
       message_ar: expect.stringContaining('الكمية'),
+    });
+  });
+
+  it('preserves structured business errors instead of converting 422 to 500', () => {
+    expect(toFriendlyError(new UnprocessableEntityException({
+      code: 'LEGACY_PRICE_RECONCILIATION_REQUIRED',
+      message: 'The legacy sale requires reconciliation',
+      message_ar: 'الفاتورة القديمة تحتاج مراجعة.',
+    }))).toMatchObject({
+      status: 422,
+      code: 'LEGACY_PRICE_RECONCILIATION_REQUIRED',
+      message_ar: 'الفاتورة القديمة تحتاج مراجعة.',
+    });
+  });
+
+  it('preserves retry metadata for transient structured failures', () => {
+    expect(toFriendlyError(new ServiceUnavailableException({
+      code: 'SALE_TRANSACTION_EXPIRED',
+      message: 'Retry the same command',
+      message_ar: 'أعد المحاولة بنفس رقم المزامنة.',
+      retryable: true,
+      retry_after_ms: 2_000,
+    }))).toMatchObject({
+      status: 503,
+      code: 'SALE_TRANSACTION_EXPIRED',
+      retryable: true,
+      retry_after_ms: 2_000,
     });
   });
 });

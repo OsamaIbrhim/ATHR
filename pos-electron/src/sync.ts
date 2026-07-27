@@ -62,6 +62,13 @@ export function isRetryableSyncError(error: unknown) {
   return classifySyncError(error).retryable
 }
 
+function syncStatusForFailure(
+  decision: ReturnType<typeof classifySyncError>,
+) {
+  // A reachable backend returning 4xx/5xx is not an offline device.
+  return decision.failureClass === 'network' ? 'offline' : 'error'
+}
+
 function serverDocument(result: any) {
   return {
     server_document_id: result?.id || null,
@@ -148,7 +155,7 @@ export async function performSync(
     )
     const waiting: SyncState = {
       ...state,
-      sync_status: 'offline',
+      sync_status: 'error',
       last_error:
         'المزامنة مؤجلة تلقائيًا بعد فشل مؤقت لحماية الخادم من تكرار الطلبات.',
       pending_count: outbox.length,
@@ -196,7 +203,7 @@ export async function performSync(
 
       const failed: SyncState = {
         ...state,
-        sync_status: decision.retryable ? 'offline' : 'error',
+        sync_status: syncStatusForFailure(decision),
         last_error: decision.retryable
           ? message
           : `عملية مرفوضة وتحتاج مراجعة: ${message}`,
@@ -228,7 +235,7 @@ export async function performSync(
     )
     const pending: SyncState = {
       ...state,
-      sync_status: 'offline',
+      sync_status: 'error',
       last_error:
         'توجد عملية محلية أخرى في انتظار موعد إعادة المحاولة قبل تحديث المخزون.',
       pending_count: remaining.length,
@@ -358,9 +365,7 @@ export function syncLoop(
       )
       const failed: SyncState = {
         ...previous,
-        sync_status: decision.retryable
-          ? 'offline'
-          : 'error',
+        sync_status: syncStatusForFailure(decision),
         last_error: formatSyncError(error),
         next_sync_at: decision.nextAttemptAt,
         blocked_reason: decision.blockedReason,
