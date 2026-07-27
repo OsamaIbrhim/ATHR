@@ -17,6 +17,8 @@ export type FriendlyError = {
   message_ar: string;
   field?: string;
   details?: string[];
+  retryable?: boolean;
+  retry_after_ms?: number;
 };
 
 const GENERIC: Record<number, Omit<FriendlyError, 'status'>> = {
@@ -32,6 +34,51 @@ const GENERIC: Record<number, Omit<FriendlyError, 'status'>> = {
 function firstField(messages: string[]) {
   const match = messages[0]?.match(/^([a-zA-Z_][\w]*)\s/);
   return match?.[1];
+}
+
+function structuredHttpError(
+  status: number,
+  response: unknown,
+): FriendlyError | null {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    return null;
+  }
+
+  const payload = response as Record<string, unknown>;
+  const code =
+    typeof payload.code === 'string' ? payload.code.trim() : '';
+  const message =
+    typeof payload.message === 'string' ? payload.message.trim() : '';
+  const messageAr =
+    typeof payload.message_ar === 'string'
+      ? payload.message_ar.trim()
+      : '';
+
+  // Nest's default HttpException response also uses an object, but it does not
+  // carry a stable business code. Preserve only explicitly structured errors.
+  if (!code || (!message && !messageAr)) return null;
+
+  const retryAfterMs = Number(payload.retry_after_ms);
+  return {
+    status,
+    code,
+    message: message || messageAr,
+    message_ar: messageAr || message,
+    field:
+      typeof payload.field === 'string'
+        ? payload.field
+        : undefined,
+    details: Array.isArray(payload.details)
+      ? payload.details.map(String)
+      : undefined,
+    retryable:
+      typeof payload.retryable === 'boolean'
+        ? payload.retryable
+        : undefined,
+    retry_after_ms: Number.isFinite(retryAfterMs)
+      ? retryAfterMs
+      : undefined,
+  };
 }
 
 export function toFriendlyError(exception: unknown): FriendlyError {
@@ -53,6 +100,9 @@ export function toFriendlyError(exception: unknown): FriendlyError {
 
   const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
   const response = exception instanceof HttpException ? exception.getResponse() : undefined;
+  const structured = structuredHttpError(status, response);
+  if (structured) return structured;
+
   const rawMessages = typeof response === 'object' && response && 'message' in response
     ? (Array.isArray(response.message) ? response.message.map(String) : [String(response.message)])
     : exception instanceof Error ? [exception.message] : [];
@@ -162,6 +212,8 @@ export class ApiExceptionFilter implements ExceptionFilter {
       message_ar: error.message_ar,
       field: error.field,
       details: error.details,
+      retryable: error.retryable,
+      retry_after_ms: error.retry_after_ms,
       request_id: requestId,
       timestamp: new Date().toISOString(),
       path: request.originalUrl,

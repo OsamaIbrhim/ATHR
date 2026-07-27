@@ -305,7 +305,7 @@ describe('Phase 5A synchronization', () => {
 
     const result = await performSync('branch-1', local, client)
 
-    expect(result.sync_status).toBe('offline')
+    expect(result.sync_status).toBe('error')
     expect(failures).toHaveLength(1)
     expect(failures[0]).toMatchObject({
       id: 'sync-retry',

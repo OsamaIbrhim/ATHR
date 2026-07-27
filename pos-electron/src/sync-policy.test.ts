@@ -3,6 +3,7 @@ import { ApiError } from './api'
 import { PosCompatibilityError } from './pos-compatibility'
 import {
   classifySyncError,
+  MAX_AUTOMATIC_SERVER_ATTEMPTS,
   outboxItemDueAt,
   retryDelayMs,
   stableRetryJitterMs,
@@ -59,6 +60,20 @@ describe('POS synchronization retry policy', () => {
     ))).toMatchObject({
       retryable: false,
       failureClass: 'compatibility',
+    })
+  })
+
+  it('stops an automatic server-error retry storm and requires review', () => {
+    expect(classifySyncError(
+      new ApiError({ code: 'INTERNAL_ERROR' }, 500),
+      MAX_AUTOMATIC_SERVER_ATTEMPTS + 1,
+      0,
+      'sale-stuck',
+    )).toMatchObject({
+      retryable: false,
+      failureClass: 'server',
+      blockedReason: 'SERVER_ERROR_REVIEW_REQUIRED',
+      nextAttemptAt: null,
     })
   })
 
