@@ -24,7 +24,11 @@ type SyncBridge = Pick<
 
 type SyncApi = Pick<
   typeof api,
-  'sale' | 'pull' | 'heartbeat' | 'compatibility'
+  | 'sale'
+  | 'reconcileSaleReviews'
+  | 'pull'
+  | 'heartbeat'
+  | 'compatibility'
 >
 
 let activeSync: Promise<SyncState> | null = null
@@ -140,6 +144,23 @@ export async function performSync(
   }
 
   await publishHeartbeat(client, state)
+
+  const reviews = await client.reconcileSaleReviews()
+  if (Number(reviews.awaiting || 0) > 0) {
+    const current = await local.sync_get_status()
+    const waiting: SyncState = {
+      ...state,
+      sync_status: 'error',
+      last_error:
+        `توجد ${reviews.awaiting} عملية في انتظار قرار مدير الفرع من لوحة الإدارة.`,
+      pending_count: current.pending_count,
+      next_sync_at: new Date(Date.now() + 30_000).toISOString(),
+      blocked_reason: 'SALE_REVIEW_PENDING',
+    }
+    await local.sync_set_status(waiting)
+    await publishHeartbeat(client, waiting).catch(() => undefined)
+    return waiting
+  }
 
   const outbox = await local.sync_get_outbox()
   const nowMs = Date.now()

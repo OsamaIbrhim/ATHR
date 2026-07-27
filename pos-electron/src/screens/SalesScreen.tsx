@@ -37,6 +37,12 @@ type LocalSaleView = LocalSale & {
   attempt_count?: number
   last_attempt_at?: string | null
   last_error?: string | null
+  review_id?: string | null
+  review_status?: string | null
+  review_reason?: string | null
+  review_updated_at?: string | null
+  voided_at?: string | null
+  void_reason?: string | null
 }
 
 type ReturnableInvoiceItem = InvoiceItem & {
@@ -63,6 +69,8 @@ function localSyncLabel(status: string) {
       return 'فشلت المزامنة'
     case 'sent':
       return 'تمت المزامنة'
+    case 'reversed':
+      return 'مرفوضة ومعكوسة محليًا'
     default:
       return status || 'محلية'
   }
@@ -78,6 +86,19 @@ function localSyncBadgeStyle(status: string): React.CSSProperties {
       borderRadius: 20,
       background: '#fee2e2',
       color: '#b42318',
+      fontWeight: 800,
+    }
+  }
+
+  if (status === 'reversed') {
+    return {
+      display: 'inline-flex',
+      width: 'fit-content',
+      marginTop: 4,
+      padding: '3px 8px',
+      borderRadius: 20,
+      background: '#f2f4f7',
+      color: '#475467',
       fontWeight: 800,
     }
   }
@@ -115,6 +136,7 @@ export function SalesScreen({
   onRegister,
   onSync,
   onCloseShift,
+  onLogout,
   notify,
 }: {
   session: Session
@@ -124,6 +146,7 @@ export function SalesScreen({
   onRegister: () => void
   onSync: () => void
   onCloseShift: () => void
+  onLogout: () => void
   notify: Notify
 }) {
   const [query, setQuery] = useState('')
@@ -274,7 +297,7 @@ export function SalesScreen({
   }
 
   const pendingLocalCount = localSales.filter(
-    (sale) => sale.sync_status !== 'sent',
+    (sale) => ['pending', 'sending', 'failed'].includes(sale.sync_status),
   ).length
 
   const visibleLocalSales = localSales.filter((sale) => {
@@ -347,6 +370,13 @@ export function SalesScreen({
               })}
             </span>
           </div>
+
+          <button
+            className="button secondary compact"
+            onClick={onLogout}
+          >
+            تسجيل الخروج
+          </button>
 
           <button
             className="button secondary compact"
@@ -448,7 +478,7 @@ export function SalesScreen({
             <div>
               <b>عمليات محفوظة محليًا</b>
               <span>
-                هذه العمليات لم تصل إلى الخادم بعد، فلا تعِد إدخالها.
+                العمليات الفاشلة تُرسل تلقائيًا إلى مدير الفرع من خلال لوحة الإدارة، فلا تعِد إدخالها.
               </span>
             </div>
             <strong>{pendingLocalCount}</strong>
@@ -489,7 +519,10 @@ export function SalesScreen({
                       <td>
                         <b>{displayNumber}</b>
                         <small style={localSyncBadgeStyle(sale.sync_status)}>
-                          {localSyncLabel(sale.sync_status)}
+                          {sale.review_status === 'pending' ||
+                          sale.review_status === 'processing'
+                            ? 'بانتظار اعتماد الإدارة'
+                            : localSyncLabel(sale.sync_status)}
                         </small>
                         {!!sale.attempt_count && (
                           <small>
@@ -529,11 +562,30 @@ export function SalesScreen({
                           )}
 
                           {sale.sync_status === 'failed' && (
+                            <>
+                              <small
+                                title={sale.last_error || undefined}
+                                style={{ color: '#b42318', fontWeight: 800 }}
+                              >
+                                {sale.review_status === 'pending' ||
+                                sale.review_status === 'processing'
+                                  ? 'في انتظار مدير الفرع'
+                                  : 'جاهزة للإرسال للمراجعة'}
+                              </small>
+                              <button type="button" onClick={onSync}>
+                                {sale.review_status
+                                  ? 'تحديث القرار'
+                                  : 'إرسال للمراجعة'}
+                              </button>
+                            </>
+                          )}
+
+                          {sale.sync_status === 'reversed' && (
                             <small
-                              title={sale.last_error || undefined}
-                              style={{ color: '#b42318', fontWeight: 800 }}
+                              title={sale.void_reason || undefined}
+                              style={{ color: '#475467', fontWeight: 800 }}
                             >
-                              يحتاج مراجعة
+                              تم عكس المخزون المحلي بقرار الإدارة
                             </small>
                           )}
                         </div>

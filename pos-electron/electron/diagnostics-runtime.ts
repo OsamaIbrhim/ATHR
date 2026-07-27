@@ -100,9 +100,10 @@ function snapshot(
   )
   const unresolved = dependencies.query(
     `SELECT id,type,sync_status,created_at,attempt_count,
-            last_attempt_at,last_error,terminal_sequence,updated_at
+            last_attempt_at,last_error,terminal_sequence,updated_at,
+            review_id,review_status,review_reason,review_updated_at
      FROM outbox
-     WHERE sync_status<>'sent'
+     WHERE sync_status IN ('pending','sending','failed')
      ORDER BY created_at
      LIMIT 20`,
   )
@@ -113,7 +114,9 @@ function snapshot(
     ]),
   )
   const unresolvedCount = Object.entries(countMap)
-    .filter(([status]) => status !== 'sent')
+    .filter(([status]) =>
+      ['pending', 'sending', 'failed'].includes(status),
+    )
     .reduce((sum, [, count]) => sum + safeCount(count), 0)
   const dbFile = dependencies.dbPath()
   const lastError = dependencies.getMeta('last_error') || null
@@ -196,6 +199,10 @@ function snapshot(
         last_error: row.last_error || null,
         error_details: failureDetails(row.last_error),
         updated_at: row.updated_at || null,
+        review_id: row.review_id || null,
+        review_status: row.review_status || null,
+        review_reason: row.review_reason || null,
+        review_updated_at: row.review_updated_at || null,
       })),
     },
     renderer_state: rendererState || null,
