@@ -73,6 +73,40 @@ describe('inventory movement ledger contract', () => {
     expect(correction).toContain(')::timestamp(3)');
   });
 
+  it('allows acceptance-first sales to create an audited inventory deficit', () => {
+    const migration = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'prisma',
+        'migrations',
+        '202607280002_acceptance_first_negative_stock',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    const hardLoad = fs.readFileSync(
+      path.join(process.cwd(), 'perf', 'hard-load.mjs'),
+      'utf8',
+    );
+
+    expect(migration).toContain(
+      'DROP CONSTRAINT IF EXISTS "InventoryStock_qty_on_hand_nonnegative"',
+    );
+    expect(migration).toContain(
+      '"InventoryStock_reserved_not_above_available_on_hand"',
+    );
+    expect(migration).toContain(
+      'negative_inventory_units_covered',
+    );
+    expect(migration).toContain(
+      'Outgoing cost movement cannot deepen a negative inventory deficit',
+    );
+    expect(hardLoad).toContain(
+      'Negative-stock sale must be accepted with a warning and replay idempotently',
+    );
+    expect(hardLoad).toContain('deficitStock?.qty_on_hand !== -1');
+  });
+
 
   it('keeps the remote-database smoke transaction bounded, configurable, and always disconnected', () => {
     const smoke = fs.readFileSync(

@@ -554,16 +554,104 @@ async function mutationIntegrityLoad(adminToken) {
       )
     }
 
+    const deficitTerminal = terminals[0]
+    const deficitTerminalRow = terminalRows.find(
+      (row) => row.id === deficitTerminal.terminalId,
+    )
+    if (!deficitTerminalRow) {
+      throw new Error('Negative-stock terminal state is missing')
+    }
+    const deficitQuantity = stockAfter.qty_on_hand + 1
+    const deficitSyncId = randomUUID()
+    const deficitCommand = {
+      event_version: 2,
+      sync_id: deficitSyncId,
+      branch_id: branchId,
+      shift_id: shift.id,
+      origin_cashier_id: cashier.user.id,
+      cashier_name_snapshot: cashier.user.name,
+      seller_id: seller.id,
+      seller_name_snapshot: seller.name,
+      offline_session_id: deficitTerminal.context.session_id,
+      terminal_sequence: (deficitTerminalRow.last_sale_sequence + 1n).toString(),
+      occurred_at: new Date().toISOString(),
+      payment_method: 'cash',
+      language: 'ar',
+      local_total: new Prisma.Decimal(localTotal)
+        .mul(deficitQuantity)
+        .toDecimalPlaces(2)
+        .toNumber(),
+      items: [
+        {
+          variant_id: stockBefore.variant_id,
+          qty: deficitQuantity,
+          unit_price: Number(product.selling_price),
+          unit_tax: Number(product.unit_tax),
+          sku_snapshot: product.sku,
+          name_ar_snapshot: product.name_ar,
+          name_en_snapshot: product.name_en || undefined,
+          size_snapshot: product.size || undefined,
+          color_snapshot: product.color || undefined,
+        },
+      ],
+    }
+    const deficitResponse = await json('/pos/sale', {
+      method: 'POST',
+      headers: deficitTerminal.headers,
+      body: JSON.stringify(deficitCommand),
+    })
+    const deficitReplay = await json('/pos/sale', {
+      method: 'POST',
+      headers: deficitTerminal.headers,
+      body: JSON.stringify(deficitCommand),
+    })
+    if (
+      deficitResponse.id !== deficitReplay.id ||
+      !deficitResponse.warning_codes?.includes('NEGATIVE_STOCK')
+    ) {
+      throw new Error(
+        'Negative-stock sale must be accepted with a warning and replay idempotently',
+      )
+    }
+
+    const [deficitInvoiceCount, deficitMovementCount, deficitStock] =
+      await Promise.all([
+        prisma.salesInvoice.count({ where: { sync_id: deficitSyncId } }),
+        prisma.inventoryMovement.count({
+          where: {
+            idempotency_key: `sale:${deficitSyncId}:${stockBefore.variant_id}`,
+          },
+        }),
+        prisma.inventoryStock.findUnique({
+          where: {
+            branch_id_variant_id: {
+              branch_id: branchId,
+              variant_id: stockBefore.variant_id,
+            },
+          },
+        }),
+      ])
+    if (
+      deficitInvoiceCount !== 1 ||
+      deficitMovementCount !== 1 ||
+      deficitStock?.qty_on_hand !== -1
+    ) {
+      throw new Error(
+        `Negative-stock invariant failed: invoices ${deficitInvoiceCount}, movements ${deficitMovementCount}, stock ${deficitStock?.qty_on_hand}`,
+      )
+    }
+
     const result = {
       type: 'mutation',
       suite: 'concurrent-offline-sales-accounting-integrity',
       sales: salesCount,
       terminals: terminals.length,
       duplicate_retries: 1,
+      negative_stock_sale: true,
       p95_ms: Math.round(percentile(latencies, 0.95)),
       p99_ms: Math.round(percentile(latencies, 0.99)),
       stock_before: stockBefore.qty_on_hand,
-      stock_after: stockAfter.qty_on_hand,
+      stock_after: deficitStock.qty_on_hand,
     }
     process.stdout.write(`${JSON.stringify(result)}\n`)
     if (result.p95_ms > saleBudget) {

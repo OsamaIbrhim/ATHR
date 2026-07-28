@@ -268,6 +268,8 @@ jobs:
       PERF_LOGIN_PHONE: "+200100000000"
       PERF_LOGIN_PASSWORD: Bold1234
       PERF_SMOKE: 1
+      PERF_MUTATIONS: 1
+      PERF_SALES: 2
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
