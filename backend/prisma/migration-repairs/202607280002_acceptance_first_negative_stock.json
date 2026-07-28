@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "migration": "202607280002_acceptance_first_negative_stock",
+  "baseSha256": "ce0199cd49ee975e0cdc8da5cde1aeced7374ca257dfa52bfcff986b04a69950",
+  "repairedSha256": "81c43eeb39843bf8ff8d08c3348ed7b77a3073dc05fba3a70f477855a10f3a5d",
+  "upgradeFromRef": "44a675fcb246b1e01ee763be43c4781bd81ca1b9",
+  "incident": "Migration 202607280002 failed with P0001/P3018 in clean CI databases before a successful production deployment because it rewrote pg_get_functiondef output by formatting-sensitive string replacement. This exact repair replaces the dynamic rewrite with an explicit deterministic function definition and validates negative-stock sale replay plus deficit-cost recovery in PostgreSQL hard smoke."
+}
