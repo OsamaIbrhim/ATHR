@@ -349,25 +349,6 @@ async function mutationIntegrityLoad(adminToken) {
       )
     }
 
-    const snapshot = await json(
-      `/sync/pull?branch_id=${encodeURIComponent(branchId)}`,
-      { headers: authorizationHeader(cashier.access_token) },
-    )
-    const product = snapshot.products?.find(
-      (entry) => entry.id === stockBefore.variant_id,
-    )
-    if (
-      !product ||
-      product.catalog_version !== 2 ||
-      !product.sku ||
-      !product.name_ar ||
-      product.selling_price === undefined ||
-      product.unit_tax === undefined
-    ) {
-      throw new Error(
-        `Catalog v2 snapshot is missing for variant ${stockBefore.variant_id}`,
-      )
-    }
     const seller = await prisma.user.findFirst({
       where: {
         branch_id: branchId,
@@ -392,6 +373,25 @@ async function mutationIntegrityLoad(adminToken) {
         ),
       ),
     )
+    const snapshot = await json(
+      `/sync/pull?branch_id=${encodeURIComponent(branchId)}`,
+      { headers: terminals[0].headers },
+    )
+    const product = snapshot.products?.find(
+      (entry) => entry.id === stockBefore.variant_id,
+    )
+    if (
+      !product ||
+      product.catalog_version !== 2 ||
+      !product.sku ||
+      !product.name_ar ||
+      product.selling_price === undefined ||
+      product.unit_tax === undefined
+    ) {
+      throw new Error(
+        `Catalog v2 snapshot is missing for variant ${stockBefore.variant_id}`,
+      )
+    }
     const baseWorkerSales = Math.floor(salesCount / workerCount)
     const remainder = salesCount % workerCount
     const latencies = []
