@@ -4,6 +4,7 @@ dockerfilePath = "Dockerfile"
 watchPatterns = ["/backend/**"]
 
 [deploy]
+preDeployCommand = ["npm run prisma:migrate:deploy"]
 startCommand = "dumb-init -- node dist/src/main.js"
 healthcheckPath = "/api/v1/health/live"
 healthcheckTimeout = 300

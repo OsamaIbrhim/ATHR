@@ -6,6 +6,10 @@ describe('migration CI database isolation', () => {
     resolve(process.cwd(), '../.github/workflows/ci.yml'),
     'utf8',
   );
+  const railwayConfig = readFileSync(
+    resolve(process.cwd(), 'railway.toml'),
+    'utf8',
+  );
 
   const getJob = (jobName: string): string => {
     const jobStart = workflow.search(new RegExp(`^  ${jobName}:\\r?$`, 'm'));
@@ -59,5 +63,26 @@ describe('migration CI database isolation', () => {
       'PERF_CASHIER_PHONE: "+200100000002"',
     );
     expect(workflow).not.toMatch(/PERF_(?:LOGIN|CASHIER)_PHONE:\s+\+\d/);
+  });
+
+  it('keeps scheduled load tests isolated from push and pull-request gates', () => {
+    expect(workflow).toContain(
+      'group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}',
+    );
+    expect(workflow).toContain('cancel-in-progress: true');
+  });
+
+  it('runs production migrations before deploy without coupling server startup', () => {
+    expect(railwayConfig).toContain(
+      'preDeployCommand = ["npm run prisma:migrate:deploy"]',
+    );
+    expect(railwayConfig).toContain(
+      'startCommand = "dumb-init -- node dist/src/main.js"',
+    );
+
+    const startCommand = railwayConfig.match(/^startCommand\s*=.*$/m)?.[0];
+
+    expect(startCommand).toBeDefined();
+    expect(startCommand).not.toMatch(/prisma|migrate/i);
   });
 });
