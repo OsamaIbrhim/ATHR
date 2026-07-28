@@ -47,7 +47,7 @@ describe('ProductsService pagination', () => {
     const result = await new ProductsService(prisma as any).list('', 1, 20, 'b1', true);
 
     expect(prisma.productVariant.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { product: { is_active: true } },
+      where: { is_active: true, product: { is_active: true } },
       skip: 0,
       take: 20,
     }));
@@ -105,6 +105,22 @@ describe('ProductsService pagination', () => {
         cost_price: expect.anything(),
       }),
     });
+  });
+
+  it('soft-deactivates a variant so delayed offline sales can still reference it', async () => {
+    const prisma = {
+      productVariant: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'v1', is_active: true }),
+        update: jest.fn().mockResolvedValue({ id: 'v1', is_active: false }),
+      },
+    };
+    const result = await new ProductsService(prisma as any).removeVariant('v1');
+
+    expect(prisma.productVariant.update).toHaveBeenCalledWith({
+      where: { id: 'v1' },
+      data: { is_active: false },
+    });
+    expect(result.is_active).toBe(false);
   });
 
 });

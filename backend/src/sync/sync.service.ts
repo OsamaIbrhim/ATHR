@@ -1,14 +1,12 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
-import { PriceSnapshotService } from '../pricing/price-snapshot.service';
 
 @Injectable()
 export class SyncService {
   constructor(
     private prisma: PrismaService,
     private pricing: PricingService,
-    private priceSnapshots: PriceSnapshotService,
   ) {}
 
   private catalogValidUntil(now = Date.now()) {
@@ -59,6 +57,7 @@ export class SyncService {
       this.prisma.productVariant.findMany({
         where: {
           product: { is_active: true },
+          is_active: true,
           ...(resetCatalog ? {} : { id: { in: [...requestedIds] } }),
         },
         include: { product: true },
@@ -75,7 +74,7 @@ export class SyncService {
     const deletedVariantIds = resetCatalog ? [] : [...requestedIds].filter((id) => !presentIds.has(id));
     const quotes = this.pricing.quoteMany(variants, rules);
     const products = variants.map((variant) =>
-      this.productSnapshot(branchId, variant, quotes.get(variant.id)!, issuedAt),
+      this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt),
     );
 
     return {
@@ -93,7 +92,10 @@ export class SyncService {
   private async snapshot(branchId: string) {
     const cursor = await this.prisma.syncChange.aggregate({ _max: { sequence: true } });
     const [variants, stock, rules, sellers] = await Promise.all([
-      this.prisma.productVariant.findMany({ where: { product: { is_active: true } }, include: { product: true } }),
+      this.prisma.productVariant.findMany({
+        where: { is_active: true, product: { is_active: true } },
+        include: { product: true },
+      }),
       this.prisma.inventoryStock.findMany({ where: { branch_id: branchId } }),
       this.pricing.loadActiveRules(),
       this.sellers(branchId),
@@ -101,7 +103,7 @@ export class SyncService {
     const issuedAt = new Date().toISOString();
     const quotes = this.pricing.quoteMany(variants, rules);
     const products = variants.map((variant) =>
-      this.productSnapshot(branchId, variant, quotes.get(variant.id)!, issuedAt),
+      this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt),
     );
     return {
       mode: 'snapshot',
@@ -128,9 +130,13 @@ export class SyncService {
     });
   }
 
-  private productSnapshot(branchId: string, variant: any, quote: ReturnType<PricingService['quote']>, issuedAt: string) {
-    const signed = this.priceSnapshots.issue(branchId, variant.id, quote, issuedAt);
+  private productSnapshot(
+    variant: any,
+    quote: ReturnType<PricingService['quote']>,
+    issuedAt: string,
+  ) {
     return {
+      catalog_version: 2,
       id: variant.id,
       sku: variant.sku,
       name_en: variant.product.name_en,
@@ -141,9 +147,7 @@ export class SyncService {
       color: variant.color,
       selling_price: quote.net_price,
       unit_tax: quote.tax_amount,
-      price_version: signed.price_version,
-      price_token: signed.price_token,
-      price_issued_at: signed.issued_at,
+      price_issued_at: issuedAt,
     };
   }
 }

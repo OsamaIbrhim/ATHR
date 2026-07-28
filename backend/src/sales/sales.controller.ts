@@ -25,6 +25,7 @@ import { resolveBranchScope } from '../auth/branch-access'
 import { TerminalsService } from '../terminals/terminals.service'
 import { ListReturnsDto } from './dto/list-returns.dto'
 import { PosProtocolGuard } from '../updates/pos-protocol.guard'
+import { Public } from '../auth/public.decorator'
 
 @Controller()
 export class SalesController {
@@ -61,27 +62,20 @@ export class SalesController {
     return this.svc.getInvoice(id, req.user)
   }
 
-  @Roles('branch_manager', 'cashier')
-  @RequireCapabilities('sales.create')
+  @Public()
   @UseGuards(new PosProtocolGuard())
   @Post('pos/sale')
   async sale(
     @Body() dto: CreateSaleDto,
     @Headers('x-pos-device-id') deviceId: string | undefined,
     @Headers('x-pos-device-token') deviceToken: string | undefined,
-    @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    const terminal = await this.terminals.authenticate(
+    const terminal = await this.terminals.authenticateDevice(
       deviceId,
       deviceToken,
-      req.user,
     )
 
-    const result = await this.svc.createSale(
-      dto,
-      req.user,
-      terminal,
-    )
+    const result = await this.svc.createSale(dto, terminal)
     this.reads.invalidateCounts()
     return result
   }

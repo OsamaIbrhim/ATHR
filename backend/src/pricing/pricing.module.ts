@@ -1,11 +1,10 @@
 import { Module } from '@nestjs/common';
 import { PricingService } from './pricing.service';
 import { PricingController } from './pricing.controller';
-import { PriceSnapshotService } from './price-snapshot.service';
 
 @Module({
-  providers: [PricingService, PriceSnapshotService],
+  providers: [PricingService],
   controllers: [PricingController],
-  exports: [PricingService, PriceSnapshotService],
+  exports: [PricingService],
 })
 export class PricingModule {}

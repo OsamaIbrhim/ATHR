@@ -11,7 +11,6 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { PosTerminal, Prisma } from '@prisma/client';
 import { PricingService } from '../pricing/pricing.service';
-import { PriceSnapshotService } from '../pricing/price-snapshot.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { createHash, randomUUID } from 'crypto';
@@ -19,7 +18,6 @@ import { assertBranchAccess } from '../auth/branch-access';
 import { ListSalesDto } from './dto/list-sales.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { ListReturnsDto } from './dto/list-returns.dto';
-import { OfflineAccountingTicketService } from '../shifts/offline-accounting-ticket.service';
 import {
   getErrorMessage,
   getPrismaErrorCode,
@@ -44,8 +42,6 @@ export class SalesService {
   constructor(
     private prisma: PrismaService,
     private pricing: PricingService,
-    private priceSnapshots: PriceSnapshotService,
-    private offlineAccounting: OfflineAccountingTicketService,
   ) {}
 
   async listSales(dto: ListSalesDto, branchId?: string) {
@@ -54,6 +50,7 @@ export class SalesService {
       ...(branchId ? { branch_id: branchId } : {}),
       ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
       ...(dto.status ? { status: dto.status } : {}),
+      ...(dto.has_warnings === 'true' ? { warning_codes: { isEmpty: false } } : {}),
       ...(dto.from || dto.to ? { occurred_at: { ...(dto.from ? { gte: new Date(dto.from) } : {}), ...(dto.to ? { lte: this.endOfDay(dto.to) } : {}) } } : {}),
       ...(q ? { OR: [
         { invoice_number: { contains: q, mode: 'insensitive' } },
@@ -61,7 +58,15 @@ export class SalesService {
         { customer: { name: { contains: q, mode: 'insensitive' } } },
       ] } : {}),
     };
-    const countKey = JSON.stringify({ branchId, q, payment: dto.payment_method, status: dto.status, from: dto.from, to: dto.to });
+    const countKey = JSON.stringify({
+      branchId,
+      q,
+      payment: dto.payment_method,
+      status: dto.status,
+      hasWarnings: dto.has_warnings,
+      from: dto.from,
+      to: dto.to,
+    });
     const [total, items] = await Promise.all([
       this.cachedSalesCount(countKey, where),
       this.prisma.salesInvoice.findMany({
@@ -74,6 +79,8 @@ export class SalesService {
           terminal: { select: { id: true, terminal_code: true, name: true } },
           status: true, subtotal: true, discount_amount: true, tax_amount: true, total: true,
           payment_method: true, language: true, sync_id: true,
+          event_version: true, warning_codes: true,
+          cashier_name_snapshot: true, seller_name_snapshot: true,
           shift_id: true, offline_session_id: true, terminal_sequence: true,
           occurred_at: true, received_at: true, created_at: true,
           _count: { select: { items: true, original_returns: true } },
@@ -135,15 +142,16 @@ export class SalesService {
     occurredAt: Date,
     normalized: ReturnType<SalesService['normalizeLines']>,
   ) {
-    const canonicalMoney = (value: number | undefined) =>
-      value === undefined ? null : moneyString(value);
+    const canonicalMoney = (value: number) => moneyString(value);
     const payload = {
-      v: 1,
+      v: dto.event_version,
       branch_id: dto.branch_id,
       terminal_id: terminalId,
       shift_id: dto.shift_id,
       origin_cashier_id: dto.origin_cashier_id,
+      cashier_name_snapshot: dto.cashier_name_snapshot.trim(),
       seller_id: dto.seller_id,
+      seller_name_snapshot: dto.seller_name_snapshot.trim(),
       offline_session_id: dto.offline_session_id,
       terminal_sequence: dto.terminal_sequence,
       occurred_at: occurredAt.toISOString(),
@@ -151,18 +159,17 @@ export class SalesService {
       payment_method: dto.payment_method,
       language: dto.language || 'ar',
       local_total: canonicalMoney(dto.local_total),
-      accounting_token_hash: createHash('sha256')
-        .update(dto.offline_accounting_token)
-        .digest('hex'),
-      pricing_mode: normalized.mode,
       items: normalized.lines
         .map((item) => ({
           variant_id: item.variant_id,
           qty: item.qty,
           unit_price: canonicalMoney(item.unit_price),
           unit_tax: canonicalMoney(item.unit_tax),
-          price_version: item.price_version || null,
-          price_token: item.price_token || null,
+          sku_snapshot: item.sku_snapshot.trim(),
+          name_ar_snapshot: item.name_ar_snapshot.trim(),
+          name_en_snapshot: item.name_en_snapshot?.trim() || null,
+          size_snapshot: item.size_snapshot?.trim() || null,
+          color_snapshot: item.color_snapshot?.trim() || null,
         }))
         .sort((left, right) => left.variant_id.localeCompare(right.variant_id)),
     };
@@ -172,33 +179,30 @@ export class SalesService {
   }
 
   private normalizeLines(items: CreateSaleItemDto[]) {
-    const signed = items.every((item) =>
-      item.unit_price !== undefined && item.unit_tax !== undefined && !!item.price_version && !!item.price_token,
-    );
-    const legacy = items.every((item) =>
-      item.unit_price === undefined && item.unit_tax === undefined && !item.price_version && !item.price_token,
-    );
-    if (!signed && !legacy) {
-      throw new UnprocessableEntityException({
-        code: 'MIXED_PRICE_SNAPSHOT_MODE',
-        message_ar: 'لا يمكن خلط أصناف بأسعار موقعة مع أصناف قديمة في نفس الفاتورة.',
-      });
-    }
     const lines = new Map<string, CreateSaleItemDto>();
     for (const item of items) {
       const existing = lines.get(item.variant_id);
       if (!existing) lines.set(item.variant_id, { ...item });
       else {
-        if (signed && (
-          existing.unit_price !== item.unit_price || existing.unit_tax !== item.unit_tax ||
-          existing.price_version !== item.price_version || existing.price_token !== item.price_token
-        )) {
-          throw new UnprocessableEntityException({ code: 'CONFLICTING_PRICE_SNAPSHOTS', message_ar: 'الصنف نفسه يحمل أكثر من إصدار سعر داخل الفاتورة.' });
+        if (
+          !sameMoney(existing.unit_price, item.unit_price) ||
+          !sameMoney(existing.unit_tax, item.unit_tax) ||
+          existing.sku_snapshot.trim() !== item.sku_snapshot.trim() ||
+          existing.name_ar_snapshot.trim() !== item.name_ar_snapshot.trim() ||
+          (existing.name_en_snapshot?.trim() || '') !== (item.name_en_snapshot?.trim() || '') ||
+          (existing.size_snapshot?.trim() || '') !== (item.size_snapshot?.trim() || '') ||
+          (existing.color_snapshot?.trim() || '') !== (item.color_snapshot?.trim() || '')
+        ) {
+          throw new UnprocessableEntityException({
+            code: 'CONFLICTING_ITEM_SNAPSHOTS',
+            message_ar: 'الصنف نفسه يحمل بيانات تاريخية مختلفة داخل الفاتورة.',
+            message: 'The same variant has conflicting historical snapshots',
+          });
         }
         existing.qty += item.qty;
       }
     }
-    return { mode: signed ? 'signed' as const : 'legacy' as const, lines: [...lines.values()] };
+    return { lines: [...lines.values()] };
   }
 
   private async runSaleTransaction<T>(
@@ -261,12 +265,8 @@ export class SalesService {
 
   async createSale(
     dto: CreateSaleDto,
-    actor: AuthenticatedUser,
     terminal: Pick<PosTerminal, 'id' | 'branch_id'>,
   ) {
-    if (actor.role !== 'owner' && actor.branch_id !== dto.branch_id) {
-      throw new ForbiddenException('You cannot create a sale for another branch');
-    }
     if (!terminal || terminal.branch_id !== dto.branch_id) {
       throw new ForbiddenException('The terminal is not assigned to the sale branch');
     }
@@ -277,17 +277,6 @@ export class SalesService {
     if (terminalSequence < 1n || terminalSequence > 9_223_372_036_854_775_807n) {
       throw new BadRequestException('terminal_sequence exceeds PostgreSQL BIGINT range');
     }
-    const accountingClaims = this.offlineAccounting.verifySaleContext({
-      token: dto.offline_accounting_token,
-      offline_session_id: dto.offline_session_id,
-      origin_cashier_id: dto.origin_cashier_id,
-      branch_id: dto.branch_id,
-      terminal_id: terminal.id,
-      shift_id: dto.shift_id,
-      occurred_at: occurredAt,
-      received_at: receivedAt,
-    });
-
     const normalized = this.normalizeLines(dto.items);
     const commandFingerprint = this.saleCommandFingerprint(
       dto,
@@ -295,14 +284,22 @@ export class SalesService {
       occurredAt,
       normalized,
     );
-    if (normalized.mode === 'legacy' && dto.local_total === undefined) {
-      throw new UnprocessableEntityException({
-        code: 'LEGACY_LOCAL_TOTAL_REQUIRED',
-        message_ar: 'العملية القديمة لا تحتوي إجماليًا محليًا موثوقًا وتحتاج مراجعة يدوية.',
-      });
-    }
 
     const result = await this.runSaleTransaction(dto, terminal, async (tx) => {
+      const [lockedTerminal] = await tx.$queryRaw<Array<{
+        id: string;
+        branch_id: string;
+        last_sale_sequence: bigint;
+      }>>`
+        SELECT "id", "branch_id", "last_sale_sequence"
+        FROM "PosTerminal"
+        WHERE "id" = ${terminal.id}::uuid
+        FOR UPDATE
+      `;
+      if (!lockedTerminal || lockedTerminal.branch_id !== dto.branch_id) {
+        throw new ForbiddenException('The terminal is not assigned to the sale branch');
+      }
+
       const existing = await tx.salesInvoice.findUnique({
         where: { sync_id: dto.sync_id },
         include: { items: true },
@@ -311,9 +308,6 @@ export class SalesService {
         if (
           existing.branch_id !== dto.branch_id ||
           existing.terminal_id !== terminal.id ||
-          existing.shift_id !== dto.shift_id ||
-          existing.cashier_id !== dto.origin_cashier_id ||
-          existing.seller_id !== dto.seller_id ||
           existing.offline_session_id !== dto.offline_session_id ||
           existing.terminal_sequence !== terminalSequence ||
           existing.command_fingerprint !== commandFingerprint
@@ -327,16 +321,17 @@ export class SalesService {
         return existing;
       }
 
+      const warningCodes = new Set<string>();
       const [branch, shift, originCashier, seller, sequenceOwner] = await Promise.all([
         tx.branch.findUnique({ where: { id: dto.branch_id } }),
         tx.shift.findUnique({ where: { id: dto.shift_id } }),
         tx.user.findUnique({
           where: { id: dto.origin_cashier_id },
-          select: { id: true },
+          select: { id: true, branch_id: true, name: true },
         }),
         tx.user.findUnique({
           where: { id: dto.seller_id },
-          select: { id: true, branch_id: true, role: true },
+          select: { id: true, branch_id: true, role: true, name: true },
         }),
         tx.salesInvoice.findFirst({
           where: {
@@ -347,62 +342,27 @@ export class SalesService {
         }),
       ]);
       if (!branch) throw new NotFoundException('Branch not found');
-      // Historical attribution is taken from the signed ticket. A legitimate
-      // offline sale must remain syncable when the original cashier is later
-      // disabled, moved to another branch, or assigned a different role.
-      if (!originCashier || accountingClaims.user_id !== originCashier.id) {
-        throw new UnprocessableEntityException({
-          code: 'OFFLINE_ORIGIN_CASHIER_INVALID',
-          message_ar: 'تعذر إثبات هوية الكاشير الأصلي لهذه العملية.',
-          message: 'The original cashier cannot be validated',
-        });
+      const linkedCashier =
+        originCashier?.branch_id === dto.branch_id ? originCashier : null;
+      if (!linkedCashier) {
+        warningCodes.add('CASHIER_REFERENCE_MISSING');
       }
-      if (
-        !seller ||
-        seller.role !== 'seller' ||
-        seller.branch_id !== dto.branch_id
+      const linkedSeller =
+        seller?.branch_id === dto.branch_id && seller.role === 'seller'
+          ? seller
+          : null;
+      if (!linkedSeller) {
+        warningCodes.add('SELLER_REFERENCE_MISSING');
+      }
+      const linkedShift = shift?.branch_id === dto.branch_id ? shift : null;
+      if (!linkedShift) {
+        warningCodes.add('SHIFT_REFERENCE_MISSING');
+      } else if (
+        linkedShift.status === 'closed' ||
+        occurredAt < linkedShift.opened_at ||
+        (linkedShift.closed_at && occurredAt > linkedShift.closed_at)
       ) {
-        throw new UnprocessableEntityException({
-          code: 'SALE_SELLER_INVALID',
-          message_ar: 'البائع المحدد غير موجود أو لا يتبع فرع الفاتورة.',
-          message: 'The selected seller is invalid for this branch',
-        });
-      }
-      if (!shift || shift.branch_id !== dto.branch_id) {
-        throw new UnprocessableEntityException({
-          code: 'OFFLINE_SHIFT_INVALID',
-          message_ar: 'الوردية الموقعة غير موجودة أو لا تتبع فرع العملية.',
-          message: 'The signed shift is invalid for this branch',
-        });
-      }
-      if (!['open', 'closed'].includes(shift.status)) {
-        throw new UnprocessableEntityException({
-          code: 'OFFLINE_SHIFT_STATE_INVALID',
-          message_ar: 'حالة الوردية الموقعة لا تسمح باستقبال عمليات بيع.',
-          message: 'The signed shift state cannot accept sales',
-        });
-      }
-      if (
-        shift.status === 'closed' &&
-        dto.payment_method === 'cash' &&
-        (shift.expected_cash === null || shift.difference === null)
-      ) {
-        throw new ConflictException({
-          code: 'OFFLINE_SHIFT_RECONCILIATION_UNAVAILABLE',
-          message_ar: 'بيانات إغلاق الوردية غير مكتملة، لذلك لا يمكن إضافة عملية نقدية متأخرة دون مراجعة محاسبية.',
-          message: 'Closed shift reconciliation values are missing',
-        });
-      }
-      const skew = this.offlineAccounting.clockSkewMs;
-      if (
-        occurredAt.getTime() < shift.opened_at.getTime() - skew ||
-        (shift.closed_at && occurredAt.getTime() > shift.closed_at.getTime() + skew)
-      ) {
-        throw new UnprocessableEntityException({
-          code: 'OFFLINE_SALE_OUTSIDE_SHIFT',
-          message_ar: 'وقت البيع خارج حدود الوردية الموقعة.',
-          message: 'The sale occurred outside the signed shift window',
-        });
+        warningCodes.add('LATE_SYNC');
       }
       if (sequenceOwner) {
         throw new ConflictException({
@@ -412,32 +372,15 @@ export class SalesService {
         });
       }
 
-      const previousSequence = terminalSequence - 1n;
-      const sequenceClaim = await tx.posTerminal.updateMany({
-        where: {
-          id: terminal.id,
-          branch_id: dto.branch_id,
-          last_sale_sequence: previousSequence,
-        },
-        data: { last_sale_sequence: terminalSequence },
-      });
-      if (sequenceClaim.count !== 1) {
-        throw new ConflictException({
-          code: 'TERMINAL_SEQUENCE_OUT_OF_ORDER',
-          message_ar: 'ترتيب العمليات المحلية غير متصل. أوقف البيع وراجع العمليات المعلقة على الجهاز.',
-          message: 'Terminal sale sequence is not the next expected value',
-          terminal_sequence: dto.terminal_sequence,
-        });
+      if (terminalSequence > lockedTerminal.last_sale_sequence + 1n) {
+        warningCodes.add('SEQUENCE_GAP');
+      } else if (terminalSequence <= lockedTerminal.last_sale_sequence) {
+        warningCodes.add('OUT_OF_ORDER_SEQUENCE');
       }
 
       const variantIds = normalized.lines.map((item) => item.variant_id);
       const variants = await tx.productVariant.findMany({
-        where: {
-          id: { in: variantIds },
-          ...(normalized.mode === 'legacy'
-            ? { product: { is_active: true } }
-            : {}),
-        },
+        where: { id: { in: variantIds } },
         include: { product: true },
       });
       if (variants.length !== variantIds.length) {
@@ -448,39 +391,18 @@ export class SalesService {
       const variantsById = new Map<string, any>(
         variants.map((variant: any) => [variant.id, variant]),
       );
-      const currentQuotes = normalized.mode === 'legacy'
-        ? await this.pricing.calculateMany(variants, tx)
-        : null;
-      const acceptedSnapshots: Array<{
-        variant_id: string;
-        price_version: string;
-        issued_at: string;
-      }> = [];
+      const currentQuotes = await this.pricing.calculateMany(variants, tx);
 
       const saleItems = normalized.lines.map((line) => {
         const variant = variantsById.get(line.variant_id)!;
-        let unitPrice: Prisma.Decimal;
-        let unitTax: Prisma.Decimal;
-        if (normalized.mode === 'signed') {
-          const claims = this.priceSnapshots.verify({
-            branch_id: dto.branch_id,
-            variant_id: line.variant_id,
-            unit_price: line.unit_price!,
-            unit_tax: line.unit_tax!,
-            price_version: line.price_version!,
-            price_token: line.price_token!,
-          });
-          unitPrice = money(line.unit_price!);
-          unitTax = money(line.unit_tax!);
-          acceptedSnapshots.push({
-            variant_id: line.variant_id,
-            price_version: claims.price_version,
-            issued_at: claims.issued_at,
-          });
-        } else {
-          const quote = currentQuotes!.get(line.variant_id)!;
-          unitPrice = money(quote.net_price);
-          unitTax = money(quote.tax_amount);
+        const quote = currentQuotes.get(line.variant_id)!;
+        const unitPrice = money(line.unit_price);
+        const unitTax = money(line.unit_tax);
+        if (
+          !sameMoney(unitPrice, quote.net_price) ||
+          !sameMoney(unitTax, quote.tax_amount)
+        ) {
+          warningCodes.add('PRICE_VARIANCE');
         }
         return {
           variant_id: line.variant_id,
@@ -488,6 +410,11 @@ export class SalesService {
           unit_price: unitPrice,
           unit_cost: money(variant.cost_price),
           tax: unitTax,
+          sku_snapshot: line.sku_snapshot.trim(),
+          name_ar_snapshot: line.name_ar_snapshot.trim(),
+          name_en_snapshot: line.name_en_snapshot?.trim() || null,
+          size_snapshot: line.size_snapshot?.trim() || null,
+          color_snapshot: line.color_snapshot?.trim() || null,
         };
       });
 
@@ -500,33 +427,40 @@ export class SalesService {
       const total = money(subtotal.plus(taxAmount));
 
       if (
-        dto.local_total !== undefined &&
         !sameMoney(dto.local_total, total)
       ) {
         throw new UnprocessableEntityException({
-          code: normalized.mode === 'legacy'
-            ? 'LEGACY_PRICE_RECONCILIATION_REQUIRED'
-            : 'LOCAL_TOTAL_MISMATCH',
-          message_ar: normalized.mode === 'legacy'
-            ? 'فاتورة قديمة معلقة تختلف عن السعر الحالي وتحتاج مراجعة يدوية دون تغيير المبلغ المدفوع.'
-            : 'إجمالي الفاتورة المحلية لا يطابق لقطات الأسعار الموقعة.',
+          code: 'LOCAL_TOTAL_MISMATCH',
+          message_ar: 'إجمالي الفاتورة لا يطابق مجموع سطورها المحفوظة محليًا.',
+          message: 'The local invoice total does not match its immutable lines',
           local_total: dto.local_total,
-          server_total: moneyNumber(total),
+          calculated_total: moneyNumber(total),
         });
       }
 
+      const stockAfter = new Map<string, number>();
       for (const item of saleItems) {
-        const changed = await tx.$executeRaw`
-          UPDATE "InventoryStock"
-          SET "qty_on_hand" = "qty_on_hand" - ${item.qty}, "last_sold_at" = CURRENT_TIMESTAMP
-          WHERE "branch_id" = ${dto.branch_id}::uuid
-            AND "variant_id" = ${item.variant_id}::uuid
-            AND ("qty_on_hand" - "qty_reserved") >= ${item.qty}
-        `;
-        if (changed !== 1) {
-          throw new ConflictException(
-            `Insufficient stock for variant ${item.variant_id}`,
-          );
+        const stock = await tx.inventoryStock.upsert({
+          where: {
+            branch_id_variant_id: {
+              branch_id: dto.branch_id,
+              variant_id: item.variant_id,
+            },
+          },
+          update: {
+            qty_on_hand: { decrement: item.qty },
+            last_sold_at: receivedAt,
+          },
+          create: {
+            branch_id: dto.branch_id,
+            variant_id: item.variant_id,
+            qty_on_hand: -item.qty,
+            last_sold_at: receivedAt,
+          },
+        });
+        stockAfter.set(item.variant_id, stock.qty_on_hand);
+        if (stock.qty_on_hand - stock.qty_reserved < 0) {
+          warningCodes.add('NEGATIVE_STOCK');
         }
       }
 
@@ -548,13 +482,17 @@ export class SalesService {
       const invoice = await tx.salesInvoice.create({
         data: {
           invoice_number: invoiceNumber,
+          event_version: dto.event_version,
+          warning_codes: [...warningCodes].sort(),
           branch_id: dto.branch_id,
           customer_id: customerId,
-          cashier_id: dto.origin_cashier_id,
-          seller_id: dto.seller_id,
-          received_by: actor.sub,
+          cashier_id: linkedCashier?.id || null,
+          cashier_name_snapshot: dto.cashier_name_snapshot.trim(),
+          seller_id: linkedSeller?.id || null,
+          seller_name_snapshot: dto.seller_name_snapshot.trim(),
+          received_by: linkedCashier?.id || null,
           terminal_id: terminal.id,
-          shift_id: dto.shift_id,
+          shift_id: linkedShift?.id || null,
           offline_session_id: dto.offline_session_id,
           terminal_sequence: terminalSequence,
           command_fingerprint: commandFingerprint,
@@ -573,28 +511,73 @@ export class SalesService {
               unit_price: item.unit_price,
               unit_cost: item.unit_cost,
               unit_tax: item.tax,
+              sku_snapshot: item.sku_snapshot,
+              name_ar_snapshot: item.name_ar_snapshot,
+              name_en_snapshot: item.name_en_snapshot,
+              size_snapshot: item.size_snapshot,
+              color_snapshot: item.color_snapshot,
             })),
           },
         },
         include: { items: true },
       });
 
+      const invoiceItemByVariant = new Map(
+        invoice.items.map((item) => [item.variant_id, item]),
+      );
+      for (const item of saleItems) {
+        const invoiceItem = invoiceItemByVariant.get(item.variant_id);
+        if (!invoiceItem) {
+          throw new NotFoundException(
+            `Created sale line is missing for variant ${item.variant_id}`,
+          );
+        }
+        await tx.$queryRaw`
+          SELECT "record_inventory_movement"(
+            ${dto.branch_id}::uuid,
+            ${item.variant_id}::uuid,
+            'sale'::"InventoryMovementType",
+            ${-item.qty}::integer,
+            0::integer,
+            'SalesInvoice'::text,
+            ${invoice.id}::text,
+            ${invoiceItem.id}::text,
+            ${`sale:${dto.sync_id}:${item.variant_id}`}::text,
+            ${occurredAt}::timestamp,
+            ${linkedCashier?.id || null}::uuid,
+            ${JSON.stringify({
+              sync_id: dto.sync_id,
+              terminal_id: terminal.id,
+              terminal_sequence: dto.terminal_sequence,
+              qty_on_hand_after: stockAfter.get(item.variant_id),
+            })}::jsonb
+          )
+        `;
+      }
+
+      if (terminalSequence > lockedTerminal.last_sale_sequence) {
+        await tx.posTerminal.update({
+          where: { id: terminal.id },
+          data: { last_sale_sequence: terminalSequence },
+        });
+      }
+
       await tx.auditLog.create({
         data: {
-          user_id: actor.sub,
-          action: normalized.mode === 'signed'
-            ? 'sale.offline_accounting.accepted'
-            : 'sale.legacy_price.accepted',
+          user_id: linkedCashier?.id || null,
+          action: warningCodes.size
+            ? 'sale.accepted_with_warning'
+            : 'sale.accepted',
           entity: 'SalesInvoice',
           entity_id: invoice.id,
           meta: {
             sync_id: dto.sync_id,
-            local_total: dto.local_total ?? null,
+            event_version: dto.event_version,
+            local_total: dto.local_total,
             invoice_total: total,
-            pricing_mode: normalized.mode,
+            warning_codes: [...warningCodes].sort(),
             origin_cashier_id: dto.origin_cashier_id,
             seller_id: dto.seller_id,
-            received_by: actor.sub,
             terminal_id: terminal.id,
             terminal_sequence: dto.terminal_sequence,
             command_fingerprint: commandFingerprint,
@@ -602,7 +585,6 @@ export class SalesService {
             offline_session_id: dto.offline_session_id,
             occurred_at: dto.occurred_at,
             received_at: receivedAt.toISOString(),
-            snapshots: acceptedSnapshots,
           },
         },
       });
@@ -611,11 +593,16 @@ export class SalesService {
       // till was offline. Keep the immutable close count, but reconcile the
       // stored expected cash and variance so the closed shift remains
       // financially correct instead of silently omitting the late command.
-      if (shift.status === 'closed' && dto.payment_method === 'cash') {
+      if (
+        linkedShift?.status === 'closed' &&
+        dto.payment_method === 'cash' &&
+        linkedShift.expected_cash !== null &&
+        linkedShift.difference !== null
+      ) {
         // Atomic Decimal updates prevent two late tills from overwriting each
         // other's shift reconciliation when they reconnect concurrently.
         await tx.shift.update({
-          where: { id: shift.id },
+          where: { id: linkedShift.id },
           data: {
             expected_cash: { increment: total },
             difference: { decrement: total },
@@ -623,10 +610,10 @@ export class SalesService {
         });
         await tx.auditLog.create({
           data: {
-            user_id: actor.sub,
+            user_id: linkedCashier?.id || null,
             action: 'shift.late_offline_sale.reconciled',
             entity: 'Shift',
-            entity_id: shift.id,
+            entity_id: linkedShift.id,
             meta: {
               invoice_id: invoice.id,
               sync_id: dto.sync_id,

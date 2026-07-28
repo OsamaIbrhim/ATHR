@@ -38,32 +38,33 @@ Seed login: phone `+200100000000` / password `Bold1234` – role: owner
 - Sync – first branch snapshot followed by durable cursor-based product, price,
   and stock deltas; sales upload through idempotent command endpoints
 
-All business endpoints require a JWT. Role authorization is enforced
-server-side, with reusable branch scoping on branch-owned resources. Login,
-refresh, logout, liveness, and readiness are the only public application
-endpoints.
+Business endpoints require a JWT. The sale-upload endpoint is the deliberate
+exception: it authenticates the enrolled POS device directly so completed
+offline sales can still reach the cloud after a cashier JWT expires. Role
+authorization and branch scoping remain server-side for all operator actions.
 
 AR/EN i18n ready, EGP, tax configurable.
 
 ## Railway production deployment
 
-The API intentionally refuses to start with missing, reused, placeholder, or
-legacy cryptographic secrets. Configure all of these Railway variables before
-deploying:
+The API intentionally refuses to start with missing or placeholder core
+configuration. Configure these Railway variables before deploying:
 
 ```
 NODE_ENV=production
 DATABASE_URL=postgresql://...
 DIRECT_URL=postgresql://...
 JWT_SECRET=<unique random value of at least 32 characters>
-PRICE_SNAPSHOT_KEYS=price-YYYY-MM=<different random value>
-POS_OFFLINE_TICKET_KEYS=offline-YYYY-MM=<third different random value>
 CORS_ORIGINS=https://bold-system.vercel.app
+POS_PROTOCOL_MIN=2
+POS_PROTOCOL_MAX=2
+POS_MIN_APP_VERSION=1.4.0
 ```
 
-Remove the obsolete `PRICE_SNAPSHOT_SECRET` and `PRICE_SNAPSHOT_SECRETS`
-variables. Generate each secret independently with `openssl rand -hex 32`;
-never copy the CI values or commit production values.
+Price-signing and offline-ticket secrets are intentionally absent from sales
+protocol v2. The locally completed sale contains an immutable item and price
+snapshot; catalog drift produces a reconciliation warning instead of rejecting
+the invoice.
 
 Use this Railway pre-deploy command:
 
@@ -72,9 +73,8 @@ npm run prisma:migrate:deploy
 ```
 
 Use `npm run start:prod` as the start command and
-`/api/v1/health/ready` as the health-check path. A `503` readiness response
-means the process is running but PostgreSQL is unavailable; a failed process
-startup means the required environment contract was rejected.
+`/api/v1/health/live` as Railway's liveness path. Monitor
+`/api/v1/health/ready` separately for database readiness.
 
 ### Required release gate
 

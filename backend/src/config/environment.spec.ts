@@ -1,124 +1,71 @@
 import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { join } from 'path';
 import {
-  loadOfflineAccountingConfiguration,
-  loadPriceSnapshotConfiguration,
-  parseOfflineTicketKeys,
-  parsePriceSnapshotKeys,
   validateRuntimeEnvironment,
   validateSecret,
 } from './environment';
 
-const jwt = 'jwt-secret-with-sufficient-length-and-character-diversity-01';
-const price = 'price-secret-with-sufficient-length-and-character-diversity-02';
-const previous = 'previous-price-secret-with-sufficient-character-diversity-03';
-const offline = 'offline-ticket-secret-with-sufficient-character-diversity-04';
+const strongJwt =
+  '97c902a7a75e5aa54898c728656aaa72d5977d59e1a81086376cd28f53df7c9a';
 
-function baseEnv(): NodeJS.ProcessEnv {
+function validEnvironment(): NodeJS.ProcessEnv {
   return {
-    NODE_ENV: 'test',
-    DATABASE_URL: 'postgresql://user:pass@localhost:5432/bold',
-    DIRECT_URL: 'postgresql://user:pass@localhost:5432/bold',
-    JWT_SECRET: jwt,
-    PRICE_SNAPSHOT_KEYS: `current-2026=${price}`,
-    POS_OFFLINE_TICKET_KEYS: `offline-2026=${offline}`,
-    CORS_ORIGINS: 'http://localhost:3001,null',
+    NODE_ENV: 'production',
+    DATABASE_URL: 'postgresql://runtime',
+    DIRECT_URL: 'postgresql://migrations',
+    JWT_SECRET: strongJwt,
+    JWT_EXPIRES: '15m',
+    REFRESH_EXPIRES: '30d',
+    PORT: '3000',
+    CORS_ORIGINS: 'https://bold.example,null',
   };
 }
 
-function readExampleAssignment(example: string, name: string): string {
-  const prefix = `${name}=`;
-  const line = example
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .find((value) => value.startsWith(prefix));
+describe('runtime environment', () => {
+  it('starts without price or offline-accounting keyrings', () => {
+    const config = validateRuntimeEnvironment(validEnvironment());
 
-  if (!line) {
-    throw new Error(`${name} is missing from backend/.env.example`);
-  }
-
-  const rawValue = line.slice(prefix.length).trim();
-  const isDoubleQuoted = rawValue.startsWith('"') && rawValue.endsWith('"');
-  const isSingleQuoted = rawValue.startsWith("'") && rawValue.endsWith("'");
-
-  return isDoubleQuoted || isSingleQuoted
-    ? rawValue.slice(1, -1)
-    : rawValue;
-}
-
-describe('runtime environment validation', () => {
-  it('keeps the committed environment example free of usable secrets', () => {
-    const example = readFileSync(resolve(__dirname, '../../.env.example'), 'utf8');
-    const jwtLine = readExampleAssignment(example, 'JWT_SECRET');
-    const priceLine = readExampleAssignment(example, 'PRICE_SNAPSHOT_KEYS');
-    const offlineLine = readExampleAssignment(example, 'POS_OFFLINE_TICKET_KEYS');
-
-    expect(jwtLine).toContain('REPLACE_WITH');
-    expect(priceLine).toContain('REPLACE_WITH');
-    expect(offlineLine).toContain('REPLACE_WITH');
-    expect(jwtLine).not.toMatch(/^[a-f0-9]{64}$/i);
-    expect(priceLine).not.toMatch(/=[a-f0-9]{64}$/i);
-    expect(offlineLine).not.toMatch(/=[a-f0-9]{64}$/i);
+    expect(config).toMatchObject({
+      nodeEnv: 'production',
+      databaseUrl: 'postgresql://runtime',
+      directUrl: 'postgresql://migrations',
+      port: 3000,
+      corsOrigins: ['https://bold.example', 'null'],
+    });
+    expect(config).not.toHaveProperty('priceSnapshots');
+    expect(config).not.toHaveProperty('offlineAccounting');
   });
 
-  it('accepts separate versioned keyrings for pricing and offline accounting', () => {
-    const config = validateRuntimeEnvironment(baseEnv());
-    expect(config.priceSnapshots.activeKey.id).toBe('current-2026');
-    expect(config.offlineAccounting.activeKey.id).toBe('offline-2026');
-    expect(config.offlineAccounting.ttlMs).toBe(86_400_000);
-  });
-
-  it('rejects committed placeholders and weak secrets', () => {
+  it('keeps JWT validation strict', () => {
+    expect(() => validateSecret('JWT_SECRET', 'replace-me')).toThrow();
     expect(() =>
-      validateSecret('JWT_SECRET', 'change-me-use-openssl-rand-hex-32'),
-    ).toThrow(/placeholder/);
-    expect(() =>
-      validateSecret('JWT_SECRET', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      validateRuntimeEnvironment({
+        ...validEnvironment(),
+        JWT_SECRET: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      }),
     ).toThrow(/diversity/);
   });
 
-  it('rejects duplicate key ids and duplicate key material', () => {
+  it('rejects invalid ports and wildcard CORS origins', () => {
     expect(() =>
-      parsePriceSnapshotKeys(`same=${price},same=${previous}`),
-    ).toThrow(/Duplicate/);
+      validateRuntimeEnvironment({ ...validEnvironment(), PORT: '0' }),
+    ).toThrow(/PORT/);
     expect(() =>
-      parseOfflineTicketKeys(`one=${offline},two=${offline}`),
-    ).toThrow(/reuse/);
+      validateRuntimeEnvironment({
+        ...validEnvironment(),
+        CORS_ORIGINS: '*',
+      }),
+    ).toThrow(/wildcard/);
   });
 
-  it('forbids sharing any JWT, pricing, or offline ticket key material', () => {
-    const env = baseEnv();
-    env.POS_OFFLINE_TICKET_KEYS = `offline-2026=${price}`;
-    expect(() => validateRuntimeEnvironment(env)).toThrow(/must be different/);
-  });
-
-  it('validates bounded offline ticket lifetime and clock skew', () => {
-    const env = baseEnv();
-    env.POS_OFFLINE_TICKET_TTL_MS = '60000';
-    expect(() => loadOfflineAccountingConfiguration(env)).toThrow(/between/);
-    env.POS_OFFLINE_TICKET_TTL_MS = '86400000';
-    env.POS_OFFLINE_CLOCK_SKEW_MS = '900001';
-    expect(() => loadOfflineAccountingConfiguration(env)).toThrow(/between/);
-  });
-
-  it('requires an explicit, bounded deadline for legacy two-part price tokens', () => {
-    const now = Date.parse('2026-07-22T00:00:00.000Z');
-    const env = baseEnv();
-    env.PRICE_SNAPSHOT_LEGACY_SECRETS = previous;
-    expect(() => loadPriceSnapshotConfiguration(env, now)).toThrow(
-      /ACCEPT_UNTIL is required/,
+  it('documents the plain offline context instead of secret keyrings', () => {
+    const example = readFileSync(
+      join(process.cwd(), '.env.example'),
+      'utf8',
     );
 
-    env.PRICE_SNAPSHOT_LEGACY_ACCEPT_UNTIL = '2026-08-10T00:00:00.000Z';
-    const config = loadPriceSnapshotConfiguration(env, now);
-    expect(config.legacySecrets).toEqual([previous]);
-  });
-
-  it('fails explicitly when deprecated price variables remain configured', () => {
-    const env = baseEnv();
-    env.PRICE_SNAPSHOT_SECRETS = price;
-    expect(() => loadPriceSnapshotConfiguration(env)).toThrow(
-      /no longer supported/,
-    );
+    expect(example).toContain('POS_OFFLINE_CONTEXT_TTL_MS=86400000');
+    expect(example).not.toContain('PRICE_SNAPSHOT_KEYS=');
+    expect(example).not.toContain('POS_OFFLINE_TICKET_KEYS=');
   });
 });

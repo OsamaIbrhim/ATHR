@@ -20,6 +20,10 @@ function setup() {
           payment_method: 'cash',
           language: 'ar',
           sync_id: null,
+          event_version: 2,
+          warning_codes: ['PRICE_VARIANCE'],
+          cashier_name_snapshot: 'Cashier',
+          seller_name_snapshot: 'Seller',
           shift_id: null,
           offline_session_id: null,
           terminal_sequence: null,
@@ -102,5 +106,27 @@ describe('SalesReadService', () => {
     service.invalidateCounts()
     await service.listSales({ q: '', page: 1, page_size: 20 } as any)
     expect(prisma.salesInvoice.count).toHaveBeenCalledTimes(2)
+  })
+
+  it('filters reconciliation views to invoices that carry warnings', async () => {
+    const { prisma, service } = setup()
+    await service.listSales(
+      {
+        q: '',
+        page: 1,
+        page_size: 20,
+        has_warnings: 'true',
+      } as any,
+      'branch-1',
+    )
+
+    expect(prisma.salesInvoice.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          branch_id: 'branch-1',
+          warning_codes: { isEmpty: false },
+        },
+      }),
+    )
   })
 })
