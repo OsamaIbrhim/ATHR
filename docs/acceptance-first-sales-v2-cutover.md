@@ -20,13 +20,23 @@ This release is a clean protocol cutover. Do not deploy only one part of it.
    window.
 3. Apply every committed Prisma migration in order, including
    `202607280001_acceptance_first_sales_v2`.
-4. Run the deterministic development/production seed intended for the target
-   environment.
-5. Deploy the backend and verify both `/api/v1/health/live` and
+4. Configure the one-time `PRODUCTION_SEED_*` variables documented in
+   `backend/.env.example`, then run:
+
+   ```text
+   npm run prisma:seed:production
+   ```
+
+   This creates only the real initial branch and owner. Never run
+   `npm run prisma:seed` against Production; that command intentionally creates
+   randomized development fixtures and fixed test credentials.
+5. Remove `PRODUCTION_SEED_OWNER_PASSWORD` and
+   `PRODUCTION_SEED_CONFIRMATION` immediately after the seed succeeds.
+6. Deploy the backend and verify both `/api/v1/health/live` and
    `/api/v1/health/ready`.
-6. Deploy the Admin Web and verify that sales warnings appear inside the sales
+7. Deploy the Admin Web and verify that sales warnings appear inside the sales
    list and invoice details. There is no sale-approval page in protocol v2.
-7. Set the backend compatibility variables:
+8. Set the backend compatibility variables:
 
    ```text
    POS_PROTOCOL_MIN=2
@@ -35,9 +45,9 @@ This release is a clean protocol cutover. Do not deploy only one part of it.
    POS_MIN_APP_VERSION=1.4.0
    ```
 
-8. Remove the obsolete price-snapshot and offline-ticket key variables.
-9. Build and install Bold POS `1.4.0` as a clean enrollment on each test till.
-10. Enroll the device, log in, open a shift and complete one full catalog sync.
+9. Remove the obsolete price-snapshot and offline-ticket key variables.
+10. Build and install Bold POS `1.4.0` as a clean enrollment on each test till.
+11. Enroll the device, log in, open a shift and complete one full catalog sync.
 
 ## Release verification
 
