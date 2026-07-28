@@ -37,10 +37,8 @@ type LocalSaleView = LocalSale & {
   attempt_count?: number
   last_attempt_at?: string | null
   last_error?: string | null
-  review_id?: string | null
-  review_status?: string | null
-  review_reason?: string | null
-  review_updated_at?: string | null
+  sync_result?: string | null
+  warning_codes?: string | string[] | null
   voided_at?: string | null
   void_reason?: string | null
 }
@@ -65,19 +63,19 @@ function localSyncLabel(status: string) {
       return 'معلّقة محليًا'
     case 'sending':
       return 'جارٍ الإرسال'
-    case 'failed':
-      return 'فشلت المزامنة'
     case 'sent':
       return 'تمت المزامنة'
-    case 'reversed':
-      return 'مرفوضة ومعكوسة محليًا'
+    case 'sent_with_warning':
+      return 'تمت المزامنة مع تنبيه'
+    case 'quarantined':
+      return 'معزولة بسبب تعارض أو بيانات تالفة'
     default:
       return status || 'محلية'
   }
 }
 
 function localSyncBadgeStyle(status: string): React.CSSProperties {
-  if (status === 'failed') {
+  if (status === 'quarantined') {
     return {
       display: 'inline-flex',
       width: 'fit-content',
@@ -90,15 +88,15 @@ function localSyncBadgeStyle(status: string): React.CSSProperties {
     }
   }
 
-  if (status === 'reversed') {
+  if (status === 'sent_with_warning') {
     return {
       display: 'inline-flex',
       width: 'fit-content',
       marginTop: 4,
       padding: '3px 8px',
       borderRadius: 20,
-      background: '#f2f4f7',
-      color: '#475467',
+      background: '#fef3c7',
+      color: '#92400e',
       fontWeight: 800,
     }
   }
@@ -297,11 +295,11 @@ export function SalesScreen({
   }
 
   const pendingLocalCount = localSales.filter(
-    (sale) => ['pending', 'sending', 'failed'].includes(sale.sync_status),
+    (sale) => ['pending', 'sending'].includes(sale.sync_status),
   ).length
 
   const visibleLocalSales = localSales.filter((sale) => {
-    if (sale.sync_status === 'sent') return false
+    if (['sent', 'sent_with_warning'].includes(sale.sync_status)) return false
 
     const normalizedQuery = query.trim().toLowerCase()
     const invoiceNumber = String(
@@ -519,10 +517,7 @@ export function SalesScreen({
                       <td>
                         <b>{displayNumber}</b>
                         <small style={localSyncBadgeStyle(sale.sync_status)}>
-                          {sale.review_status === 'pending' ||
-                          sale.review_status === 'processing'
-                            ? 'بانتظار اعتماد الإدارة'
-                            : localSyncLabel(sale.sync_status)}
+                          {localSyncLabel(sale.sync_status)}
                         </small>
                         {!!sale.attempt_count && (
                           <small>
@@ -561,31 +556,23 @@ export function SalesScreen({
                             <small>جارٍ الإرسال…</small>
                           )}
 
-                          {sale.sync_status === 'failed' && (
+                          {sale.sync_status === 'quarantined' && (
                             <>
                               <small
                                 title={sale.last_error || undefined}
                                 style={{ color: '#b42318', fontWeight: 800 }}
                               >
-                                {sale.review_status === 'pending' ||
-                                sale.review_status === 'processing'
-                                  ? 'في انتظار مدير الفرع'
-                                  : 'جاهزة للإرسال للمراجعة'}
+                                العملية معزولة ولا تعطل باقي المزامنة
                               </small>
-                              <button type="button" onClick={onSync}>
-                                {sale.review_status
-                                  ? 'تحديث القرار'
-                                  : 'إرسال للمراجعة'}
-                              </button>
                             </>
                           )}
 
-                          {sale.sync_status === 'reversed' && (
+                          {sale.sync_status === 'sent_with_warning' && (
                             <small
-                              title={sale.void_reason || undefined}
-                              style={{ color: '#475467', fontWeight: 800 }}
+                              title={String(sale.warning_codes || '')}
+                              style={{ color: '#92400e', fontWeight: 800 }}
                             >
-                              تم عكس المخزون المحلي بقرار الإدارة
+                              تم تسجيل الفاتورة على Cloud وتحتاج متابعة تشغيلية
                             </small>
                           )}
                         </div>
@@ -610,6 +597,14 @@ export function SalesScreen({
                       <td>
                         <b>{invoice.invoice_number}</b>
                         <small>{invoice.status}</small>
+                        {!!invoice.warning_codes?.length && (
+                          <small
+                            style={{ color: '#92400e', fontWeight: 800 }}
+                            title={invoice.warning_codes.join(', ')}
+                          >
+                            مسجلة مع {invoice.warning_codes.length} تنبيه تشغيلي
+                          </small>
+                        )}
 
                         {!!invoice._count?.original_returns && (
                           <small className="return-badge">

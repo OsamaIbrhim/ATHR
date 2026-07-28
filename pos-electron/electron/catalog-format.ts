@@ -1,14 +1,15 @@
-// Bump this value whenever the server-side price-token contract changes in a
-// way that requires every terminal to replace its cached catalog atomically.
-export const SIGNED_CATALOG_FORMAT_VERSION = 'signed-price-kid-v2'
+// The catalog format identifies the locally cached data contract. Prices are
+// historical sale inputs, not credentials that can expire after checkout.
+export const CATALOG_FORMAT_VERSION = 'offline-sales-v2'
 
-export type SignedCatalogProduct = {
+export type CatalogProduct = {
   id?: unknown
+  sku?: unknown
+  name_en?: unknown
+  name_ar?: unknown
   selling_price?: unknown
   unit_tax?: unknown
-  price_version?: unknown
-  price_token?: unknown
-  price_issued_at?: unknown
+  catalog_version?: unknown
 }
 
 export type CatalogStock = {
@@ -20,38 +21,23 @@ function nonEmptyString(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
-export function signedPriceTokenKeyId(value: unknown) {
-  if (!nonEmptyString(value)) return null
-  const parts = String(value).split('.')
-  if (parts.length !== 3) return null
-  const keyId = parts[0]
-  return /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/.test(keyId)
-    ? keyId
-    : null
-}
-
-export function isValidSignedCatalogProduct(
-  product: SignedCatalogProduct,
-) {
+export function isValidCatalogProduct(product: CatalogProduct) {
   const price = Number(product.selling_price)
   const tax = Number(product.unit_tax)
 
   return (
     nonEmptyString(product.id) &&
+    nonEmptyString(product.sku) &&
+    (nonEmptyString(product.name_ar) || nonEmptyString(product.name_en)) &&
     Number.isFinite(price) &&
     price >= 0 &&
     Number.isFinite(tax) &&
     tax >= 0 &&
-    nonEmptyString(product.price_version) &&
-    !!signedPriceTokenKeyId(product.price_token) &&
-    nonEmptyString(product.price_issued_at) &&
-    Number.isFinite(new Date(String(product.price_issued_at)).getTime())
+    Number(product.catalog_version) === 2
   )
 }
 
-export function isValidCatalogStock(
-  stock: CatalogStock,
-) {
+export function isValidCatalogStock(stock: CatalogStock) {
   const quantity = Number(stock.qty_on_hand)
   return (
     nonEmptyString(stock.variant_id) &&
@@ -62,10 +48,10 @@ export function isValidCatalogStock(
 
 export function requiresFullCatalogRefresh(
   storedFormatVersion: string,
-  unsignedProductCount: number,
+  invalidProductCount: number,
 ) {
   return (
-    storedFormatVersion !== SIGNED_CATALOG_FORMAT_VERSION ||
-    Math.max(0, Number(unsignedProductCount) || 0) > 0
+    storedFormatVersion !== CATALOG_FORMAT_VERSION ||
+    Math.max(0, Number(invalidProductCount) || 0) > 0
   )
 }

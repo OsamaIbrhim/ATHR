@@ -28,10 +28,8 @@ export type LocalSale = {
   attempt_count?: number
   last_attempt_at?: string | null
   last_error?: string | null
-  review_id?: string | null
-  review_status?: string | null
-  review_reason?: string | null
-  review_updated_at?: string | null
+  sync_result?: string | null
+  warning_codes?: string | string[] | null
   voided_at?: string | null
   void_reason?: string | null
 }
@@ -89,6 +87,7 @@ export type PosDiagnostics = {
         request_id: string | null
       }
       updated_at: string | null
+      warning_codes?: string | null
     }>
   }
 }
@@ -141,15 +140,12 @@ export type BoldBridge = {
   delete_held_sale(id: string): Promise<{ ok: boolean }>
 
   sync_get_outbox(): Promise<any[]>
-  api_reconcile_sale_reviews(): Promise<IpcEnvelope<{
-    awaiting: number
-    resolved: number
-  }>>
   sync_mark_sending(id: string): Promise<{ ok: boolean }>
   sync_mark_sent(result: {
     id: string
     server_document_id?: string | null
     server_document_number?: string | null
+    warning_codes?: string[]
   }): Promise<{ ok: boolean }>
   sync_mark_failed(result: {
     id: string

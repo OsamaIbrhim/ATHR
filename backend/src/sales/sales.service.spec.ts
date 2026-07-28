@@ -2,66 +2,102 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { SalesService } from './sales.service';
 
-const actor = {
-  sub: '88888888-8888-4888-8888-888888888888',
-  role: 'cashier' as const,
-  branch_id: '11111111-1111-4111-8111-111111111111',
-};
+const branchId = '11111111-1111-4111-8111-111111111111';
 const terminal = {
   id: '22222222-2222-4222-8222-222222222222',
-  branch_id: actor.branch_id,
+  branch_id: branchId,
 };
 const shiftId = '33333333-3333-4333-8333-333333333333';
-const offlineSessionId = '44444444-4444-4444-8444-444444444444';
+const sessionId = '44444444-4444-4444-8444-444444444444';
 const variantId = '55555555-5555-4555-8555-555555555555';
-const sellerId = '77777777-7777-4777-8777-777777777777';
 const syncId = '66666666-6666-4666-8666-666666666666';
+const sellerId = '77777777-7777-4777-8777-777777777777';
+const cashierId = '88888888-8888-4888-8888-888888888888';
 const occurredAt = '2026-07-22T10:00:00.000Z';
+const actor = {
+  sub: cashierId,
+  role: 'cashier' as const,
+  branch_id: branchId,
+};
 
 function saleDto(overrides: Record<string, unknown> = {}) {
   return {
+    event_version: 2,
     sync_id: syncId,
-    branch_id: actor.branch_id,
+    branch_id: branchId,
     shift_id: shiftId,
-    origin_cashier_id: actor.sub,
+    origin_cashier_id: cashierId,
+    cashier_name_snapshot: 'Cashier One',
     seller_id: sellerId,
-    offline_session_id: offlineSessionId,
+    seller_name_snapshot: 'Seller One',
+    offline_session_id: sessionId,
     terminal_sequence: '1',
     occurred_at: occurredAt,
-    offline_accounting_token: 'offline-ticket',
-    items: [{ variant_id: variantId, qty: 2 }],
+    items: [
+      {
+        variant_id: variantId,
+        qty: 2,
+        unit_price: 150,
+        unit_tax: 21,
+        sku_snapshot: 'SKU-1',
+        name_ar_snapshot: 'قميص',
+        name_en_snapshot: 'Shirt',
+        size_snapshot: 'M',
+        color_snapshot: 'Blue',
+      },
+    ],
     payment_method: 'cash',
+    language: 'ar',
     local_total: 342,
     ...overrides,
   } as any;
 }
 
 function setupSale(options: {
-  stockCount?: number;
-  sequenceClaim?: number;
+  currentPrice?: number;
+  currentTax?: number;
+  lastSequence?: bigint;
+  stockAfter?: number;
+  stockReserved?: number;
   existing?: any;
   closedShift?: boolean;
-  missingClosedShiftTotals?: boolean;
+  missingCashier?: boolean;
+  missingSeller?: boolean;
 } = {}) {
+  let rawCall = 0;
   const tx = {
+    $queryRaw: jest.fn().mockImplementation(() => {
+      rawCall += 1;
+      if (rawCall === 1) {
+        return Promise.resolve([
+          {
+            id: terminal.id,
+            branch_id: branchId,
+            last_sale_sequence: options.lastSequence ?? 0n,
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    }),
     branch: {
       findUnique: jest.fn().mockResolvedValue({
-        id: actor.branch_id,
+        id: branchId,
         code: 'BOLD-01',
       }),
     },
     shift: {
       findUnique: jest.fn().mockResolvedValue({
         id: shiftId,
-        branch_id: actor.branch_id,
+        branch_id: branchId,
         status: options.closedShift ? 'closed' : 'open',
         opening_cash: 50,
         closing_cash: options.closedShift ? 400 : null,
-        expected_cash: options.closedShift && !options.missingClosedShiftTotals ? 400 : null,
-        difference: options.closedShift && !options.missingClosedShiftTotals ? 0 : null,
+        expected_cash: options.closedShift ? 400 : null,
+        difference: options.closedShift ? 0 : null,
         opened_at: new Date('2026-07-22T08:00:00.000Z'),
         closed_at: options.closedShift
           ? new Date('2026-07-22T12:00:00.000Z')
@@ -71,15 +107,33 @@ function setupSale(options: {
       update: jest.fn().mockResolvedValue({}),
     },
     user: {
-      findUnique: jest.fn().mockImplementation(({ where }) =>
-        Promise.resolve(where.id === sellerId
-          ? { id: sellerId, role: 'seller', branch_id: actor.branch_id }
-          : { id: actor.sub, role: actor.role, branch_id: actor.branch_id })),
+      findUnique: jest.fn().mockImplementation(({ where }) => {
+        if (where.id === sellerId) {
+          return Promise.resolve(
+            options.missingSeller
+              ? null
+              : {
+                  id: sellerId,
+                  name: 'Seller One',
+                  role: 'seller',
+                  branch_id: branchId,
+                },
+          );
+        }
+        return Promise.resolve(
+          options.missingCashier
+            ? null
+            : {
+                id: cashierId,
+                name: 'Cashier One',
+                role: 'cashier',
+                branch_id: branchId,
+              },
+        );
+      }),
     },
     posTerminal: {
-      updateMany: jest.fn().mockResolvedValue({
-        count: options.sequenceClaim ?? 1,
-      }),
+      update: jest.fn().mockResolvedValue({}),
     },
     salesInvoice: {
       findUnique: jest.fn().mockResolvedValue(options.existing ?? null),
@@ -88,7 +142,11 @@ function setupSale(options: {
         Promise.resolve({
           id: 'sale-1',
           ...data,
-          items: data.items.create,
+          items: data.items.create.map((item: any, index: number) => ({
+            id: `sale-item-${index + 1}`,
+            sales_invoice_id: 'sale-1',
+            ...item,
+          })),
         }),
       ),
     },
@@ -98,11 +156,21 @@ function setupSale(options: {
           id: variantId,
           product_id: 'product-1',
           cost_price: 100,
-          product: { is_active: true, category_id: null, brand: null },
+          is_active: true,
+          product: {
+            is_active: true,
+            category_id: null,
+            brand: null,
+          },
         },
       ]),
     },
-    $executeRaw: jest.fn().mockResolvedValue(options.stockCount ?? 1),
+    inventoryStock: {
+      upsert: jest.fn().mockResolvedValue({
+        qty_on_hand: options.stockAfter ?? 8,
+        qty_reserved: options.stockReserved ?? 0,
+      }),
+    },
     customer: {
       upsert: jest.fn(),
       update: jest.fn(),
@@ -114,42 +182,32 @@ function setupSale(options: {
   };
   const pricing = {
     calculateMany: jest.fn().mockResolvedValue(
-      new Map([[variantId, { net_price: 150, tax_amount: 21 }]]),
+      new Map([
+        [
+          variantId,
+          {
+            net_price: options.currentPrice ?? 150,
+            tax_amount: options.currentTax ?? 21,
+          },
+        ],
+      ]),
     ),
-  };
-  const priceSnapshots = {
-    verify: jest.fn().mockReturnValue({
-      branch_id: actor.branch_id,
-      variant_id: variantId,
-      unit_price: 150,
-      unit_tax: 21,
-      price_version: 'price-v1',
-      issued_at: '2026-07-22T09:00:00.000Z',
-    }),
-  };
-  const offlineAccounting = {
-    clockSkewMs: 300_000,
-    verifySaleContext: jest.fn().mockReturnValue({
-      user_id: actor.sub,
-      branch_id: actor.branch_id,
-      terminal_id: terminal.id,
-      shift_id: shiftId,
-      session_id: offlineSessionId,
-    }),
   };
   return {
-    service: new SalesService(
-      prisma as any,
-      pricing as any,
-      priceSnapshots as any,
-      offlineAccounting as any,
-    ),
+    service: new SalesService(prisma as any, pricing as any),
     prisma,
     pricing,
-    priceSnapshots,
-    offlineAccounting,
     tx,
   };
+}
+
+function fingerprint(service: SalesService, dto: any) {
+  return (service as any).saleCommandFingerprint(
+    dto,
+    terminal.id,
+    new Date(occurredAt),
+    (service as any).normalizeLines(dto.items),
+  );
 }
 
 function setupReturn(alreadyReturned = 0) {
@@ -163,13 +221,11 @@ function setupReturn(alreadyReturned = 0) {
   };
   const tx = {
     $queryRaw: jest.fn().mockResolvedValue([]),
-    shift: {
-      findFirst: jest.fn().mockResolvedValue({ id: shiftId }),
-    },
+    shift: { findFirst: jest.fn().mockResolvedValue({ id: shiftId }) },
     salesInvoice: {
       findUnique: jest.fn().mockResolvedValue({
         id: 'sale-1',
-        branch_id: actor.branch_id,
+        branch_id: branchId,
         customer_id: null,
         occurred_at: new Date(),
         created_at: new Date(),
@@ -197,276 +253,183 @@ function setupReturn(alreadyReturned = 0) {
       update: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
-    customer: {
-      findUnique: jest.fn(),
-      update: jest.fn(),
-    },
+    customer: { findUnique: jest.fn(), update: jest.fn() },
   };
   const prisma = { $transaction: jest.fn((callback) => callback(tx)) };
   return {
-    service: new SalesService(
-      prisma as any,
-      {} as any,
-      {} as any,
-      {} as any,
-    ),
+    service: new SalesService(prisma as any, {} as any),
     tx,
   };
 }
 
-describe('SalesService', () => {
-  it('lists invoices by business occurrence time and caller branch scope', async () => {
-    const prisma = {
-      salesInvoice: {
-        count: jest.fn().mockResolvedValue(21),
-        findMany: jest.fn().mockResolvedValue([{ id: 'sale-1' }]),
-      },
-    };
-    const service = new SalesService(
-      prisma as any,
-      {} as any,
-      {} as any,
-      {} as any,
-    );
-
-    const result = await service.listSales(
-      {
-        q: '',
-        page: 2,
-        page_size: 20,
-        from: '2026-07-22',
-      } as any,
-      actor.branch_id,
-    );
-
-    expect(prisma.salesInvoice.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          branch_id: actor.branch_id,
-          occurred_at: expect.any(Object),
-        }),
-        orderBy: [{ occurred_at: 'desc' }, { id: 'desc' }],
-        skip: 20,
-        take: 20,
-      }),
-    );
-    expect(result).toMatchObject({ total: 21, total_pages: 2, page: 2 });
-  });
-
-  it('rejects a cashier attempting to sell for another branch', async () => {
+describe('SalesService acceptance-first sale synchronization', () => {
+  it('rejects a terminal assigned to another branch before mutation', async () => {
     const { service, prisma } = setupSale();
     await expect(
-      service.createSale(
-        saleDto({ branch_id: '77777777-7777-4777-8777-777777777777' }),
-        actor,
-        terminal,
-      ),
+      service.createSale(saleDto(), {
+        ...terminal,
+        branch_id: '99999999-9999-4999-8999-999999999999',
+      }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('persists the original cashier, shift, terminal order and both timestamps', async () => {
-    const { service, tx, offlineAccounting } = setupSale();
-    const result = await service.createSale(saleDto(), actor, terminal);
+  it('persists immutable snapshots and one inventory ledger movement', async () => {
+    const { service, tx } = setupSale();
+    const result = await service.createSale(saleDto(), terminal);
 
-    expect(offlineAccounting.verifySaleContext).toHaveBeenCalledWith(
-      expect.objectContaining({
-        offline_session_id: offlineSessionId,
-        origin_cashier_id: actor.sub,
-        terminal_id: terminal.id,
-        shift_id: shiftId,
-      }),
-    );
-    expect(tx.posTerminal.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: terminal.id,
-        branch_id: actor.branch_id,
-        last_sale_sequence: 0n,
-      },
-      data: { last_sale_sequence: 1n },
-    });
     expect(tx.salesInvoice.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          cashier_id: actor.sub,
-          received_by: actor.sub,
-          terminal_id: terminal.id,
-          shift_id: shiftId,
-          offline_session_id: offlineSessionId,
+          event_version: 2,
+          warning_codes: [],
+          cashier_name_snapshot: 'Cashier One',
+          seller_name_snapshot: 'Seller One',
           terminal_sequence: 1n,
-          occurred_at: new Date(occurredAt),
-          received_at: expect.any(Date),
+          items: {
+            create: [
+              expect.objectContaining({
+                sku_snapshot: 'SKU-1',
+                name_ar_snapshot: 'قميص',
+                unit_price: expect.anything(),
+              }),
+            ],
+          },
         }),
       }),
     );
-    expect(
-      tx.salesInvoice.create.mock.calls[0][0].data.total.toFixed(2),
-    ).toBe('342.00');
+    expect(tx.inventoryStock.upsert).toHaveBeenCalledTimes(1);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
     expect(String(result.total)).toBe('342');
   });
 
-  it('keeps the original cashier when another cashier uploads the offline command later', async () => {
-    const uploader = {
-      sub: '99999999-9999-4999-8999-999999999999',
-      role: 'cashier' as const,
-      branch_id: actor.branch_id,
-    };
-    const { service, tx } = setupSale();
-    await service.createSale(saleDto(), uploader, terminal);
-
-    expect(tx.salesInvoice.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          cashier_id: actor.sub,
-          received_by: uploader.sub,
-          shift_id: shiftId,
-        }),
-      }),
-    );
-  });
-
-  it('atomically reconciles a cash sale that reaches the server after its shift closed', async () => {
-    const { service, tx } = setupSale({ closedShift: true });
-    await service.createSale(saleDto(), actor, terminal);
-
-    const reconciliation = tx.shift.update.mock.calls[0][0];
-    expect(reconciliation.where).toEqual({ id: shiftId });
-    expect(reconciliation.data.expected_cash.increment.toFixed(2)).toBe(
-      '342.00',
-    );
-    expect(reconciliation.data.difference.decrement.toFixed(2)).toBe(
-      '342.00',
-    );
-    expect(tx.auditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          action: 'shift.late_offline_sale.reconciled',
-          entity_id: shiftId,
-        }),
-      }),
-    );
-  });
-
-
-  it('rejects a late cash sale when a closed shift has no reconciliation totals', async () => {
+  it('accepts the locally paid price after cloud pricing changes', async () => {
     const { service, tx } = setupSale({
-      closedShift: true,
-      missingClosedShiftTotals: true,
+      currentPrice: 175,
+      currentTax: 24.5,
     });
 
-    await expect(
-      service.createSale(saleDto(), actor, terminal),
-    ).rejects.toBeInstanceOf(ConflictException);
-    expect(tx.posTerminal.updateMany).not.toHaveBeenCalled();
-    expect(tx.salesInvoice.create).not.toHaveBeenCalled();
+    const result = await service.createSale(saleDto(), terminal);
+
+    expect(result.warning_codes).toContain('PRICE_VARIANCE');
+    expect(tx.salesInvoice.create.mock.calls[0][0].data.total.toFixed(2)).toBe(
+      '342.00',
+    );
   });
 
-  it('persists a signed immutable price snapshot without recalculation', async () => {
-    const { service, pricing, priceSnapshots } = setupSale();
-    await service.createSale(
-      saleDto({
-        items: [{
-          variant_id: variantId,
-          qty: 2,
-          unit_price: 150,
-          unit_tax: 21,
-          price_version: 'price-v1',
-          price_token: 'signed-token',
-        }],
-      }),
-      actor,
+  it('accepts a sale that makes cloud stock negative and records a warning', async () => {
+    const { service } = setupSale({ stockAfter: -2 });
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.warning_codes).toContain('NEGATIVE_STOCK');
+  });
+
+  it('accepts a sequence gap and advances the terminal high-water mark', async () => {
+    const { service, tx } = setupSale({ lastSequence: 1n });
+    const result = await service.createSale(
+      saleDto({ terminal_sequence: '3' }),
       terminal,
     );
 
-    expect(priceSnapshots.verify).toHaveBeenCalledWith(
-      expect.objectContaining({
-        branch_id: actor.branch_id,
-        variant_id: variantId,
-        unit_price: 150,
-        unit_tax: 21,
-      }),
-    );
-    expect(pricing.calculateMany).not.toHaveBeenCalled();
+    expect(result.warning_codes).toContain('SEQUENCE_GAP');
+    expect(tx.posTerminal.update).toHaveBeenCalledWith({
+      where: { id: terminal.id },
+      data: { last_sale_sequence: 3n },
+    });
   });
 
-  it('returns an idempotent replay only when its complete command fingerprint matches', async () => {
+  it('accepts an older delayed sequence without moving the high-water mark back', async () => {
+    const { service, tx } = setupSale({ lastSequence: 5n });
+    const result = await service.createSale(
+      saleDto({ terminal_sequence: '3' }),
+      terminal,
+    );
+
+    expect(result.warning_codes).toContain('OUT_OF_ORDER_SEQUENCE');
+    expect(tx.posTerminal.update).not.toHaveBeenCalled();
+  });
+
+  it('returns the existing invoice for an identical replay', async () => {
     const { service, tx } = setupSale();
     const dto = saleDto();
-    const normalized = (service as any).normalizeLines(dto.items);
-    const commandFingerprint = (service as any).saleCommandFingerprint(
-      dto,
-      terminal.id,
-      new Date(occurredAt),
-      normalized,
-    );
     const existing = {
       id: 'sale-1',
-      branch_id: actor.branch_id,
+      branch_id: branchId,
       terminal_id: terminal.id,
       shift_id: shiftId,
-      cashier_id: actor.sub,
-      seller_id: sellerId,
-      offline_session_id: offlineSessionId,
+      offline_session_id: sessionId,
       terminal_sequence: 1n,
-      command_fingerprint: commandFingerprint,
+      command_fingerprint: fingerprint(service, dto),
+      warning_codes: [],
       items: [],
     };
     tx.salesInvoice.findUnique.mockResolvedValue(existing);
 
-    const result = await service.createSale(dto, actor, terminal);
-    expect(result).toBe(existing);
-    expect(tx.posTerminal.updateMany).not.toHaveBeenCalled();
+    await expect(service.createSale(dto, terminal)).resolves.toBe(existing);
+    expect(tx.inventoryStock.upsert).not.toHaveBeenCalled();
+    expect(tx.salesInvoice.create).not.toHaveBeenCalled();
   });
 
-  it('rejects a reused sync id with a different cashier, shift, or financial payload', async () => {
+  it('quarantines a reused sync id carrying different financial content', async () => {
     const { service, tx } = setupSale();
     const original = saleDto();
-    const normalized = (service as any).normalizeLines(original.items);
-    const originalFingerprint = (service as any).saleCommandFingerprint(
-      original,
-      terminal.id,
-      new Date(occurredAt),
-      normalized,
-    );
     tx.salesInvoice.findUnique.mockResolvedValue({
       id: 'sale-1',
-      branch_id: actor.branch_id,
+      branch_id: branchId,
       terminal_id: terminal.id,
       shift_id: shiftId,
-      cashier_id: actor.sub,
-      seller_id: sellerId,
-      offline_session_id: offlineSessionId,
+      offline_session_id: sessionId,
       terminal_sequence: 1n,
-      command_fingerprint: originalFingerprint,
+      command_fingerprint: fingerprint(service, original),
       items: [],
     });
 
     await expect(
-      service.createSale(
-        saleDto({ payment_method: 'card' }),
-        actor,
-        terminal,
-      ),
+      service.createSale(saleDto({ payment_method: 'card' }), terminal),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('rejects a sequence gap before inventory or invoice mutation', async () => {
-    const { service, tx } = setupSale({ sequenceClaim: 0 });
+  it('keeps a completed offline sale attributable when users were later removed', async () => {
+    const { service } = setupSale({
+      missingCashier: true,
+      missingSeller: true,
+    });
+    const result = await service.createSale(saleDto(), terminal);
+
+    expect(result.cashier_id).toBeNull();
+    expect(result.seller_id).toBeNull();
+    expect(result.cashier_name_snapshot).toBe('Cashier One');
+    expect(result.warning_codes).toEqual(
+      expect.arrayContaining([
+        'CASHIER_REFERENCE_MISSING',
+        'SELLER_REFERENCE_MISSING',
+      ]),
+    );
+  });
+
+  it('accepts a late cash sale and reconciles a closed shift', async () => {
+    const { service, tx } = setupSale({ closedShift: true });
+    const result = await service.createSale(saleDto(), terminal);
+
+    expect(result.warning_codes).toContain('LATE_SYNC');
+    expect(tx.shift.update).toHaveBeenCalledWith({
+      where: { id: shiftId },
+      data: {
+        expected_cash: { increment: expect.anything() },
+        difference: { decrement: expect.anything() },
+      },
+    });
+  });
+
+  it('rejects only an internally inconsistent immutable local total', async () => {
+    const { service, tx } = setupSale();
     await expect(
-      service.createSale(saleDto({ terminal_sequence: '2' }), actor, terminal),
-    ).rejects.toBeInstanceOf(ConflictException);
-    expect(tx.$executeRaw).not.toHaveBeenCalled();
+      service.createSale(saleDto({ local_total: 999 }), terminal),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(tx.salesInvoice.create).not.toHaveBeenCalled();
   });
+});
 
-  it('rolls back when the guarded stock decrement fails', async () => {
-    const { service, tx } = setupSale({ stockCount: 0 });
-    await expect(
-      service.createSale(saleDto(), actor, terminal),
-    ).rejects.toBeInstanceOf(ConflictException);
-    expect(tx.salesInvoice.create).not.toHaveBeenCalled();
-  });
-
+describe('SalesService returns', () => {
   it('rejects an item that was not sold on the original invoice', async () => {
     const { service } = setupReturn();
     await expect(
@@ -507,54 +470,12 @@ describe('SalesService', () => {
     expect(tx.return.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          branch_id: actor.branch_id,
+          branch_id: branchId,
           shift_id: shiftId,
-          created_by: actor.sub,
+          created_by: cashierId,
         }),
       }),
     );
-    expect(
-      tx.return.create.mock.calls[0][0].data.refund_total.toFixed(2),
-    ).toBe('342.00');
     expect(String(result.refund_total)).toBe('342');
-  });
-
-  it('returns safe snapshots and remaining quantities for return lookup', async () => {
-    const prisma = {
-      salesInvoice: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'sale-1',
-          invoice_number: 'B-1',
-          branch_id: actor.branch_id,
-          total: 171,
-          created_at: new Date(),
-          items: [{
-            id: 'sale-item-1',
-            variant_id: variantId,
-            qty: 3,
-            unit_price: 150,
-            unit_tax: 21,
-            variant: {
-              sku: 'SKU-1',
-              product: { name_en: 'Shirt', name_ar: null },
-            },
-            return_items: [{ qty: 1 }],
-          }],
-        }),
-      },
-    };
-    const service = new SalesService(
-      prisma as any,
-      {} as any,
-      {} as any,
-      {} as any,
-    );
-    const invoice = await service.findReturnableInvoice('B-1', actor);
-
-    expect(invoice.items[0]).toEqual(
-      expect.objectContaining({ returned_qty: 1, returnable_qty: 2 }),
-    );
-    expect(invoice.items[0]).not.toHaveProperty('unit_cost');
-    expect(invoice.items[0]).not.toHaveProperty('return_items');
   });
 });

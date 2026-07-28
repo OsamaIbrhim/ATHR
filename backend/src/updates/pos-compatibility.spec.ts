@@ -37,15 +37,15 @@ describe('POS compatibility contract', () => {
     delete process.env.POS_MIN_APP_VERSION;
     delete process.env.POS_REQUIRE_PROTOCOL_HEADERS;
     expect(readPosCompatibilityManifest()).toMatchObject({
-      api_protocol: { minimum: 1, maximum: 1 },
-      minimum_pos_version: '1.3.0',
+      api_protocol: { minimum: 2, maximum: 2 },
+      minimum_pos_version: '1.4.0',
       require_protocol_headers: false,
     });
   });
 
   it('compares semantic versions including prereleases', () => {
-    expect(comparePosVersions('1.3.1', '1.3.0')).toBeGreaterThan(0);
-    expect(comparePosVersions('1.3.0', '1.3.0-beta.1')).toBeGreaterThan(0);
+    expect(comparePosVersions('1.4.1', '1.4.0')).toBeGreaterThan(0);
+    expect(comparePosVersions('1.4.0', '1.4.0-beta.1')).toBeGreaterThan(0);
   });
 
   it('accepts legacy clients while header enforcement is staged off', () => {
@@ -55,15 +55,15 @@ describe('POS compatibility contract', () => {
 
   it('accepts a supported protocol and application version', () => {
     expect(new PosProtocolGuard().canActivate(context({
-      'x-pos-protocol-version': '1',
-      'x-pos-app-version': '1.3.1',
+      'x-pos-protocol-version': '2',
+      'x-pos-app-version': '1.4.0',
     }))).toBe(true);
   });
 
   it('rejects unsupported protocols as permanent conflicts', () => {
     const result = responseOf(() => new PosProtocolGuard().canActivate(context({
-      'x-pos-protocol-version': '2',
-      'x-pos-app-version': '1.3.1',
+      'x-pos-protocol-version': '3',
+      'x-pos-app-version': '1.4.0',
     })));
     expect(result).toMatchObject({
       status: 409,
@@ -74,7 +74,7 @@ describe('POS compatibility contract', () => {
   it('rejects an application below the configured minimum', () => {
     process.env.POS_MIN_APP_VERSION = '1.4.0';
     const result = responseOf(() => new PosProtocolGuard().canActivate(context({
-      'x-pos-protocol-version': '1',
+      'x-pos-protocol-version': '2',
       'x-pos-app-version': '1.3.1',
     })));
     expect(result).toMatchObject({

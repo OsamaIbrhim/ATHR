@@ -25,7 +25,6 @@ type SyncBridge = Pick<
 type SyncApi = Pick<
   typeof api,
   | 'sale'
-  | 'reconcileSaleReviews'
   | 'pull'
   | 'heartbeat'
   | 'compatibility'
@@ -77,6 +76,9 @@ function serverDocument(result: any) {
   return {
     server_document_id: result?.id || null,
     server_document_number: result?.invoice_number || null,
+    warning_codes: Array.isArray(result?.warning_codes)
+      ? result.warning_codes
+      : [],
   }
 }
 
@@ -115,18 +117,6 @@ export async function performSync(
 ): Promise<SyncState> {
   let state = await local.sync_get_status()
 
-  let compatibilityPayload: unknown
-  try {
-    compatibilityPayload = await client.compatibility()
-  } catch (error) {
-    throw compatibilityFailure(error)
-  }
-
-  const compatible = assertPosCompatibility(
-    compatibilityPayload,
-    state.app_version,
-  )
-
   await local.sync_set_status({
     sync_status: 'syncing',
     last_error: null,
@@ -138,30 +128,11 @@ export async function performSync(
     last_error: null,
     next_sync_at: null,
     blocked_reason: null,
-    backend_version: compatible.backendVersion,
-    backend_deployment_sha: compatible.deploymentSha,
-    api_protocol: compatible.protocol,
   }
 
-  await publishHeartbeat(client, state)
-
-  const reviews = await client.reconcileSaleReviews()
-  if (Number(reviews.awaiting || 0) > 0) {
-    const current = await local.sync_get_status()
-    const waiting: SyncState = {
-      ...state,
-      sync_status: 'error',
-      last_error:
-        `توجد ${reviews.awaiting} عملية في انتظار قرار مدير الفرع من لوحة الإدارة.`,
-      pending_count: current.pending_count,
-      next_sync_at: new Date(Date.now() + 30_000).toISOString(),
-      blocked_reason: 'SALE_REVIEW_PENDING',
-    }
-    await local.sync_set_status(waiting)
-    await publishHeartbeat(client, waiting).catch(() => undefined)
-    return waiting
-  }
-
+  // Completed local sales are uploaded before catalog refreshes, heartbeat, or
+  // compatibility checks. A later backend/UI change must never strand a sale
+  // that the cashier already committed locally.
   const outbox = await local.sync_get_outbox()
   const nowMs = Date.now()
   const dueOutbox = outbox.filter(
@@ -219,15 +190,19 @@ export async function performSync(
         retryable: decision.retryable,
       }).catch(() => undefined)
 
+      if (!decision.retryable) {
+        // A corrupt/conflicting operation is isolated. It must not block later
+        // valid sales or catalog synchronization.
+        continue
+      }
+
       const current =
         await local.sync_get_status()
 
       const failed: SyncState = {
         ...state,
         sync_status: syncStatusForFailure(decision),
-        last_error: decision.retryable
-          ? message
-          : `عملية مرفوضة وتحتاج مراجعة: ${message}`,
+        last_error: message,
         pending_count: current.pending_count,
         next_sync_at: decision.nextAttemptAt,
         blocked_reason: decision.blockedReason,
@@ -276,20 +251,26 @@ export async function performSync(
     return pending
   }
 
-  const unresolved = await local.sync_get_status()
-  if (unresolved.pending_count > 0) {
-    const failed: SyncState = {
-      ...state,
-      sync_status: 'error',
-      last_error: 'توجد عمليات فاشلة تحتاج مراجعة قبل اكتمال المزامنة.',
-      pending_count: unresolved.pending_count,
-      next_sync_at: null,
-      blocked_reason: 'OUTBOX_REVIEW_REQUIRED',
-    }
-    await local.sync_set_status(failed)
-    await publishHeartbeat(client, failed).catch(() => undefined)
-    return failed
+  const localStatus = await local.sync_get_status()
+
+  let compatibilityPayload: unknown
+  try {
+    compatibilityPayload = await client.compatibility()
+  } catch (error) {
+    throw compatibilityFailure(error)
   }
+
+  const compatible = assertPosCompatibility(
+    compatibilityPayload,
+    state.app_version,
+  )
+  state = {
+    ...state,
+    backend_version: compatible.backendVersion,
+    backend_deployment_sha: compatible.deploymentSha,
+    api_protocol: compatible.protocol,
+  }
+  await publishHeartbeat(client, state)
 
   let cursor = state.sync_cursor || null
   let response: any
@@ -346,8 +327,11 @@ export async function performSync(
     last_sync_at:
       response.server_time ||
       new Date().toISOString(),
-    last_error: null,
+    last_error: localStatus.quarantined_count
+      ? `تمت المزامنة مع عزل ${localStatus.quarantined_count} عملية تالفة أو متعارضة دون تعطيل باقي الفواتير.`
+      : null,
     pending_count: 0,
+    quarantined_count: localStatus.quarantined_count,
     next_sync_at: null,
     blocked_reason: null,
     sync_cursor: cursor,

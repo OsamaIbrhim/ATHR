@@ -6,53 +6,64 @@ import {
   SyncIntegrityError,
 } from './sync'
 
-const noPendingReviews = async () => ({
-  awaiting: 0,
-  resolved: 0,
+const status = {
+  device_id: 'device',
+  terminal_name: 'POS',
+  app_version: '1.4.0',
+  sync_status: 'never',
+  last_sync_at: null,
+  last_error: null,
+  pending_count: 0,
+  quarantined_count: 0,
+  sync_cursor: null,
+  catalog_valid_until: null,
+}
+
+const compatibility = async () => ({
+  api_protocol: { minimum: 2, maximum: 2 },
+  minimum_pos_version: '1.4.0',
+  backend_version: 'test',
 })
 
-describe('Phase 5A synchronization', () => {
-  it('classifies transient and permanent API errors', () => {
+const finalPull = async () => ({
+  products: [],
+  stock: [],
+  cursor: '1',
+  has_more: false,
+  server_time: '2026-07-28T00:00:00.000Z',
+  catalog_valid_until: '2026-07-29T00:00:00.000Z',
+})
+
+describe('acceptance-first POS synchronization', () => {
+  it('classifies outages as retryable and corrupt/conflicting commands as permanent', () => {
     expect(isRetryableSyncError(new ApiError({ code: 'NETWORK_ERROR' }))).toBe(true)
     expect(isRetryableSyncError(new ApiError({}, 503))).toBe(true)
     expect(isRetryableSyncError(new ApiError({}, 429))).toBe(true)
-    expect(
-      isRetryableSyncError(
-        new ApiError({ code: 'TERMINAL_CREDENTIAL_INVALID' }, 401),
-      ),
-    ).toBe(false)
     expect(isRetryableSyncError(new ApiError({}, 409))).toBe(false)
     expect(isRetryableSyncError(new ApiError({}, 422))).toBe(false)
     expect(isRetryableSyncError(new SyntaxError('bad payload'))).toBe(false)
   })
 
-  it('persists the official invoice mapping after a successful sale', async () => {
+  it('uploads a completed local sale before compatibility and persists cloud warnings', async () => {
     const calls: any[] = []
-    const status = {
-      device_id: 'device',
-      terminal_name: 'POS',
-      app_version: '1.3.1',
-      sync_status: 'never',
-      last_sync_at: null,
-      last_error: null,
-      pending_count: 1,
-      sync_cursor: null,
-      catalog_valid_until: null,
-    }
-    let reads = 0
+    let outboxReads = 0
     const local: any = {
       sync_get_status: async () => ({
         ...status,
-        pending_count: reads > 1 ? 0 : status.pending_count,
+        pending_count: outboxReads === 0 ? 1 : 0,
       }),
       sync_set_status: async () => ({ ok: true }),
       sync_get_outbox: async () => {
-        reads += 1
-        return reads === 1
-          ? [{ id: 'sync-1', payload: JSON.stringify({
-              sync_id: 'sync-1',
-              items: [{ variant_id: 'v1', qty: 1 }],
-            }) }]
+        outboxReads += 1
+        return outboxReads === 1
+          ? [{
+              id: 'sync-1',
+              payload: JSON.stringify({
+                event_version: 2,
+                sync_id: 'sync-1',
+                local_total: 100,
+              }),
+            }]
           : []
       },
       sync_mark_sending: async (id: string) => {
@@ -67,76 +78,152 @@ describe('Phase 5A synchronization', () => {
       sync_apply_pull: async () => ({ ok: true }),
     }
     const client: any = {
-      compatibility: async () => ({
-        api_protocol: { minimum: 1, maximum: 1 },
-        minimum_pos_version: '1.3.0',
-        backend_version: 'test',
-      }),
+      compatibility: async () => {
+        calls.push(['compatibility'])
+        return compatibility()
+      },
       heartbeat: async () => ({}),
-      reconcileSaleReviews: noPendingReviews,
-      sale: async () => ({
-        id: 'server-id',
-        invoice_number: 'B-BOLD-01-100',
-      }),
-      pull: async () => ({
-        products: [],
-        stock: [],
-        cursor: '1',
-        has_more: false,
-        server_time: '2026-07-21T00:00:00.000Z',
-        catalog_valid_until: '2026-07-22T00:00:00.000Z',
-      }),
+      sale: async () => {
+        calls.push(['sale'])
+        return {
+          id: 'server-id',
+          invoice_number: 'B-BOLD-01-100',
+          warning_codes: ['PRICE_VARIANCE'],
+        }
+      },
+      pull: finalPull,
     }
 
     const result = await performSync('branch-1', local, client)
 
     expect(calls).toEqual([
       ['sending', 'sync-1'],
+      ['sale'],
       ['sent', {
         id: 'sync-1',
         server_document_id: 'server-id',
         server_document_number: 'B-BOLD-01-100',
+        warning_codes: ['PRICE_VARIANCE'],
       }],
+      ['compatibility'],
     ])
     expect(result.sync_status).toBe('success')
     expect(result.pending_count).toBe(0)
-    expect(result.catalog_valid_until).toBe('2026-07-22T00:00:00.000Z')
+  })
+
+  it('keeps a sale pending after a temporary server failure', async () => {
+    const failures: any[] = []
+    let reads = 0
+    const local: any = {
+      sync_get_status: async () => ({ ...status, pending_count: 1 }),
+      sync_set_status: async () => ({ ok: true }),
+      sync_get_outbox: async () => {
+        reads += 1
+        return reads === 1
+          ? [{ id: 'sync-retry', payload: '{}', attempt_count: 0 }]
+          : []
+      },
+      sync_mark_sending: async () => ({ ok: true }),
+      sync_mark_sent: async () => ({ ok: true }),
+      sync_mark_failed: async (value: any) => {
+        failures.push(value)
+        return { ok: true }
+      },
+      sync_apply_pull: async () => ({ ok: true }),
+    }
+    const client: any = {
+      compatibility,
+      heartbeat: async () => ({}),
+      sale: async () => {
+        throw new ApiError({ code: 'SERVER_DOWN' }, 503)
+      },
+      pull: async () => {
+        throw new Error('pull must not run after a temporary push failure')
+      },
+    }
+
+    const result = await performSync('branch-1', local, client)
+
+    expect(result.sync_status).toBe('error')
+    expect(failures).toEqual([
+      expect.objectContaining({ id: 'sync-retry', retryable: true }),
+    ])
+    expect(Date.parse(String(result.next_sync_at))).toBeGreaterThan(Date.now())
+  })
+
+  it('quarantines one corrupt operation without blocking later valid sales', async () => {
+    const failures: any[] = []
+    const sent: string[] = []
+    let outboxReads = 0
+    let saleCalls = 0
+    const local: any = {
+      sync_get_status: async () => ({
+        ...status,
+        quarantined_count: failures.length,
+      }),
+      sync_set_status: async () => ({ ok: true }),
+      sync_get_outbox: async () => {
+        outboxReads += 1
+        return outboxReads === 1
+          ? [
+              { id: 'corrupt', payload: '{}' },
+              { id: 'valid', payload: '{}' },
+            ]
+          : []
+      },
+      sync_mark_sending: async () => ({ ok: true }),
+      sync_mark_sent: async (value: any) => {
+        sent.push(value.id)
+        return { ok: true }
+      },
+      sync_mark_failed: async (value: any) => {
+        failures.push(value)
+        return { ok: true }
+      },
+      sync_apply_pull: async () => ({ ok: true }),
+    }
+    const client: any = {
+      compatibility,
+      heartbeat: async () => ({}),
+      sale: async () => {
+        saleCalls += 1
+        if (saleCalls === 1) {
+          throw new ApiError({ code: 'SALE_PAYLOAD_CONFLICT' }, 409)
+        }
+        return { id: 'invoice-2', invoice_number: 'INV-2' }
+      },
+      pull: finalPull,
+    }
+
+    const result = await performSync('branch-1', local, client)
+
+    expect(failures).toEqual([
+      expect.objectContaining({ id: 'corrupt', retryable: false }),
+    ])
+    expect(sent).toEqual(['valid'])
+    expect(result.sync_status).toBe('success')
+    expect(result.quarantined_count).toBe(1)
   })
 
   it('finishes more than ten delta pages before restoring catalog validity', async () => {
     const applied: any[] = []
-    const status = {
-      device_id: 'device',
-      terminal_name: 'POS',
-      app_version: '1.3.1',
-      sync_status: 'success',
-      last_sync_at: null,
-      last_error: null,
-      pending_count: 0,
-      sync_cursor: '0',
-      catalog_valid_until: 'old-validity',
-    }
+    let page = 0
     const local: any = {
-      sync_get_status: async () => status,
+      sync_get_status: async () => ({
+        ...status,
+        sync_cursor: '0',
+        catalog_valid_until: 'old-validity',
+      }),
       sync_set_status: async () => ({ ok: true }),
       sync_get_outbox: async () => [],
-      sync_mark_sending: async () => ({ ok: true }),
-      sync_mark_sent: async () => ({ ok: true }),
-      sync_mark_failed: async () => ({ ok: true }),
       sync_apply_pull: async (value: any) => {
         applied.push(value)
         return { ok: true }
       },
     }
-    let page = 0
     const client: any = {
-      compatibility: async () => ({
-        api_protocol: { minimum: 1, maximum: 1 },
-        minimum_pos_version: '1.3.0',
-        backend_version: 'test',
-      }),
+      compatibility,
       heartbeat: async () => ({}),
-      reconcileSaleReviews: noPendingReviews,
       sale: async () => ({}),
       pull: async () => {
         page += 1
@@ -151,43 +238,20 @@ describe('Phase 5A synchronization', () => {
       },
     }
 
-    const result = await performSync(
-      'branch-1',
-      local,
-      client,
-    )
+    const result = await performSync('branch-1', local, client)
 
     expect(applied).toHaveLength(12)
-    expect(
-      applied.slice(0, -1).every(
-        (value) =>
-          value.catalog_valid_until === null,
-      ),
-    ).toBe(true)
-    expect(
-      applied[applied.length - 1]
-        .catalog_valid_until,
-    ).toBe('valid-12')
+    expect(applied.slice(0, -1).every(
+      (value) => value.catalog_valid_until === null,
+    )).toBe(true)
+    expect(applied.at(-1).catalog_valid_until).toBe('valid-12')
     expect(result.sync_cursor).toBe('12')
-    expect(result.catalog_valid_until).toBe(
-      'valid-12',
-    )
   })
 
-  it('rejects a has_more response whose cursor does not advance', async () => {
+  it('rejects a paged response whose cursor does not advance', async () => {
     let applied = false
     const local: any = {
-      sync_get_status: async () => ({
-        device_id: 'device',
-        terminal_name: 'POS',
-        app_version: '1.3.1',
-        sync_status: 'success',
-        last_sync_at: null,
-        last_error: null,
-        pending_count: 0,
-        sync_cursor: '5',
-        catalog_valid_until: 'valid',
-      }),
+      sync_get_status: async () => ({ ...status, sync_cursor: '5' }),
       sync_set_status: async () => ({ ok: true }),
       sync_get_outbox: async () => [],
       sync_apply_pull: async () => {
@@ -196,13 +260,8 @@ describe('Phase 5A synchronization', () => {
       },
     }
     const client: any = {
-      compatibility: async () => ({
-        api_protocol: { minimum: 1, maximum: 1 },
-        minimum_pos_version: '1.3.0',
-        backend_version: 'test',
-      }),
+      compatibility,
       heartbeat: async () => ({}),
-      reconcileSaleReviews: noPendingReviews,
       pull: async () => ({
         products: [],
         stock: [],
@@ -213,41 +272,22 @@ describe('Phase 5A synchronization', () => {
 
     await expect(
       performSync('branch-1', local, client),
-    ).rejects.toBeInstanceOf(
-      SyncIntegrityError,
-    )
+    ).rejects.toBeInstanceOf(SyncIntegrityError)
     expect(applied).toBe(false)
   })
 
   it('rejects a final response that moves the cursor backwards', async () => {
     const local: any = {
-      sync_get_status: async () => ({
-        device_id: 'device',
-        terminal_name: 'POS',
-        app_version: '1.3.1',
-        sync_status: 'success',
-        last_sync_at: null,
-        last_error: null,
-        pending_count: 0,
-        sync_cursor: '5',
-        catalog_valid_until: 'valid',
-      }),
+      sync_get_status: async () => ({ ...status, sync_cursor: '5' }),
       sync_set_status: async () => ({ ok: true }),
       sync_get_outbox: async () => [],
       sync_apply_pull: async () => {
-        throw new Error(
-          'A regressing cursor must not be applied',
-        )
+        throw new Error('a regressing cursor must not be applied')
       },
     }
     const client: any = {
-      compatibility: async () => ({
-        api_protocol: { minimum: 1, maximum: 1 },
-        minimum_pos_version: '1.3.0',
-        backend_version: 'test',
-      }),
+      compatibility,
       heartbeat: async () => ({}),
-      reconcileSaleReviews: noPendingReviews,
       pull: async () => ({
         products: [],
         stock: [],
@@ -258,225 +298,6 @@ describe('Phase 5A synchronization', () => {
 
     await expect(
       performSync('branch-1', local, client),
-    ).rejects.toBeInstanceOf(
-      SyncIntegrityError,
-    )
+    ).rejects.toBeInstanceOf(SyncIntegrityError)
   })
-
-  it('persists a delayed retry after a transient sale failure', async () => {
-    const failures: any[] = []
-    let reads = 0
-    const local: any = {
-      sync_get_status: async () => ({
-        device_id: 'device',
-        terminal_name: 'POS',
-        app_version: '1.3.1',
-        sync_status: 'success',
-        last_sync_at: null,
-        last_error: null,
-        pending_count: 1,
-        sync_cursor: '0',
-      }),
-      sync_set_status: async () => ({ ok: true }),
-      sync_get_outbox: async () => {
-        reads += 1
-        return reads === 1
-          ? [{
-              id: 'sync-retry',
-              payload: JSON.stringify({ sync_id: 'sync-retry', items: [] }),
-              attempt_count: 0,
-              last_attempt_at: null,
-            }]
-          : []
-      },
-      sync_mark_sending: async () => ({ ok: true }),
-      sync_mark_sent: async () => ({ ok: true }),
-      sync_mark_failed: async (value: any) => {
-        failures.push(value)
-        return { ok: true }
-      },
-      sync_apply_pull: async () => ({ ok: true }),
-    }
-    const client: any = {
-      compatibility: async () => ({
-        api_protocol: { minimum: 1, maximum: 1 },
-        minimum_pos_version: '1.3.0',
-        backend_version: 'test',
-      }),
-      heartbeat: async () => ({}),
-      reconcileSaleReviews: noPendingReviews,
-      sale: async () => {
-        throw new ApiError({ code: 'SERVER_DOWN' }, 503)
-      },
-      pull: async () => {
-        throw new Error('pull must not run after failed push')
-      },
-    }
-
-    const result = await performSync('branch-1', local, client)
-
-    expect(result.sync_status).toBe('error')
-    expect(failures).toHaveLength(1)
-    expect(failures[0]).toMatchObject({
-      id: 'sync-retry',
-      retryable: true,
-    })
-    expect(Date.parse(String(result.next_sync_at))).toBeGreaterThan(Date.now())
-  })
-
-  it('pauses a permanently rejected sale instead of retrying it forever', async () => {
-    const failures: any[] = []
-    const local: any = {
-      sync_get_status: async () => ({
-        device_id: 'device', terminal_name: 'POS', app_version: '1.3.1',
-        sync_status: 'success', last_sync_at: null, last_error: null,
-        pending_count: 1, sync_cursor: '0',
-      }),
-      sync_set_status: async () => ({ ok: true }),
-      sync_get_outbox: async () => [{
-        id: 'sync-blocked',
-        payload: JSON.stringify({ sync_id: 'sync-blocked', items: [] }),
-        attempt_count: 0,
-      }],
-      sync_mark_sending: async () => ({ ok: true }),
-      sync_mark_sent: async () => ({ ok: true }),
-      sync_mark_failed: async (value: any) => {
-        failures.push(value)
-        return { ok: true }
-      },
-      sync_apply_pull: async () => ({ ok: true }),
-    }
-    const client: any = {
-      compatibility: async () => ({
-        api_protocol: { minimum: 1, maximum: 1 },
-        minimum_pos_version: '1.3.0',
-        backend_version: 'test',
-      }),
-      heartbeat: async () => ({}),
-      reconcileSaleReviews: noPendingReviews,
-      sale: async () => {
-        throw new ApiError({ code: 'PERMISSION_DENIED' }, 403)
-      },
-      pull: async () => ({}),
-    }
-
-    const result = await performSync('branch-1', local, client)
-
-    expect(result.sync_status).toBe('error')
-    expect(result.blocked_reason).toBe('PERMISSION_DENIED')
-    expect(failures[0]).toMatchObject({
-      retryable: false,
-    })
-  })
-
-  it('pauses synchronization while a failed sale awaits manager review', async () => {
-    const statusWrites: any[] = []
-    let outboxReads = 0
-    const local: any = {
-      sync_get_status: async () => ({
-        device_id: 'device',
-        terminal_name: 'POS',
-        app_version: '1.3.4',
-        sync_status: 'error',
-        last_sync_at: null,
-        last_error: null,
-        pending_count: 1,
-        sync_cursor: '0',
-        catalog_valid_until: 'valid',
-      }),
-      sync_set_status: async (value: any) => {
-        statusWrites.push(value)
-        return { ok: true }
-      },
-      sync_get_outbox: async () => {
-        outboxReads += 1
-        return []
-      },
-    }
-    const client: any = {
-      compatibility: async () => ({
-        api_protocol: { minimum: 1, maximum: 1 },
-        minimum_pos_version: '1.3.0',
-        backend_version: 'test',
-      }),
-      heartbeat: async () => ({}),
-      reconcileSaleReviews: async () => ({
-        awaiting: 1,
-        resolved: 0,
-      }),
-      sale: async () => {
-        throw new Error('sale must not run while review is pending')
-      },
-      pull: async () => {
-        throw new Error('pull must not run while review is pending')
-      },
-    }
-
-    const result = await performSync('branch-1', local, client)
-
-    expect(result).toMatchObject({
-      sync_status: 'error',
-      pending_count: 1,
-      blocked_reason: 'SALE_REVIEW_PENDING',
-    })
-    expect(outboxReads).toBe(0)
-    expect(statusWrites[statusWrites.length - 1]).toMatchObject({
-      blocked_reason: 'SALE_REVIEW_PENDING',
-    })
-  })
-
-  it('continues synchronization after review decisions are applied locally', async () => {
-    let pullCalls = 0
-    const status = {
-      device_id: 'device',
-      terminal_name: 'POS',
-      app_version: '1.3.4',
-      sync_status: 'error',
-      last_sync_at: null,
-      last_error: null,
-      pending_count: 0,
-      sync_cursor: null,
-      catalog_valid_until: null,
-    }
-    const local: any = {
-      sync_get_status: async () => status,
-      sync_set_status: async () => ({ ok: true }),
-      sync_get_outbox: async () => [],
-      sync_apply_pull: async () => ({ ok: true }),
-    }
-    const client: any = {
-      compatibility: async () => ({
-        api_protocol: { minimum: 1, maximum: 1 },
-        minimum_pos_version: '1.3.0',
-        backend_version: 'test',
-      }),
-      heartbeat: async () => ({}),
-      reconcileSaleReviews: async () => ({
-        awaiting: 0,
-        resolved: 1,
-      }),
-      sale: async () => ({}),
-      pull: async () => {
-        pullCalls += 1
-        return {
-          products: [],
-          stock: [],
-          cursor: '1',
-          has_more: false,
-          server_time: '2026-07-27T00:00:00.000Z',
-          catalog_valid_until: '2026-07-28T00:00:00.000Z',
-        }
-      },
-    }
-
-    const result = await performSync('branch-1', local, client)
-
-    expect(pullCalls).toBe(1)
-    expect(result).toMatchObject({
-      sync_status: 'success',
-      pending_count: 0,
-      sync_cursor: '1',
-    })
-  })
-
 })

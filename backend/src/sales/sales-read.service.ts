@@ -18,6 +18,9 @@ export class SalesReadService {
       ...(branchId ? { branch_id: branchId } : {}),
       ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
       ...(dto.status ? { status: dto.status } : {}),
+      ...(dto.has_warnings === 'true'
+        ? { warning_codes: { isEmpty: false } }
+        : {}),
       ...(dto.from || dto.to
         ? {
             occurred_at: {
@@ -41,6 +44,7 @@ export class SalesReadService {
       q,
       payment: dto.payment_method,
       status: dto.status,
+      hasWarnings: dto.has_warnings,
       from: dto.from,
       to: dto.to,
     })
@@ -65,6 +69,10 @@ export class SalesReadService {
           payment_method: true,
           language: true,
           sync_id: true,
+          event_version: true,
+          warning_codes: true,
+          cashier_name_snapshot: true,
+          seller_name_snapshot: true,
           shift_id: true,
           offline_session_id: true,
           terminal_sequence: true,

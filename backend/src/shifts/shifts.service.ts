@@ -8,14 +8,11 @@ import { PosTerminal, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { assertBranchAccess } from '../auth/branch-access';
-import { OfflineAccountingTicketService } from './offline-accounting-ticket.service';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class ShiftsService {
-  constructor(
-    private prisma: PrismaService,
-    private offlineAccounting: OfflineAccountingTicketService,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   async open(branch_id: string, actor: AuthenticatedUser, opening_cash = 0) {
     assertBranchAccess(actor, branch_id);
@@ -61,14 +58,26 @@ export class ShiftsService {
       throw new ForbiddenException('The cashier, terminal and shift must belong to the same branch');
     }
 
-    return this.offlineAccounting.issue({
+    const now = Date.now();
+    const configuredTtl = Number(
+      process.env.POS_OFFLINE_CONTEXT_TTL_MS || 24 * 60 * 60 * 1000,
+    );
+    const ttlMs =
+      Number.isInteger(configuredTtl) && configuredTtl >= 15 * 60 * 1000
+        ? configuredTtl
+        : 24 * 60 * 60 * 1000;
+    return {
+      context_version: 2,
+      session_id: randomUUID(),
       user_id: actor.sub,
       role: actor.role,
       branch_id: shift.branch_id,
       terminal_id: terminal.id,
       shift_id: shift.id,
-      server_last_sale_sequence: terminal.last_sale_sequence,
-    });
+      issued_at: new Date(now).toISOString(),
+      expires_at: new Date(now + ttlMs).toISOString(),
+      server_last_sale_sequence: terminal.last_sale_sequence.toString(),
+    };
   }
 
   async close(

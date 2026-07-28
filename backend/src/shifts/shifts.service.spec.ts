@@ -28,7 +28,7 @@ describe('ShiftsService', () => {
       salesInvoice: { aggregate: salesAggregate },
       return: { aggregate: returnAggregate },
     };
-    const service = new ShiftsService(prisma as any, {} as any);
+    const service = new ShiftsService(prisma as any);
 
     await service.close('shift-1', actor, 440);
 
@@ -48,7 +48,7 @@ describe('ShiftsService', () => {
     expect(data.closed_by).toBe(actor.sub);
   });
 
-  it('issues a terminal-bound signed context only for an open shift in the same branch', async () => {
+  it('issues a plain terminal-bound context for an open shift in the same branch', async () => {
     const prisma = {
       shift: {
         findUnique: jest.fn().mockResolvedValue({
@@ -59,10 +59,7 @@ describe('ShiftsService', () => {
         }),
       },
     };
-    const tickets = {
-      issue: jest.fn().mockReturnValue({ token: 'signed' }),
-    };
-    const service = new ShiftsService(prisma as any, tickets as any);
+    const service = new ShiftsService(prisma as any);
     const result = await service.issueOfflineContext(
       'shift-1',
       actor,
@@ -73,14 +70,19 @@ describe('ShiftsService', () => {
       },
     );
 
-    expect(tickets.issue).toHaveBeenCalledWith({
+    expect(result).toMatchObject({
+      context_version: 2,
+      session_id: expect.any(String),
       user_id: actor.sub,
       role: 'cashier',
       branch_id: 'branch-1',
       terminal_id: 'terminal-1',
       shift_id: 'shift-1',
-      server_last_sale_sequence: 4n,
+      server_last_sale_sequence: '4',
     });
-    expect(result).toEqual({ token: 'signed' });
+    expect(result).toHaveProperty('issued_at');
+    expect(result).toHaveProperty('expires_at');
+    expect(result).not.toHaveProperty('token');
+    expect(result).not.toHaveProperty('key_id');
   });
 });

@@ -22,32 +22,46 @@ export class CreateSaleItemDto {
   @Min(1)
   qty: number;
 
-  // Optional only for replaying pre-Phase-5A outbox rows. New POS sales always
-  // provide the complete signed snapshot; mixed legacy/signed carts are rejected.
-  @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
-  unit_price?: number;
+  unit_price: number;
 
-  @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  unit_tax?: number;
+  unit_tax: number;
+
+  @IsString()
+  @MaxLength(191)
+  sku_snapshot: string;
+
+  @IsString()
+  @MaxLength(300)
+  name_ar_snapshot: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(64)
-  price_version?: string;
+  @MaxLength(300)
+  name_en_snapshot?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(2048)
-  price_token?: string;
+  @MaxLength(100)
+  size_snapshot?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  color_snapshot?: string;
 }
 
 export class CreateSaleDto {
+  @Type(() => Number)
+  @IsInt()
+  @IsIn([2])
+  event_version: number;
+
   @IsUUID()
   sync_id: string;
 
@@ -60,8 +74,16 @@ export class CreateSaleDto {
   @IsUUID()
   origin_cashier_id: string;
 
+  @IsString()
+  @MaxLength(200)
+  cashier_name_snapshot: string;
+
   @IsUUID()
   seller_id: string;
+
+  @IsString()
+  @MaxLength(200)
+  seller_name_snapshot: string;
 
   @IsUUID()
   offline_session_id: string;
@@ -74,10 +96,6 @@ export class CreateSaleDto {
 
   @IsDateString()
   occurred_at: string;
-
-  @IsString()
-  @MaxLength(4096)
-  offline_accounting_token: string;
 
   @IsOptional()
   @Matches(/^(?:\+20|0)1[0125]\d{8}$/, {
@@ -98,9 +116,8 @@ export class CreateSaleDto {
   @IsIn(['ar', 'en'])
   language?: string;
 
-  @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  local_total?: number;
+  local_total: number;
 }

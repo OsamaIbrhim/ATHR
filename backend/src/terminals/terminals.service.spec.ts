@@ -61,6 +61,28 @@ describe('TerminalsService', () => {
     expect(result.online).toBe(true);
   });
 
+  it('authenticates an enrolled device for delayed sale upload without a JWT actor', async () => {
+    const token = 'device-secret';
+    const existing = {
+      id: 'terminal-1',
+      branch_id: 'branch-1',
+      is_revoked: false,
+      device_token_hash: hash(token),
+    };
+    const prisma = {
+      posTerminal: {
+        findUnique: jest.fn().mockResolvedValue(existing),
+      },
+    };
+
+    await expect(
+      new TerminalsService(prisma as any).authenticateDevice(
+        dto.device_id,
+        token,
+      ),
+    ).resolves.toBe(existing);
+  });
+
   it('rejects an unknown or incorrectly credentialed device', async () => {
     const prisma = { posTerminal: { findUnique: jest.fn().mockResolvedValue(null) } };
     await expect(new TerminalsService(prisma as any).heartbeat(dto, 'wrong', actor)).rejects.toBeInstanceOf(UnauthorizedException);

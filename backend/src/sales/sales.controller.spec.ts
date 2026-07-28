@@ -38,6 +38,7 @@ describe('SalesController POS terminal enforcement', () => {
     };
     const terminals = {
       authenticate: jest.fn().mockResolvedValue(terminal),
+      authenticateDevice: jest.fn().mockResolvedValue(terminal),
     } as any;
     return {
       controller: new SalesController(
@@ -55,13 +56,12 @@ describe('SalesController POS terminal enforcement', () => {
 
   it('authenticates the enrolled terminal, creates the sale, and invalidates list counts', async () => {
     const { controller, sales, reads, terminals, terminal } = subject();
-    await controller.sale(sale, 'device-1', 'secret-1', request(cashier));
-    expect(terminals.authenticate).toHaveBeenCalledWith(
+    await controller.sale(sale, 'device-1', 'secret-1');
+    expect(terminals.authenticateDevice).toHaveBeenCalledWith(
       'device-1',
       'secret-1',
-      cashier,
     );
-    expect(sales.createSale).toHaveBeenCalledWith(sale, cashier, terminal);
+    expect(sales.createSale).toHaveBeenCalledWith(sale, terminal);
     expect(reads.invalidateCounts).toHaveBeenCalledTimes(1);
   });
 

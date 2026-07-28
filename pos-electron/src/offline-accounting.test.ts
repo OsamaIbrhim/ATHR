@@ -12,10 +12,7 @@ import {
 
 const now = Date.parse('2026-07-22T10:00:00.000Z')
 const context = {
-  v: 1 as const,
-  purpose: 'pos-offline-accounting' as const,
-  key_id: 'offline-2026',
-  token: 'offline-2026.payload.signature',
+  context_version: 2 as const,
   session_id: 'session-1',
   user_id: 'user-1',
   role: 'cashier' as const,
@@ -47,7 +44,7 @@ const expected = {
 }
 
 describe('offline accounting context', () => {
-  it('accepts only a live, key-id-bound context matching the user, terminal and shift', () => {
+  it('accepts a live context matching the user, terminal and shift', () => {
     expect(isValidOfflineAccountingContext(context, now)).toBe(true)
     expect(offlineAccountingContextMatches(context, expected, now)).toBe(true)
     expect(
@@ -59,21 +56,38 @@ describe('offline accounting context', () => {
     ).toBe(false)
   })
 
-  it('rejects an expired context and a token whose key id was replaced', () => {
+  it('keeps a prepared shift usable offline even after its advisory refresh time', () => {
     expect(
       isValidOfflineAccountingContext(context, Date.parse(context.expires_at)),
+    ).toBe(true)
+    expect(
+      offlineAccountingContextMatches(
+        context,
+        expected,
+        Date.parse('2027-07-22T10:00:00.000Z'),
+      ),
+    ).toBe(true)
+  })
+
+  it('rejects malformed context data without depending on a server key', () => {
+    expect(
+      isValidOfflineAccountingContext(
+        { ...context, context_version: 1 },
+        now,
+      ),
     ).toBe(false)
     expect(
       isValidOfflineAccountingContext(
-        { ...context, token: 'different.payload.signature' },
+        { ...context, expires_at: 'not-a-date' },
         now,
       ),
     ).toBe(false)
   })
 
-  it('exposes only a non-secret authorization summary to the renderer', () => {
+  it('exposes a non-secret authorization summary to the renderer', () => {
     const summary = toOfflineAccountingSummary(context)
     expect(summary).not.toHaveProperty('token')
+    expect(summary).not.toHaveProperty('key_id')
     expect(summary.authorized).toBe(true)
     expect(
       isValidOfflineAccountingSummary(summary, now),

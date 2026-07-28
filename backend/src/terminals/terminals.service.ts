@@ -203,6 +203,14 @@ export class TerminalsService {
 
   async authenticate(deviceId: string | undefined, deviceToken: string | undefined, actor: AuthenticatedUser) {
     if (!actor.branch_id) throw new ForbiddenException('POS user must be linked to a branch');
+    const existing = await this.authenticateDevice(deviceId, deviceToken);
+    if (existing.branch_id !== actor.branch_id) {
+      throw new ConflictException('This POS terminal is registered to another branch');
+    }
+    return existing;
+  }
+
+  async authenticateDevice(deviceId: string | undefined, deviceToken: string | undefined) {
     if (!deviceId) throw new UnauthorizedException('This POS terminal must be enrolled before use');
     const existing = await this.prisma.posTerminal.findUnique({ where: { device_id: deviceId } });
     if (!existing || !existing.device_token_hash) {
@@ -212,9 +220,6 @@ export class TerminalsService {
       throw new UnauthorizedException('Invalid POS terminal credential');
     }
     if (existing.is_revoked) throw new ForbiddenException('This POS terminal has been revoked');
-    if (existing.branch_id !== actor.branch_id) {
-      throw new ConflictException('This POS terminal is registered to another branch');
-    }
     return existing;
   }
 

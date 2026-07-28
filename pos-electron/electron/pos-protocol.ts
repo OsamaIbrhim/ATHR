@@ -1,1 +1,1 @@
-export const POS_PROTOCOL_VERSION = 1
+export const POS_PROTOCOL_VERSION = 2

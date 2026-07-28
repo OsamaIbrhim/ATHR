@@ -10,15 +10,6 @@ const paymentMethods = ['cash','card','instapay','vodafone_cash','installment'] 
 
 function displayName(product: Product) { return product.name_ar || product.name_en || product.sku }
 
-function catalogIsFresh(validUntil?: string | null) {
-  const timestamp = new Date(validUntil || 0).getTime()
-  return Number.isFinite(timestamp) && timestamp > Date.now()
-}
-
-function hasSignedPrice(item: Pick<Product, 'price_version' | 'price_token'>) {
-  return !!item.price_version && !!item.price_token
-}
-
 export function RegisterScreen({
   session, device, shift, accountingContext, syncState, onSync, onSales, onCloseShift, onLogout, notify,
 }:{
@@ -91,16 +82,6 @@ export function RegisterScreen({
       : Number(await bold.stock(product.id))
 
     const existing=cart.find((item)=>item.variant_id===product.id)
-    if(!existing && !hasSignedPrice(product)){
-      notify(
-        navigator.onLine
-          ? 'تم اكتشاف كتالوج أسعار قديم. جارٍ تحميل نسخة موقعة كاملة؛ أعد مسح المنتج بعد اكتمال المزامنة.'
-          : 'كتالوج الأسعار يحتاج ترقية لمرة واحدة. شغّل الإنترنت وسيتم تحميل النسخة الموقعة تلقائيًا.',
-        'error',
-      )
-      onSync()
-      return
-    }
     if(existing && existing.qty>=available){notify('لا توجد كمية إضافية متاحة من هذا الصنف','error');return}
     if(!existing && available<=0){notify('هذا المقاس غير متوفر في مخزون الفرع','error');return}
 
@@ -181,14 +162,6 @@ export function RegisterScreen({
       notify('تفويض الكاشير والوردية للبيع دون اتصال غير متاح أو منتهي. شغّل الإنترنت حتى يكتمل التجهيز المحاسبي.','error')
       return
     }
-    if(!catalogIsFresh(syncState.catalog_valid_until)){
-      notify('انتهت صلاحية كتالوج الأسعار المحلي. نفّذ مزامنة ناجحة قبل تحصيل الدفع.','error')
-      return
-    }
-    if(cart.some((item)=>!hasSignedPrice(item))){
-      notify('تحتوي السلة على صنف بسعر قديم غير موقع. أزل الصنف وأعد إضافته بعد المزامنة.','error')
-      return
-    }
     setCheckoutOpen(true)
   }
 
@@ -201,7 +174,7 @@ export function RegisterScreen({
       if(event.key==='F10'){event.preventDefault();openCheckout()}
     }
     window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler)
-  },[cart,customer,onSync,syncState.catalog_valid_until,accountingReady])
+  },[cart,customer,onSync,accountingReady])
 
   return <div className="app-shell">
     <header className="app-header">
@@ -226,12 +199,12 @@ export function RegisterScreen({
           {cart.map((item)=><article className="cart-item" key={item.variant_id}><div className="cart-item-main"><b>{item.name}</b><span>{item.sku} · {item.color||'بدون لون'} · {item.size||'بدون مقاس'}</span><small>متاح {item.available_qty}</small></div><div className="qty-control"><button onClick={()=>changeQty(item.variant_id,item.qty-1)}>−</button><input value={item.qty} inputMode="numeric" onChange={(event)=>changeQty(item.variant_id,Number(event.target.value||0))}/><button onClick={()=>changeQty(item.variant_id,item.qty+1)}>+</button></div><div className="line-price"><b>{money(fromCents(lineCents(item.unit_price,item.qty)))} ج</b><span>{money(item.unit_price)} × {item.qty}</span></div><button className="remove-item" onClick={()=>changeQty(item.variant_id,0)}>×</button></article>)}
           {!cart.length&&<div className="cart-empty"><div>🛍</div><b>السلة فارغة</b><span>أضف أول صنف لبدء الفاتورة.</span></div>}
         </div>
-        <div className="cart-summary"><div><span>المجموع الفرعي</span><b>{money(totals.subtotal)} ج</b></div><div><span>الضريبة</span><b>{money(totals.tax)} ج</b></div><div className="grand-total"><span>الإجمالي</span><b>{money(totals.total)} ج</b></div>{!accountingReady&&<FieldError>الدفع متوقف حتى يتم إصدار تفويض محاسبي صالح للكاشير والجهاز والوردية.</FieldError>}{!catalogIsFresh(syncState.catalog_valid_until)&&<FieldError>كتالوج الأسعار يحتاج مزامنة قبل الدفع.</FieldError>}<button className="checkout-button" disabled={!cart.length||!accountingReady} onClick={openCheckout}><span>F10 · الدفع</span><b>{money(totals.total)} ج</b></button></div>
+        <div className="cart-summary"><div><span>المجموع الفرعي</span><b>{money(totals.subtotal)} ج</b></div><div><span>الضريبة</span><b>{money(totals.tax)} ج</b></div><div className="grand-total"><span>الإجمالي</span><b>{money(totals.total)} ج</b></div>{!accountingReady&&<FieldError>الدفع متوقف حتى يتم تجهيز هوية الكاشير والجهاز والوردية.</FieldError>}<button className="checkout-button" disabled={!cart.length||!accountingReady} onClick={openCheckout}><span>F10 · الدفع</span><b>{money(totals.total)} ج</b></button></div>
       </aside>
     </main>
 
     <CustomerModal open={customerOpen} value={customer} onSelect={(value)=>{setCustomer(value);setCustomerOpen(false)}} onClose={()=>setCustomerOpen(false)} notify={notify}/>
-    <CheckoutModal open={checkoutOpen} items={cart} customer={customer} sellerId={sellerId} session={session} device={device} shift={shift} accountingContext={accountingContext} branchId={device.branch_id} catalogValidUntil={syncState.catalog_valid_until} totals={totals} onSaleSaved={onSync} onClose={()=>setCheckoutOpen(false)} onCompleted={(value)=>{setCheckoutOpen(false);setCart([]);setCustomer(null);setCompleted(value)}} notify={notify}/>
+    <CheckoutModal open={checkoutOpen} items={cart} customer={customer} sellerId={sellerId} session={session} device={device} shift={shift} accountingContext={accountingContext} branchId={device.branch_id} totals={totals} onSaleSaved={onSync} onClose={()=>setCheckoutOpen(false)} onCompleted={(value)=>{setCheckoutOpen(false);setCart([]);setCustomer(null);setCompleted(value)}} notify={notify}/>
     <HeldSalesModal open={heldOpen} sales={heldSales} loading={heldLoading} onClose={()=>setHeldOpen(false)} onResume={(sale)=>void resumeHeldSale(sale)} onDelete={(sale)=>void deleteHeldSale(sale)}/>
     <SaleSuccessModal value={completed} onClose={()=>{setCompleted(null);searchRef.current?.focus()}}/>
     <ConfirmDialog open={confirmClear} title="تفريغ السلة؟" message="سيتم حذف جميع الأصناف من الفاتورة الحالية." confirmLabel="تفريغ السلة" danger onClose={()=>setConfirmClear(false)} onConfirm={()=>{setCart([]);setConfirmClear(false)}}/>
@@ -250,7 +223,7 @@ function CustomerModal({open,value,onSelect,onClose,notify}:{open:boolean,value:
   return <Modal open={open} title="العميل" onClose={onClose} width="560px"><div className="customer-form"><label>رقم الهاتف</label><div className="inline-field"><input dir="ltr" value={phone} onChange={(event)=>setPhone(event.target.value)} placeholder="01012345678" autoFocus/><button className="button secondary" onClick={lookup} disabled={loading}>بحث</button></div><FieldError>{error}</FieldError>{found?<div className="customer-card"><div><b>{found.name||'عميل بدون اسم'}</b><span dir="ltr">{found.phone}</span></div><div><span>{found.total_invoices||0} فاتورة</span><span>{money(found.total_spent)} ج مشتريات</span>{found.is_vip&&<strong>VIP</strong>}</div><button className="button primary" onClick={()=>onSelect(found)}>اختيار العميل</button></div>:<div className="new-customer"><label>اسم العميل الجديد (اختياري)</label><input value={name} onChange={(event)=>setName(event.target.value)} placeholder="اسم العميل"/><button className="button primary" onClick={create} disabled={loading}>إنشاء واختيار العميل</button></div>}<button className="button ghost full" onClick={()=>onSelect(null)}>إكمال البيع بدون عميل</button></div></Modal>
 }
 
-function CheckoutModal({open,items,customer,sellerId,session,device,shift,accountingContext,branchId,catalogValidUntil,totals,onSaleSaved,onClose,onCompleted,notify}:{open:boolean,items:CartItem[],customer:Customer|null,sellerId:string,session:Session,device:DeviceCredential,shift:Shift,accountingContext:OfflineAccountingContext|null,branchId:string,catalogValidUntil?:string|null,totals:ReturnType<typeof cartTotals>,onSaleSaved:()=>void,onClose:()=>void,onCompleted:(value:any)=>void,notify:(message:string,tone?:'success'|'error'|'info')=>void}){
+function CheckoutModal({open,items,customer,sellerId,session,device,shift,accountingContext,branchId,totals,onSaleSaved,onClose,onCompleted,notify}:{open:boolean,items:CartItem[],customer:Customer|null,sellerId:string,session:Session,device:DeviceCredential,shift:Shift,accountingContext:OfflineAccountingContext|null,branchId:string,totals:ReturnType<typeof cartTotals>,onSaleSaved:()=>void,onClose:()=>void,onCompleted:(value:any)=>void,notify:(message:string,tone?:'success'|'error'|'info')=>void}){
   const [method,setMethod]=useState<typeof paymentMethods[number]>('cash')
   const [received,setReceived]=useState('')
   const [busy,setBusy]=useState(false)
@@ -264,13 +237,11 @@ function CheckoutModal({open,items,customer,sellerId,session,device,shift,accoun
   const confirm=async()=>{
     if(paymentLock.current||busy)return
     if(!offlineAccountingSummaryMatches(accountingContext,{session,device,shift})){setError('انتهى أو تغير تفويض الكاشير والوردية. أغلق شاشة الدفع وشغّل الإنترنت لتجديده.');return}
-    if(!catalogIsFresh(catalogValidUntil)){setError('انتهت صلاحية كتالوج الأسعار. أغلق شاشة الدفع ونفّذ مزامنة.');return}
-    if(items.some((item)=>!hasSignedPrice(item))){setError('تحتوي الفاتورة على سعر غير موقع. أعد إضافة الصنف بعد المزامنة.');return}
     if(method==='cash'&&receivedCents<toCents(totals.total)){setError('المبلغ المستلم أقل من إجمالي الفاتورة.');return}
     const phone=customer?.phone?normalizeEgyptianPhone(customer.phone):''
     if(phone&&!isValidEgyptianPhone(phone)){setError('رقم العميل غير صحيح. صححه أو أزل العميل من الفاتورة.');return}
     paymentLock.current=true;setBusy(true);setError('')
-    const payload={sync_id:crypto.randomUUID(),branch_id:branchId,seller_id:sellerId,customer_phone:phone||undefined,items:items.map((item)=>({variant_id:item.variant_id,qty:item.qty,unit_price:item.unit_price,unit_tax:item.unit_tax,price_version:item.price_version,price_token:item.price_token})),payment_method:method,language:'ar',local_total:totals.total}
+    const payload={sync_id:crypto.randomUUID(),branch_id:branchId,seller_id:sellerId,customer_phone:phone||undefined,items:items.map((item)=>({variant_id:item.variant_id,qty:item.qty,unit_price:item.unit_price,unit_tax:item.unit_tax,sku:item.sku,name_ar:item.name_ar||item.name,name_en:item.name_en||'',size:item.size||undefined,color:item.color||undefined})),payment_method:method,language:'ar',local_total:totals.total}
     try{
       const saved=await bold.sale(payload)
       onSaleSaved()

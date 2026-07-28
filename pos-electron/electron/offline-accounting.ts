@@ -10,10 +10,7 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 export type OfflineAccountingContext = {
-  v: 1
-  purpose: 'pos-offline-accounting'
-  key_id: string
-  token: string
+  context_version: 2
   session_id: string
   user_id: string
   role: 'branch_manager' | 'cashier'
@@ -25,10 +22,7 @@ export type OfflineAccountingContext = {
   server_last_sale_sequence: string
 }
 
-export type OfflineAccountingSummary = Omit<
-  OfflineAccountingContext,
-  'token'
-> & {
+export type OfflineAccountingSummary = OfflineAccountingContext & {
   authorized: true
 }
 
@@ -59,22 +53,17 @@ export function nextTerminalSequence(...values: unknown[]): string {
 
 export function isValidOfflineAccountingContext(
   value: unknown,
-  nowMs = Date.now(),
-  minimumRemainingMs = 0,
+  _nowMs = Date.now(),
+  _minimumRemainingMs = 0,
 ): value is OfflineAccountingContext {
   const context = value as Partial<OfflineAccountingContext> | null
   if (!context || typeof context !== 'object') return false
 
   const issuedAt = Date.parse(String(context.issued_at || ''))
   const expiresAt = Date.parse(String(context.expires_at || ''))
-  const tokenParts = String(context.token || '').split('.')
 
   return (
-    context.v === 1 &&
-    context.purpose === 'pos-offline-accounting' &&
-    nonEmptyString(context.key_id) &&
-    tokenParts.length === 3 &&
-    tokenParts[0] === context.key_id &&
+    context.context_version === 2 &&
     nonEmptyString(context.session_id) &&
     nonEmptyString(context.user_id) &&
     ['cashier', 'branch_manager'].includes(String(context.role)) &&
@@ -84,7 +73,6 @@ export function isValidOfflineAccountingContext(
     Number.isFinite(issuedAt) &&
     Number.isFinite(expiresAt) &&
     expiresAt > issuedAt &&
-    expiresAt - nowMs > minimumRemainingMs &&
     isTerminalSequence(context.server_last_sale_sequence)
   )
 }
@@ -129,9 +117,8 @@ export function offlineAccountingContextMatches(
 export function toOfflineAccountingSummary(
   context: OfflineAccountingContext,
 ): OfflineAccountingSummary {
-  const { token: _credential, ...summary } = context
   return {
-    ...summary,
+    ...context,
     authorized: true,
   }
 }
@@ -142,27 +129,13 @@ export function isValidOfflineAccountingSummary(
   minimumRemainingMs = 0,
 ): value is OfflineAccountingSummary {
   const summary = value as Partial<OfflineAccountingSummary> | null
-  if (!summary || typeof summary !== 'object') return false
-
-  const issuedAt = Date.parse(String(summary.issued_at || ''))
-  const expiresAt = Date.parse(String(summary.expires_at || ''))
-
   return (
-    summary.authorized === true &&
-    summary.v === 1 &&
-    summary.purpose === 'pos-offline-accounting' &&
-    nonEmptyString(summary.key_id) &&
-    nonEmptyString(summary.session_id) &&
-    nonEmptyString(summary.user_id) &&
-    ['cashier', 'branch_manager'].includes(String(summary.role)) &&
-    nonEmptyString(summary.branch_id) &&
-    nonEmptyString(summary.terminal_id) &&
-    nonEmptyString(summary.shift_id) &&
-    Number.isFinite(issuedAt) &&
-    Number.isFinite(expiresAt) &&
-    expiresAt > issuedAt &&
-    expiresAt - nowMs > minimumRemainingMs &&
-    isTerminalSequence(summary.server_last_sale_sequence)
+    summary?.authorized === true &&
+    isValidOfflineAccountingContext(
+      summary,
+      nowMs,
+      minimumRemainingMs,
+    )
   )
 }
 
@@ -182,23 +155,17 @@ export function offlineAccountingSummaryMatches(
   nowMs = Date.now(),
   minimumRemainingMs = 0,
 ): summary is OfflineAccountingSummary {
-  if (
-    !isValidOfflineAccountingSummary(
+  return (
+    isValidOfflineAccountingSummary(
       summary,
       nowMs,
       minimumRemainingMs,
+    ) &&
+    offlineAccountingContextMatches(
+      summary,
+      expected,
+      nowMs,
+      minimumRemainingMs,
     )
-  ) {
-    return false
-  }
-
-  return (
-    summary.user_id === expected.session.user.id &&
-    summary.role === expected.session.user.role &&
-    summary.branch_id === expected.session.user.branch_id &&
-    summary.branch_id === expected.device.branch_id &&
-    summary.branch_id === expected.shift.branch_id &&
-    summary.terminal_id === expected.device.terminal_id &&
-    summary.shift_id === expected.shift.id
   )
 }

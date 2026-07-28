@@ -5,8 +5,8 @@ import {
 } from './pos-compatibility'
 
 const compatible = {
-  api_protocol: { minimum: 1, maximum: 1 },
-  minimum_pos_version: '1.3.0',
+  api_protocol: { minimum: 2, maximum: 2 },
+  minimum_pos_version: '1.4.0',
   backend_version: '1.8.0',
   deployment_sha: 'abc123',
 }
@@ -14,12 +14,12 @@ const compatible = {
 describe('POS/backend compatibility', () => {
   it('accepts a matching protocol and application version', () => {
     expect(
-      assertPosCompatibility(compatible, '1.3.1'),
+      assertPosCompatibility(compatible, '1.4.0'),
     ).toEqual({
-      protocol: 1,
+      protocol: 2,
       backendVersion: '1.8.0',
       deploymentSha: 'abc123',
-      minimumPosVersion: '1.3.0',
+      minimumPosVersion: '1.4.0',
     })
   })
 
@@ -28,9 +28,9 @@ describe('POS/backend compatibility', () => {
       assertPosCompatibility(
         {
           ...compatible,
-          api_protocol: { minimum: 2, maximum: 2 },
+          api_protocol: { minimum: 3, maximum: 3 },
         },
-        '1.3.1',
+        '1.4.0',
       ),
     ).toThrowError(PosCompatibilityError)
   })
@@ -42,7 +42,7 @@ describe('POS/backend compatibility', () => {
           ...compatible,
           minimum_pos_version: '1.4.0',
         },
-        '1.3.1',
+        '1.3.4',
       ),
     ).toThrow('أقدم من الحد الأدنى')
   })
@@ -51,7 +51,7 @@ describe('POS/backend compatibility', () => {
     expect(() =>
       assertPosCompatibility(
         { api_protocol: { minimum: 1 } },
-        '1.3.1',
+        '1.4.0',
       ),
     ).toThrow('بيانات توافق غير مكتملة')
   })

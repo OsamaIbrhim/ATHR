@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
 
@@ -11,6 +11,7 @@ export class ProductsService {
   async list(q: string, page: number, pageSize: number, branchId?: string, includeCost = false) {
     const query = q.trim();
     const where = query ? {
+      is_active: true,
       product: { is_active: true },
       OR: [
         { sku: { contains: query, mode: 'insensitive' as const } },
@@ -19,7 +20,7 @@ export class ProductsService {
         { product: { name_en: { contains: query, mode: 'insensitive' as const } } },
         { product: { name_ar: { contains: query, mode: 'insensitive' as const } } },
       ],
-    } : { product: { is_active: true } };
+    } : { is_active: true, product: { is_active: true } };
 
     // Keep list and count independent, then hydrate both relations in one
     // additional parallel database wave. Prisma's nested include strategy used
@@ -48,6 +49,7 @@ export class ProductsService {
         FROM "ProductVariant" v
         JOIN "Product" p ON p."id" = v."product_id"
         WHERE p."is_active" = true
+          AND v."is_active" = true
         ORDER BY score DESC
         LIMIT 8
       `;
@@ -129,6 +131,7 @@ export class ProductsService {
   async search(q: string, branchId?: string, includeCost = false) {
     const baseVariants = await this.prisma.productVariant.findMany({
       where: {
+        is_active: true,
         OR: [
           { sku: { contains: q, mode: 'insensitive' } },
           { barcode_ean13: q },
@@ -198,12 +201,12 @@ export class ProductsService {
   }
 
   async removeVariant(id: string) {
-    const stock = await this.prisma.inventoryStock.findMany({ where: { variant_id: id }});
-    const totalStock = stock.reduce((sum, item) => sum + item.qty_on_hand, 0);
-    if (totalStock > 0) throw new BadRequestException('Cannot delete – stock exists: ' + totalStock + ' pcs. Adjust inventory to 0 first.');
-    const salesCount = await this.prisma.salesInvoiceItem.count({ where: { variant_id: id }});
-    if (salesCount > 0) throw new BadRequestException('Cannot delete – variant has sales history. Deactivate product instead.');
-    const removed = await this.prisma.productVariant.delete({ where: { id }});
+    const exists = await this.prisma.productVariant.findUnique({ where: { id }});
+    if (!exists) throw new NotFoundException('Variant not found');
+    const removed = await this.prisma.productVariant.update({
+      where: { id },
+      data: { is_active: false },
+    });
     this.invalidateCounts();
     return removed;
   }

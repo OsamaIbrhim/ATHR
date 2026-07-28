@@ -94,10 +94,11 @@ export function validateLocalSaleInput(
       qty: Number(item?.qty),
       unit_price: Number(item?.unit_price),
       unit_tax: Number(item?.unit_tax),
-      price_version: String(
-        item?.price_version || '',
-      ),
-      price_token: String(item?.price_token || ''),
+      sku: String(item?.sku || '').trim(),
+      name_ar: String(item?.name_ar || '').trim(),
+      name_en: String(item?.name_en || '').trim(),
+      size: item?.size ? String(item.size).trim() : undefined,
+      color: item?.color ? String(item.color).trim() : undefined,
     }
     if (
       !UUID.test(normalized.variant_id) ||
@@ -108,8 +109,8 @@ export function validateLocalSaleInput(
       normalized.unit_price <= 0 ||
       !Number.isFinite(normalized.unit_tax) ||
       normalized.unit_tax < 0 ||
-      !normalized.price_version ||
-      !normalized.price_token
+      !normalized.sku ||
+      (!normalized.name_ar && !normalized.name_en)
     ) {
       throw new PosSaleValidationError(
         'SALE_ITEM_INVALID',

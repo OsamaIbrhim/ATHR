@@ -19,30 +19,7 @@ describe('SyncService incremental synchronization', () => {
     },
   };
   const quote = { net_price: 150, tax_amount: 21 };
-  const priceSnapshots = {
-    issue: jest.fn().mockImplementation(
-      (
-        branchId: string,
-        variantId: string,
-        value: { net_price: number; tax_amount: number },
-        issuedAt: string,
-      ) => ({
-        branch_id: branchId,
-        variant_id: variantId,
-        unit_price: value.net_price,
-        unit_tax: value.tax_amount,
-        price_version: 'price-v1',
-        price_token: 'signed-token',
-        issued_at: issuedAt,
-      }),
-    ),
-  };
-
-  beforeEach(() => {
-    priceSnapshots.issue.mockClear();
-  });
-
-  it('returns an initial signed snapshot with a resumable cursor', async () => {
+  it('returns an unsigned protocol-v2 snapshot with a resumable cursor', async () => {
     const prisma = {
       syncChange: {
         aggregate: jest
@@ -72,7 +49,6 @@ describe('SyncService incremental synchronization', () => {
     const result = await new SyncService(
       prisma as any,
       pricing as any,
-      priceSnapshots as any,
     ).pull('branch-1');
 
     expect(result).toMatchObject({
@@ -83,12 +59,12 @@ describe('SyncService incremental synchronization', () => {
     });
     expect(result.products[0]).toMatchObject({
       id: variant.id,
+      catalog_version: 2,
       selling_price: 150,
       unit_tax: 21,
-      price_version: 'price-v1',
-      price_token: 'signed-token',
     });
-    expect(priceSnapshots.issue).toHaveBeenCalledTimes(1);
+    expect(result.products[0]).not.toHaveProperty('price_version');
+    expect(result.products[0]).not.toHaveProperty('price_token');
     expect(() => JSON.stringify(result)).not.toThrow();
   });
 
@@ -110,7 +86,6 @@ describe('SyncService incremental synchronization', () => {
     const pulling = new SyncService(
       prisma as any,
       pricing as any,
-      priceSnapshots as any,
     ).pull('branch-1');
 
     await Promise.resolve();
@@ -158,7 +133,6 @@ describe('SyncService incremental synchronization', () => {
     const result = await new SyncService(
       prisma as any,
       pricing as any,
-      priceSnapshots as any,
     ).pull('branch-1', '42');
 
     expect(result).toMatchObject({
@@ -169,7 +143,10 @@ describe('SyncService incremental synchronization', () => {
     });
     expect(prisma.productVariant.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ id: { in: [variant.id] } }),
+        where: expect.objectContaining({
+          is_active: true,
+          id: { in: [variant.id] },
+        }),
       }),
     );
   });
@@ -181,7 +158,6 @@ describe('SyncService incremental synchronization', () => {
     const result = await new SyncService(
       prisma as any,
       {} as any,
-      priceSnapshots as any,
     ).pull('branch-1', '43');
 
     expect(result).toMatchObject({
@@ -191,6 +167,5 @@ describe('SyncService incremental synchronization', () => {
       stock: [],
       has_more: false,
     });
-    expect(priceSnapshots.issue).not.toHaveBeenCalled();
   });
 });

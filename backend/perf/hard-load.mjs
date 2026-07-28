@@ -299,6 +299,8 @@ async function createPerformanceTerminal(
     'Content-Type': 'application/json',
     'x-pos-device-id': deviceId,
     'x-pos-device-token': enrolled.device_token,
+    'x-pos-protocol-version': '2',
+    'x-pos-app-version': '1.4.0',
   }
   const context = await json(`/shifts/${encodeURIComponent(shiftId)}/offline-context`, {
     method: 'POST',
@@ -356,14 +358,26 @@ async function mutationIntegrityLoad(adminToken) {
     )
     if (
       !product ||
-      !product.price_version ||
-      !product.price_token ||
+      product.catalog_version !== 2 ||
+      !product.sku ||
+      !product.name_ar ||
       product.selling_price === undefined ||
       product.unit_tax === undefined
     ) {
       throw new Error(
-        `Signed price snapshot is missing for variant ${stockBefore.variant_id}`,
+        `Catalog v2 snapshot is missing for variant ${stockBefore.variant_id}`,
       )
+    }
+    const seller = await prisma.user.findFirst({
+      where: {
+        branch_id: branchId,
+        role: 'seller',
+        is_active: true,
+      },
+      select: { id: true, name: true },
+    })
+    if (!seller) {
+      throw new Error('Performance seed must include an active seller')
     }
 
     const workerCount = Math.min(concurrency, salesCount)
@@ -394,14 +408,17 @@ async function mutationIntegrityLoad(adminToken) {
         for (let localIndex = 0; localIndex < count; localIndex += 1) {
           const terminalSequence = (initialSequence + BigInt(localIndex + 1)).toString()
           const command = {
+            event_version: 2,
             sync_id: randomUUID(),
             branch_id: branchId,
             shift_id: shift.id,
             origin_cashier_id: cashier.user.id,
+            cashier_name_snapshot: cashier.user.name,
+            seller_id: seller.id,
+            seller_name_snapshot: seller.name,
             offline_session_id: terminal.context.session_id,
             terminal_sequence: terminalSequence,
             occurred_at: new Date().toISOString(),
-            offline_accounting_token: terminal.context.token,
             payment_method: 'cash',
             language: 'ar',
             local_total: localTotal,
@@ -411,8 +428,11 @@ async function mutationIntegrityLoad(adminToken) {
                 qty: 1,
                 unit_price: Number(product.selling_price),
                 unit_tax: Number(product.unit_tax),
-                price_version: product.price_version,
-                price_token: product.price_token,
+                sku_snapshot: product.sku,
+                name_ar_snapshot: product.name_ar,
+                name_en_snapshot: product.name_en || undefined,
+                size_snapshot: product.size || undefined,
+                color_snapshot: product.color || undefined,
               },
             ],
           }

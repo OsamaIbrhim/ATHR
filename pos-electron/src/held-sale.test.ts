@@ -19,7 +19,7 @@ describe('held sale validation', () => {
           variant_id: variantOne,
           qty: 2,
           unit_price: 0.01,
-          price_token: 'renderer-controlled',
+          custom_price: 0.01,
         },
       ]),
     ).toEqual([

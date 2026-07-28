@@ -28,11 +28,9 @@ describe('POS secure startup state', () => {
   })
 
 
-  it('rejects expired or malformed offline accounting authorization', () => {
+  it('keeps a prepared shift usable offline and rejects malformed context', () => {
     const context = {
-      v: 1,
-      purpose: 'pos-offline-accounting',
-      key_id: 'offline-2026',
+      context_version: 2,
       authorized: true,
       session_id: 'session-1',
       user_id: 'user-1',
@@ -56,7 +54,7 @@ describe('POS secure startup state', () => {
         context,
         Date.parse('2026-07-22T11:00:00.000Z'),
       ),
-    ).toBe(false)
+    ).toBe(true)
     expect(
       validOfflineAccountingContext(
         { ...context, server_last_sale_sequence: '1.5' },
