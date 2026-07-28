@@ -105,7 +105,8 @@ BEGIN
   );
 
   IF definition = original
-     OR position('current_quantity_big < 0' IN definition) > 0
+     OR position('current_quantity_big < 0
+     OR current_quantity_big > 2147483647' IN definition) > 0
      OR position('previous_quantity < 0
      OR previous_quantity > 2147483647' IN definition) > 0
      OR position('current_cost * previous_quantity' IN definition) > 0
