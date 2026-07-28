@@ -349,17 +349,32 @@ async function mutationIntegrityLoad(adminToken) {
       )
     }
 
-    const seller = await prisma.user.findFirst({
-      where: {
+    const cashierAccount = await prisma.user.findUnique({
+      where: { id: cashier.user.id },
+      select: { password_hash: true },
+    })
+    if (!cashierAccount) {
+      throw new Error('Authenticated performance cashier is missing')
+    }
+    const seller = await prisma.user.upsert({
+      where: { phone: '+200100000004' },
+      update: {
         branch_id: branchId,
+        name: 'Performance Seller',
+        role: 'seller',
+        is_active: true,
+      },
+      create: {
+        branch_id: branchId,
+        name: 'Performance Seller',
+        phone: '+200100000004',
+        email: 'performance-seller@bold.local',
+        password_hash: cashierAccount.password_hash,
         role: 'seller',
         is_active: true,
       },
       select: { id: true, name: true },
     })
-    if (!seller) {
-      throw new Error('Performance seed must include an active seller')
-    }
 
     const workerCount = Math.min(concurrency, salesCount)
     const terminals = await Promise.all(

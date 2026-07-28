@@ -2,6 +2,12 @@ import { PrismaClient } from '@prisma/client';
 import * as bcryptjs from 'bcryptjs';
 
 const prisma = new PrismaClient();
+let randomState = 0x1a2b3c4d;
+
+function deterministicRandom() {
+  randomState = (1664525 * randomState + 1013904223) >>> 0;
+  return randomState / 0x100000000;
+}
 
 async function main() {
   console.log('🌱 Seeding Bold POS – Test Data v2.1 – Full with line items …');
@@ -41,6 +47,7 @@ async function main() {
   const manager = await prisma.user.create({ data: { name: 'مدير فرع', phone: '+200100000001', email: 'manager@bold.eg', password_hash, role: 'branch_manager', branch_id: b1.id }});
   const cashier = await prisma.user.create({ data: { name: 'كاشير', phone: '+200100000002', email: 'cashier@bold.eg', password_hash, role: 'cashier', branch_id: b1.id }});
   const warehouse = await prisma.user.create({ data: { name: 'أمين مخزن', phone: '+200100000003', email: 'warehouse@bold.eg', password_hash, role: 'warehouse_manager', branch_id: b1.id }});
+  const seller = await prisma.user.create({ data: { name: 'بائع', phone: '+200100000004', email: 'seller@bold.eg', password_hash, role: 'seller', branch_id: b1.id }});
 
   // Suppliers
   const s1 = await prisma.supplier.create({ data: { name: 'محمد', company_name: 'Mohamed Fabrics Co.', phone: '01222222222', alias_names: ['Mohamed Fabrics Co.', 'Mohamed Trading'] }});
@@ -137,9 +144,11 @@ async function main() {
   }
 
   // Inventory
-  for (const v of allVariants) {
-    await prisma.inventoryStock.create({ data: { branch_id: b1.id, variant_id: v.id, qty_on_hand: Math.floor(Math.random()*20)+2, last_sold_at: Math.random() > 0.3 ? new Date(Date.now() - Math.random()*60*86400000) : null }});
-    await prisma.inventoryStock.create({ data: { branch_id: b2.id, variant_id: v.id, qty_on_hand: Math.floor(Math.random()*12), last_sold_at: Math.random() > 0.5 ? new Date(Date.now() - Math.random()*90*86400000) : null }});
+  for (const [variantIndex, v] of allVariants.entries()) {
+    const primaryQuantity =
+      variantIndex === 0 ? 250 : Math.floor(deterministicRandom()*20)+2;
+    await prisma.inventoryStock.create({ data: { branch_id: b1.id, variant_id: v.id, qty_on_hand: primaryQuantity, last_sold_at: deterministicRandom() > 0.3 ? new Date(Date.now() - deterministicRandom()*60*86400000) : null }});
+    await prisma.inventoryStock.create({ data: { branch_id: b2.id, variant_id: v.id, qty_on_hand: Math.floor(deterministicRandom()*12), last_sold_at: deterministicRandom() > 0.5 ? new Date(Date.now() - deterministicRandom()*90*86400000) : null }});
   }
 
   // Pricing rules
@@ -169,11 +178,11 @@ async function main() {
   for (let i=0; i<15; i++) {
     const branch = i %3 ===0 ? b2 : b1;
     const customer = customers[i % customers.length];
-    const itemCount = Math.floor(Math.random()*3)+1;
+    const itemCount = Math.floor(deterministicRandom()*3)+1;
     const items = [];
     let subtotal = 0;
     for (let j=0; j<itemCount; j++) {
-      const v = allVariants[Math.floor(Math.random()*allVariants.length)];
+      const v = allVariants[Math.floor(deterministicRandom()*allVariants.length)];
       const qty = 1;
       const unit_cost = Number(v.cost_price);
       const unit_price = Math.round(unit_cost * 1.2 * 1.35); // net
@@ -186,13 +195,15 @@ async function main() {
       data: {
         invoice_number: `BOLD-2026${String(1001+i).padStart(4,'0')}`,
         branch_id: branch.id,
-        customer_id: Math.random() > 0.3 ? customer.id : null,
+        customer_id: deterministicRandom() > 0.3 ? customer.id : null,
         cashier_id: cashier.id,
+        seller_id: seller.id,
+        seller_name_snapshot: seller.name,
         status: 'completed',
         subtotal, tax_amount, total,
         payment_method: paymentMethods[i % paymentMethods.length],
         language: 'ar',
-        created_at: new Date(Date.now() - Math.random()*30*86400000),
+        created_at: new Date(Date.now() - deterministicRandom()*30*86400000),
         items: { create: items }
       }
     });
@@ -277,11 +288,12 @@ async function main() {
 ✅ Bold POS Test Data v2.1 – Full
 
 Branches: 2
-Users: 4 – all password Bold1234
+Users: 5 – all password Bold1234
   owner:            +200100000000
   branch_manager:   +200100000001
   cashier:          +200100000002
   warehouse:        +200100000003
+  seller:           +200100000004
 Suppliers: 3
 Categories: 3
 Products: 12 – Variants: ${allVariants.length}
