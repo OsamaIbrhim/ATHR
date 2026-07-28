@@ -641,6 +641,71 @@ async function mutationIntegrityLoad(adminToken) {
       )
     }
 
+    const coverageRollback = 'NEGATIVE_STOCK_COST_PROBE_ROLLBACK'
+    try {
+      await prisma.$transaction(async (tx) => {
+        const coverageQuantity = 2
+        const coverageKey = `hard-smoke-deficit-coverage:${deficitSyncId}`
+        const coverageValue = new Prisma.Decimal(stockBefore.variant.cost_price)
+          .mul(coverageQuantity)
+          .toDecimalPlaces(2)
+          .toFixed(2)
+
+        await tx.inventoryStock.update({
+          where: {
+            branch_id_variant_id: {
+              branch_id: branchId,
+              variant_id: stockBefore.variant_id,
+            },
+          },
+          data: { qty_on_hand: { increment: coverageQuantity } },
+        })
+        await tx.$queryRaw`
+          SELECT "record_inventory_cost_movement"(
+            ${stockBefore.variant_id}::uuid,
+            ${branchId}::uuid,
+            'customer_return'::"InventoryCostMovementType",
+            ${coverageQuantity}::integer,
+            ${coverageValue}::numeric,
+            'HardSmokeNegativeStockCoverage'::text,
+            ${deficitSyncId}::text,
+            NULL::text,
+            NULL::uuid,
+            NULL::uuid,
+            NULL::uuid,
+            NULL::uuid,
+            ${coverageKey}::text,
+            ${new Date()}::timestamp,
+            ${cashier.user.id}::uuid,
+            NULL::numeric,
+            ${JSON.stringify({ source: 'hard-smoke' })}::jsonb
+          )
+        `
+        const coverage = await tx.inventoryCostMovement.findUnique({
+          where: { idempotency_key: coverageKey },
+        })
+        const metadata = coverage?.metadata || {}
+        if (
+          !coverage ||
+          coverage.global_quantity_before !== -1 ||
+          coverage.global_quantity_after !== 1 ||
+          coverage.inventory_value_before.toNumber() !== 0 ||
+          Number(metadata.negative_inventory_units_covered) !== 1
+        ) {
+          throw new Error('Negative inventory cost coverage policy failed')
+        }
+
+        throw new Error(coverageRollback)
+      })
+    } catch (error) {
+      if (error instanceof Error && error.message === coverageRollback) {
+        // The probe validates the accounting transition without changing the
+        // isolated hard-smoke dataset after the negative-stock assertion.
+      } else {
+        throw error
+      }
+    }
+
     const result = {
       type: 'mutation',
       suite: 'concurrent-offline-sales-accounting-integrity',

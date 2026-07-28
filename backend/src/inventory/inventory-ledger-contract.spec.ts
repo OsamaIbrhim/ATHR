@@ -99,12 +99,20 @@ describe('inventory movement ledger contract', () => {
       'negative_inventory_units_covered',
     );
     expect(migration).toContain(
+      'CREATE OR REPLACE FUNCTION "record_inventory_cost_movement"',
+    );
+    expect(migration).not.toContain('pg_get_functiondef');
+    expect(migration).not.toContain('definition := replace');
+    expect(migration).toContain(
       'Outgoing cost movement cannot deepen a negative inventory deficit',
     );
     expect(hardLoad).toContain(
       'Negative-stock sale must be accepted with a warning and replay idempotently',
     );
     expect(hardLoad).toContain('deficitStock?.qty_on_hand !== -1');
+    expect(hardLoad).toContain(
+      'Negative inventory cost coverage policy failed',
+    );
   });
 
 
