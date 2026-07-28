@@ -21,6 +21,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:migrations:policy": "node scripts/check-migration-policy.cjs",
     "prisma:seed": "ts-node prisma/reset-development-accounting.ts && ts-node prisma/seed.ts && node prisma/ensure-seeded-inventory-ledger.mjs && node prisma/ensure-seeded-cost-ledger.mjs",
+    "prisma:seed:production": "ts-node prisma/seed-production.ts",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "jest --runInBand",
     "test:soft": "npm test && npm run typecheck && npm run build"
