@@ -44,9 +44,7 @@ export type Product = {
   color?: string | null
   selling_price?: number | string
   unit_tax?: number | string
-  price_version?: string | null
-  price_token?: string | null
-  price_issued_at?: string | null
+  catalog_version?: number
   qty?: number | string
 }
 
@@ -81,6 +79,11 @@ export type ReturnedInvoiceItem = {
 export type InvoiceItem = {
   id: string
   variant_id: string
+  sku_snapshot?: string
+  name_ar_snapshot?: string
+  name_en_snapshot?: string | null
+  size_snapshot?: string | null
+  color_snapshot?: string | null
   qty: number
   unit_price: number | string
   unit_tax: number | string
@@ -113,6 +116,10 @@ export type Invoice = {
   total: number | string
   payment_method: string
   status: string
+  event_version?: number
+  warning_codes?: string[]
+  cashier_name_snapshot?: string
+  seller_name_snapshot?: string
   customer?: Customer | null
   cashier_id?: string
   cashier?: { id: string; name: string; role: string } | null
@@ -137,6 +144,7 @@ export type SyncState = {
   last_sync_at: string | null
   last_error: string | null
   pending_count: number
+  quarantined_count?: number
   next_sync_at?: string | null
   blocked_reason?: string | null
   terminal_sale_sequence?: string

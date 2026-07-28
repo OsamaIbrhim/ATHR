@@ -26,8 +26,11 @@ function sale(overrides: Record<string, unknown> = {}) {
         qty: 1,
         unit_price: 100,
         unit_tax: 14,
-        price_version: 'price-v1',
-        price_token: 'price-key.payload.signature',
+        sku: 'SKU-1',
+        name_ar: 'منتج',
+        name_en: 'Product',
+        size: 'M',
+        color: 'Black',
       },
     ],
     ...overrides,
@@ -35,7 +38,7 @@ function sale(overrides: Record<string, unknown> = {}) {
 }
 
 describe('local sale IPC validation', () => {
-  it('normalizes a complete signed sale command', () => {
+  it('normalizes a complete immutable sale command', () => {
     expect(
       validateLocalSaleInput(sale(), branch),
     ).toMatchObject({
@@ -81,7 +84,7 @@ describe('local sale IPC validation', () => {
     ).toThrow('تكرار')
   })
 
-  it('rejects another branch and unsigned price data', () => {
+  it('rejects another branch and incomplete historical item data', () => {
     expect(() =>
       validateLocalSaleInput(
         sale({
@@ -97,7 +100,7 @@ describe('local sale IPC validation', () => {
           items: [
             {
               ...sale().items[0],
-              price_token: '',
+              sku: '',
             },
           ],
         }),

@@ -29,10 +29,7 @@ describe('renderer secure-state projection', () => {
         terminal_code: 'POS-1',
       },
       accounting: {
-        v: 1,
-        purpose: 'pos-offline-accounting',
-        key_id: 'accounting-key',
-        token: 'accounting-key.payload.signature',
+        context_version: 2,
         session_id: 'session-1',
         user_id: 'user-1',
         role: 'cashier',
@@ -56,12 +53,13 @@ describe('renderer secure-state projection', () => {
     expect(projected.device).not.toHaveProperty(
       'device_token',
     )
-    expect(projected.accounting).not.toHaveProperty(
-      'token',
-    )
+    expect(projected.accounting).toMatchObject({
+      context_version: 2,
+      session_id: 'session-1',
+    })
     expect(
       JSON.stringify(projected),
-    ).not.toMatch(/access-secret|refresh-secret|device-secret|payload\.signature/)
+    ).not.toMatch(/access-secret|refresh-secret|device-secret/)
   })
 
   it('forces cashier login on every application bootstrap', () => {

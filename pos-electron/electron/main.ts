@@ -20,9 +20,9 @@ import {
   toOfflineAccountingSummary,
 } from './offline-accounting'
 import {
-  SIGNED_CATALOG_FORMAT_VERSION,
+  CATALOG_FORMAT_VERSION,
   isValidCatalogStock,
-  isValidSignedCatalogProduct,
+  isValidCatalogProduct,
   requiresFullCatalogRefresh,
 } from './catalog-format'
 import { assertAllowedApiRequest } from './api-policy'
@@ -50,10 +50,6 @@ import {
   sameMoney,
   toCents,
 } from './money'
-import {
-  saleReviewSubmission,
-  validateSaleReviewResolution,
-} from './sale-review-policy'
 // @ts-ignore
 import initSqlJs from 'sql.js'
 
@@ -583,7 +579,7 @@ function hydrateHeldSale(row: any) {
     const tax = Number(product?.unit_tax)
     if (
       !product ||
-      !isValidSignedCatalogProduct(product) ||
+      !isValidCatalogProduct(product) ||
       !Number.isInteger(available) ||
       available < stored.qty ||
       price <= 0
@@ -685,13 +681,13 @@ function heldSaleRows(scope: HeldSaleScope) {
   )
 }
 
-function hasUnsignedCatalogProducts() {
+function hasInvalidCatalogProducts() {
   return !!get(
     `SELECT 1 AS found
      FROM products
-     WHERE COALESCE(price_version,'')=''
-        OR COALESCE(price_token,'')=''
-        OR COALESCE(price_issued_at,'')=''
+     WHERE COALESCE(catalog_version,0)<>2
+        OR COALESCE(sku,'')=''
+        OR (COALESCE(name_ar,'')='' AND COALESCE(name_en,'')='')
      LIMIT 1`,
   )?.found
 }
@@ -699,7 +695,7 @@ function hasUnsignedCatalogProducts() {
 function catalogNeedsFullRefresh() {
   return requiresFullCatalogRefresh(
     getMeta('catalog_format_version'),
-    hasUnsignedCatalogProducts() ? 1 : 0,
+    hasInvalidCatalogProducts() ? 1 : 0,
   )
 }
 
@@ -731,9 +727,7 @@ async function initDb() {
       cost_price REAL,
       selling_price REAL,
       unit_tax REAL DEFAULT 0,
-      price_version TEXT,
-      price_token TEXT,
-      price_issued_at TEXT
+      catalog_version INTEGER NOT NULL DEFAULT 2
     );
     CREATE TABLE IF NOT EXISTS stock (
       variant_id TEXT PRIMARY KEY,
@@ -755,10 +749,7 @@ async function initDb() {
       server_document_id TEXT,
       server_document_number TEXT,
       terminal_sequence TEXT,
-      review_id TEXT,
-      review_status TEXT,
-      review_reason TEXT,
-      review_updated_at TEXT,
+      warning_codes TEXT,
       updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS sales_local (
@@ -777,6 +768,8 @@ async function initDb() {
       server_invoice_id TEXT,
       server_invoice_number TEXT,
       synced_at TEXT,
+      sync_result TEXT,
+      warning_codes TEXT,
       voided_at TEXT,
       void_reason TEXT
     );
@@ -806,9 +799,7 @@ async function initDb() {
   for (const migration of [
     `ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`,
     `ALTER TABLE products ADD COLUMN name_ar TEXT`,
-    `ALTER TABLE products ADD COLUMN price_version TEXT`,
-    `ALTER TABLE products ADD COLUMN price_token TEXT`,
-    `ALTER TABLE products ADD COLUMN price_issued_at TEXT`,
+    `ALTER TABLE products ADD COLUMN catalog_version INTEGER NOT NULL DEFAULT 2`,
     `ALTER TABLE sales_local ADD COLUMN payment_method TEXT`,
     `ALTER TABLE sales_local ADD COLUMN customer_phone TEXT`,
     `ALTER TABLE sales_local ADD COLUMN server_invoice_id TEXT`,
@@ -820,16 +811,15 @@ async function initDb() {
     `ALTER TABLE sales_local ADD COLUMN shift_id TEXT`,
     `ALTER TABLE sales_local ADD COLUMN offline_session_id TEXT`,
     `ALTER TABLE sales_local ADD COLUMN terminal_sequence TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN sync_result TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN warning_codes TEXT`,
     `ALTER TABLE outbox ADD COLUMN attempt_count INTEGER DEFAULT 0`,
     `ALTER TABLE outbox ADD COLUMN last_attempt_at TEXT`,
     `ALTER TABLE outbox ADD COLUMN last_error TEXT`,
     `ALTER TABLE outbox ADD COLUMN server_document_id TEXT`,
     `ALTER TABLE outbox ADD COLUMN server_document_number TEXT`,
     `ALTER TABLE outbox ADD COLUMN terminal_sequence TEXT`,
-    `ALTER TABLE outbox ADD COLUMN review_id TEXT`,
-    `ALTER TABLE outbox ADD COLUMN review_status TEXT`,
-    `ALTER TABLE outbox ADD COLUMN review_reason TEXT`,
-    `ALTER TABLE outbox ADD COLUMN review_updated_at TEXT`,
+    `ALTER TABLE outbox ADD COLUMN warning_codes TEXT`,
     `ALTER TABLE outbox ADD COLUMN updated_at TEXT`,
     `ALTER TABLE sales_local ADD COLUMN voided_at TEXT`,
     `ALTER TABLE sales_local ADD COLUMN void_reason TEXT`,
@@ -857,11 +847,8 @@ async function initDb() {
   )
   alignLocalSequence(readSecureState().accounting)
 
-  // Databases created before signed price snapshots already contain products,
-  // but those rows do not have price_version/price_token. Keeping the old
-  // cursor would make the server return an empty delta forever. Force exactly
-  // one complete snapshot and only mark the new catalog format after that
-  // snapshot is validated and committed atomically.
+  // A catalog from another protocol must be replaced atomically before it is
+  // used for a v2 sale.
   if (catalogNeedsFullRefresh()) {
     requireFullCatalogRefresh()
   }
@@ -950,7 +937,7 @@ app.whenReady().then(async () => {
     pendingOutboxCount: () =>
       Number(
         get(
-          `SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending','failed')`,
+          `SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending')`,
         )?.count || 0,
       ),
   })
@@ -1273,8 +1260,8 @@ ipcMain.handle(
       ) {
         throw {
           message:
-            'أعاد الخادم تفويضًا لا يطابق الكاشير أو الجهاز أو الوردية الحالية.',
-          code: 'OFFLINE_ACCOUNTING_CONTEXT_INVALID',
+            'أعاد الخادم بيانات لا تطابق الكاشير أو الجهاز أو الوردية الحالية.',
+          code: 'OFFLINE_SALE_CONTEXT_INVALID',
         } satisfies ApiFailure
       }
 
@@ -1325,12 +1312,10 @@ ipcMain.handle('pos:list_local_sales', () =>
        s.terminal_sequence,
        COALESCE(o.sync_status,'sent') AS sync_status,
        COALESCE(o.attempt_count,0) AS attempt_count,
-       o.last_attempt_at,
-       o.last_error,
-       o.review_id,
-       o.review_status,
-       o.review_reason,
-       o.review_updated_at,
+        o.last_attempt_at,
+        o.last_error,
+        COALESCE(o.warning_codes,s.warning_codes,'[]') AS warning_codes,
+        COALESCE(s.sync_result,o.sync_status,'sent') AS sync_result,
        s.voided_at,
        s.void_reason
      FROM sales_local s
@@ -1518,7 +1503,7 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
     language,
   } = validated
   const seller = get(
-    `SELECT id FROM sellers WHERE id=?`,
+    `SELECT id,name FROM sellers WHERE id=?`,
     [sellerId],
   )
   if (!seller) {
@@ -1577,19 +1562,32 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
   const invoiceNumber =
     `LOCAL-${device.terminal_code}-${terminalSequence}`
   const command = {
+    event_version: 2,
     sync_id: syncId,
     branch_id: device.branch_id,
     shift_id: context.shift_id,
     origin_cashier_id: context.user_id,
+    cashier_name_snapshot: String(authSession.user.name || '').trim(),
     seller_id: sellerId,
+    seller_name_snapshot: String(seller.name || '').trim(),
     offline_session_id: context.session_id,
     terminal_sequence: terminalSequence,
     occurred_at: occurredAt,
-    offline_accounting_token: context.token,
     customer_phone: customerPhone,
-    items,
+    items: items.map((item: any) => ({
+      variant_id: item.variant_id,
+      qty: item.qty,
+      unit_price: item.unit_price,
+      unit_tax: item.unit_tax,
+      sku_snapshot: item.sku,
+      name_ar_snapshot: item.name_ar,
+      name_en_snapshot: item.name_en || undefined,
+      size_snapshot: item.size || undefined,
+      color_snapshot: item.color || undefined,
+    })),
     payment_method: paymentMethod,
     language,
+    local_total: localTotal,
   }
 
   return persistedMutation(() => {
@@ -1659,214 +1657,6 @@ ipcMain.handle('sync:get_outbox', () =>
        o.created_at`),
 )
 
-ipcMain.handle(
-  'api:reconcile_sale_reviews',
-  () =>
-    envelope(async () => {
-      assertFactoryResetIdle()
-      const rows = q(
-        `SELECT
-           o.*,
-           s.total AS local_total,
-           s.invoice_number AS local_invoice_number
-         FROM outbox o
-         LEFT JOIN sales_local s ON s.sync_id=o.id
-         WHERE o.type='sale'
-           AND o.sync_status='failed'
-         ORDER BY o.created_at`,
-      )
-      let awaiting = 0
-      let resolved = 0
-
-      for (const row of rows) {
-        let rawResolution: any
-
-        try {
-          rawResolution = await authenticatedFetch(
-            `/pos/sale-reviews/${encodeURIComponent(String(row.id))}`,
-          )
-        } catch (error) {
-          if (Number((error as ApiFailure)?.status || 0) !== 404) {
-            throw error
-          }
-        }
-
-        if (!rawResolution) {
-          rawResolution = await authenticatedFetch(
-            '/pos/sale-reviews',
-            {
-              method: 'POST',
-              body: saleReviewSubmission(row),
-            },
-          )
-        }
-
-        const resolution = validateSaleReviewResolution(
-          rawResolution,
-          String(row.id),
-        )
-        const reviewReason = String(
-          resolution.review_reason ||
-            resolution.resolution_error ||
-            '',
-        ).slice(0, 1000)
-        const reviewUpdatedAt = String(
-          resolution.updated_at || new Date().toISOString(),
-        )
-        const now = new Date().toISOString()
-        let acknowledgedSequence = ''
-
-        persistedMutation(() => {
-          const current = get(
-            `SELECT id,payload,sync_status,terminal_sequence
-             FROM outbox
-             WHERE id=?`,
-            [row.id],
-          )
-          if (!current) return
-          if (
-            current.sync_status === 'sent' ||
-            current.sync_status === 'reversed'
-          ) {
-            return
-          }
-          if (current.sync_status !== 'failed') {
-            throw new Error(
-              'Only a failed sale can receive a review decision',
-            )
-          }
-
-          if (resolution.action === 'wait') {
-            run(
-              `UPDATE outbox
-               SET review_id=?, review_status=?, review_reason=?,
-                   review_updated_at=?, updated_at=?
-               WHERE id=? AND sync_status='failed'`,
-              [
-                resolution.id,
-                resolution.status,
-                reviewReason || null,
-                reviewUpdatedAt,
-                now,
-                row.id,
-              ],
-            )
-            return
-          }
-
-          if (resolution.action === 'mark_sent') {
-            const invoiceId = String(resolution.invoice?.id || '')
-            const invoiceNumber = String(
-              resolution.invoice?.invoice_number || '',
-            )
-            run(
-              `UPDATE outbox
-               SET sync_status='sent', server_document_id=?,
-                   server_document_number=?, review_id=?, review_status=?,
-                   review_reason=?, review_updated_at=?, last_error=NULL,
-                   updated_at=?
-               WHERE id=? AND sync_status='failed'`,
-              [
-                invoiceId,
-                invoiceNumber,
-                resolution.id,
-                resolution.status,
-                reviewReason || null,
-                reviewUpdatedAt,
-                now,
-                row.id,
-              ],
-            )
-            if (db.getRowsModified() !== 1) {
-              throw new Error(
-                'Failed sale changed before approval was applied',
-              )
-            }
-            run(
-              `UPDATE sales_local
-               SET server_invoice_id=?, server_invoice_number=?, synced_at=?,
-                   voided_at=NULL, void_reason=NULL
-               WHERE sync_id=?`,
-              [invoiceId, invoiceNumber, now, row.id],
-            )
-            acknowledgedSequence = String(
-              current.terminal_sequence || '',
-            )
-            resolved += 1
-            return
-          }
-
-          const command = JSON.parse(String(current.payload || ''))
-          const items = Array.isArray(command?.items) ? command.items : []
-          if (!items.length) {
-            throw new Error(
-              'Rejected sale has no immutable items to reverse',
-            )
-          }
-
-          for (const item of items) {
-            const variantId = String(item?.variant_id || '')
-            const qty = Number(item?.qty)
-            if (!variantId || !Number.isInteger(qty) || qty <= 0) {
-              throw new Error(
-                'Rejected sale contains an invalid local stock line',
-              )
-            }
-            run(
-              `INSERT INTO stock (variant_id,qty)
-               VALUES (?,?)
-               ON CONFLICT(variant_id)
-               DO UPDATE SET qty=qty+excluded.qty`,
-              [variantId, qty],
-            )
-          }
-
-          run(
-            `UPDATE outbox
-             SET sync_status='reversed', review_id=?, review_status=?,
-                 review_reason=?, review_updated_at=?, last_error=NULL,
-                 updated_at=?
-             WHERE id=? AND sync_status='failed'`,
-            [
-              resolution.id,
-              resolution.status,
-              reviewReason || 'Rejected by branch management',
-              reviewUpdatedAt,
-              now,
-              row.id,
-            ],
-          )
-          if (db.getRowsModified() !== 1) {
-            throw new Error(
-              'Failed sale changed before reversal was applied',
-            )
-          }
-          run(
-            `UPDATE sales_local
-             SET voided_at=?, void_reason=?
-             WHERE sync_id=?`,
-            [
-              now,
-              reviewReason || 'Rejected by branch management',
-              row.id,
-            ],
-          )
-          acknowledgedSequence = String(
-            current.terminal_sequence || '',
-          )
-          resolved += 1
-        })
-
-        if (acknowledgedSequence) {
-          updateSecureAcknowledgedSequence(acknowledgedSequence)
-        }
-        if (resolution.action === 'wait') awaiting += 1
-      }
-
-      return { awaiting, resolved }
-    }),
-)
-
 ipcMain.handle('sync:mark_sending', (_e, id: string) => {
   assertFactoryResetIdle()
   return persistedMutation(() => {
@@ -1894,24 +1684,37 @@ ipcMain.handle('sync:mark_sent', (_e, result: {
   id: string,
   server_document_id?: string | null,
   server_document_number?: string | null,
+  warning_codes?: string[],
 }) => {
   assertFactoryResetIdle()
   const now = new Date().toISOString()
+  const warningCodes = Array.from(
+    new Set(
+      (Array.isArray(result.warning_codes) ? result.warning_codes : [])
+        .map((code) => String(code || '').trim())
+        .filter(Boolean),
+    ),
+  )
+  const syncResult = warningCodes.length ? 'sent_with_warning' : 'sent'
+  const warningCodesJson = JSON.stringify(warningCodes)
   const terminalSequence = String(
     get(`SELECT terminal_sequence FROM outbox WHERE id=?`, [result.id])?.terminal_sequence || '',
   )
   const persisted = persistedMutation(() => {
     run(
       `UPDATE outbox
-       SET sync_status='sent',
+       SET sync_status=?,
            server_document_id=?,
            server_document_number=?,
+           warning_codes=?,
            last_error=NULL,
            updated_at=?
        WHERE id=?`,
       [
+        syncResult,
         result.server_document_id || null,
         result.server_document_number || null,
+        warningCodesJson,
         now,
         result.id,
       ],
@@ -1920,12 +1723,16 @@ ipcMain.handle('sync:mark_sent', (_e, result: {
       `UPDATE sales_local
        SET server_invoice_id=?,
            server_invoice_number=?,
-           synced_at=?
+           synced_at=?,
+           sync_result=?,
+           warning_codes=?
        WHERE sync_id=?`,
       [
         result.server_document_id || null,
         result.server_document_number || null,
         now,
+        syncResult,
+        warningCodesJson,
         result.id,
       ],
     )
@@ -1952,7 +1759,7 @@ ipcMain.handle('sync:mark_failed', (_e, input: {
            updated_at=?
        WHERE id=?`,
       [
-        input.retryable ? 'pending' : 'failed',
+        input.retryable ? 'pending' : 'quarantined',
         String(
           input.error ||
           'Unknown synchronization error',
@@ -1976,7 +1783,10 @@ ipcMain.handle('sync:get_status', () => {
     last_sync_at: getMeta('last_sync_at') || null,
     last_error: getMeta('last_error') || null,
     pending_count: Number(
-      get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending','failed')`)?.count || 0,
+      get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending')`)?.count || 0,
+    ),
+    quarantined_count: Number(
+      get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status='quarantined'`)?.count || 0,
     ),
     terminal_sale_sequence: getMeta('terminal_sale_sequence') || '0',
     // Returning a null cursor makes the next normal sync request a full
@@ -2031,10 +1841,10 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
   const refreshRequired = catalogNeedsFullRefresh()
 
   // Never advance an old cursor while the local database still requires the
-  // signed catalog format. A complete reset response is mandatory.
+  // v2 catalog contract. A complete reset response is mandatory.
   if (refreshRequired && !data?.reset_products) {
     throw new Error(
-      'A complete signed catalog snapshot is required before delta synchronization',
+      'A complete v2 catalog snapshot is required before delta synchronization',
     )
   }
 
@@ -2044,11 +1854,11 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
   if (
     products.some(
       (product: any) =>
-        !isValidSignedCatalogProduct(product),
+        !isValidCatalogProduct(product),
     )
   ) {
     throw new Error(
-      'The server returned a catalog containing an invalid signed price snapshot',
+      'The server returned an invalid v2 catalog product',
     )
   }
   if (
@@ -2082,13 +1892,13 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
     }
     for (const p of products) {
       run(
-        `INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax,price_version,price_token,price_issued_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax,catalog_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           p.id, p.sku, p.name_en || '', p.name_ar || '',
           p.barcode_ean13 || null, p.barcode_internal || null,
           p.size || null, p.color || null, 0,
           Number(p.selling_price || 0), Number(p.unit_tax || 0),
-          p.price_version || null, p.price_token || null, p.price_issued_at || null,
+          Number(p.catalog_version || 0),
         ],
       )
     }
@@ -2105,7 +1915,7 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
       ])
     }
     if (data.reset_products) {
-      setMeta('catalog_format_version', SIGNED_CATALOG_FORMAT_VERSION)
+      setMeta('catalog_format_version', CATALOG_FORMAT_VERSION)
     }
     if (data.cursor !== undefined) setMeta('sync_cursor', String(data.cursor))
     if (data.catalog_valid_until !== undefined) setMeta('catalog_valid_until', String(data.catalog_valid_until || ''))

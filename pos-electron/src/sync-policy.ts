@@ -19,8 +19,6 @@ export type SyncFailureDecision = {
   blockedReason: string | null
 }
 
-export const MAX_AUTOMATIC_SERVER_ATTEMPTS = 8
-
 const RETRY_DELAYS_MS = [
   15_000,
   30_000,
@@ -113,7 +111,7 @@ export function classifySyncError(
     error instanceof SyntaxError ||
     (error as Error)?.name === 'SyncIntegrityError'
   ) {
-    return block('integrity', 'SYNC_RESPONSE_REVIEW_REQUIRED')
+    return block('integrity', 'SYNC_RESPONSE_QUARANTINED')
   }
   if (!(error instanceof ApiError)) {
     return block('unknown', 'SYNC_UNKNOWN_ERROR_REVIEW_REQUIRED')
@@ -125,12 +123,8 @@ export function classifySyncError(
     return retry('rate_limit', attempt, nowMs, error.retryAfterMs, operationId)
   }
   if (error.status && error.status >= 500) {
-    if (attempt > MAX_AUTOMATIC_SERVER_ATTEMPTS) {
-      return block(
-        'server',
-        'SERVER_ERROR_REVIEW_REQUIRED',
-      )
-    }
+    // A server outage must never convert a committed local sale into a
+    // permanent failure. Retry with bounded backoff until the service returns.
     return retry('server', attempt, nowMs, error.retryAfterMs, operationId)
   }
   if (TERMINAL_CODES.has(error.code)) {
@@ -142,7 +136,7 @@ export function classifySyncError(
   if ([403, 409, 422, 426].includes(Number(error.status))) {
     return block('validation', error.code)
   }
-  return block('unknown', error.code || 'SYNC_REVIEW_REQUIRED')
+  return block('unknown', error.code || 'SYNC_OPERATION_QUARANTINED')
 }
 
 export function outboxItemDueAt(

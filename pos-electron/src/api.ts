@@ -408,9 +408,6 @@ export const api = {
       body: payload,
     }),
 
-  reconcileSaleReviews: async () =>
-    unwrap(await bold.api_reconcile_sale_reviews()),
-
   pricing: (variantId: string) =>
     request<any>('/pricing/calculate', {
       method: 'POST',
@@ -477,7 +474,7 @@ export const api = {
     }
     if (!session || !device) {
       throw new ApiError({
-        code: 'OFFLINE_ACCOUNTING_IDENTITY_REQUIRED',
+        code: 'OFFLINE_SALE_CONTEXT_REQUIRED',
         message_ar: 'يجب تسجيل دخول الكاشير وتسجيل الجهاز قبل تجهيز وضع البيع دون اتصال.',
       })
     }
@@ -492,8 +489,8 @@ export const api = {
       { session, device, shift },
     )) {
       throw new ApiError({
-        code: 'OFFLINE_ACCOUNTING_CONTEXT_INVALID',
-        message_ar: 'أعاد الخادم تفويضًا لا يطابق الكاشير أو الجهاز أو الوردية الحالية.',
+        code: 'OFFLINE_SALE_CONTEXT_INVALID',
+        message_ar: 'أعاد الخادم بيانات لا تطابق الكاشير أو الجهاز أو الوردية الحالية.',
       })
     }
     accountingContext = issued
