@@ -19,7 +19,6 @@ const capabilityNames: Record<string, string> = {
   'inventory.read': 'عرض المخزون',
   'sales.read': 'عرض المبيعات',
   'sales.create': 'إنشاء مبيعات',
-  'sales.reconcile': 'اعتماد وتسوية عمليات POS',
   'returns.create': 'إنشاء مرتجعات',
   'customers.read': 'عرض العملاء',
   'customers.manage': 'إدارة العملاء',
