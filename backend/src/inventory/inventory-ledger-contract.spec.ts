@@ -130,6 +130,20 @@ describe('inventory movement ledger contract', () => {
       path.join(process.cwd(), 'src', 'sales', 'sales.service.ts'),
       'utf8',
     );
+    const negativeBalanceMigration = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'prisma',
+        'migrations',
+        '202607290002_inventory_movement_negative_balance',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    const ledgerSmoke = fs.readFileSync(
+      path.join(process.cwd(), 'perf', 'inventory-ledger-smoke.mjs'),
+      'utf8',
+    );
 
     expect(migration).toContain(
       'DROP TRIGGER IF EXISTS "SalesInvoiceItem_inventory_movement"',
@@ -141,6 +155,21 @@ describe('inventory movement ledger contract', () => {
     expect(salesService).toContain('qty_on_hand: { decrement: item.qty }');
     expect(salesService).toContain(
       '${`sale:${dto.sync_id}:${item.variant_id}`}::text',
+    );
+    expect(negativeBalanceMigration).toContain(
+      'DROP CONSTRAINT IF EXISTS "InventoryMovement_nonnegative_balances"',
+    );
+    expect(negativeBalanceMigration).toContain(
+      '"InventoryMovement_reserved_not_above_available_on_hand"',
+    );
+    expect(negativeBalanceMigration).toContain(
+      'GREATEST("on_hand_after", 0)',
+    );
+    expect(ledgerSmoke).toContain(
+      'SELECT "record_inventory_movement"(',
+    );
+    expect(ledgerSmoke).toContain(
+      'const saleMovementKey = `sale:${saleSyncId}:${variant.id}`',
     );
   });
 
