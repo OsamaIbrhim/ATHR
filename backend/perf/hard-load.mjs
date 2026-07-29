@@ -704,7 +704,28 @@ async function mutationIntegrityLoad(adminToken) {
       await prisma.$transaction(async (tx) => {
         const coverageQuantity = 2
         const coverageKey = `hard-smoke-deficit-coverage:${deficitSyncId}`
-        const coverageValue = new Prisma.Decimal(stockBefore.variant.cost_price)
+        const coverageProduct = await tx.product.create({
+          data: {
+            name_en: `Negative coverage probe ${deficitSyncId}`,
+            name_ar: 'اختبار تغطية المخزون السالب',
+            has_variants: false,
+          },
+        })
+        const coverageVariant = await tx.productVariant.create({
+          data: {
+            product_id: coverageProduct.id,
+            sku: `NEGATIVE-COVERAGE-${deficitSyncId}`,
+            cost_price: 10,
+          },
+        })
+        await tx.inventoryStock.create({
+          data: {
+            branch_id: branchId,
+            variant_id: coverageVariant.id,
+            qty_on_hand: -1,
+          },
+        })
+        const coverageValue = new Prisma.Decimal(coverageVariant.cost_price)
           .mul(coverageQuantity)
           .toDecimalPlaces(2)
           .toFixed(2)
@@ -713,14 +734,14 @@ async function mutationIntegrityLoad(adminToken) {
           where: {
             branch_id_variant_id: {
               branch_id: branchId,
-              variant_id: stockBefore.variant_id,
+              variant_id: coverageVariant.id,
             },
           },
           data: { qty_on_hand: { increment: coverageQuantity } },
         })
         await tx.$queryRaw`
           SELECT "record_inventory_cost_movement"(
-            ${stockBefore.variant_id}::uuid,
+            ${coverageVariant.id}::uuid,
             ${branchId}::uuid,
             'customer_return'::"InventoryCostMovementType",
             ${coverageQuantity}::integer,

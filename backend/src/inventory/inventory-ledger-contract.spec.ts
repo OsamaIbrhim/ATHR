@@ -113,6 +113,10 @@ describe('inventory movement ledger contract', () => {
     expect(hardLoad).toContain(
       'Negative inventory cost coverage policy failed',
     );
+    expect(hardLoad).toContain(
+      'const coverageVariant = await tx.productVariant.create',
+    );
+    expect(hardLoad).toContain('qty_on_hand: -1');
   });
 
   it('keeps acceptance-first sales on one explicit inventory writer', () => {
