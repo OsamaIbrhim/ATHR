@@ -1,4 +1,4 @@
-# Bold POS – Electron
+# ATHR POS – Electron
 
 Offline-first cashier app built with React, Vite, Electron, and a local sql.js
 database. See the repository [full installation and operations guide](../README.md)
@@ -48,12 +48,13 @@ The development build uses `http://localhost:3000/api/v1`. Override it before
 starting Electron when the backend runs elsewhere:
 
 ```bash
-BOLD_API_URL=http://192.168.1.20:3000/api/v1 npm run dev:electron
+ATHR_API_URL=https://api.example.com/api/v1 npm run dev:electron
 ```
 
-For a packaged build, define `BOLD_API_URL` in the process environment before
-launching the app. API origins cannot be changed from DevTools because that
-would allow renderer content to redirect protected credentials.
+For a packaged build, enter the HTTPS API URL on the trusted device setup
+screen or define `ATHR_API_URL` in the launch environment. The main process
+validates and stores the non-secret deployment address; renderer content never
+receives device credentials.
 
 ## Reset a test installation
 
@@ -61,14 +62,14 @@ The supported DevTools reset commands deliberately clear credentials inside
 the main process without returning them to the renderer:
 
 ```js
-await window.bold.api_clear_session()
+await window.athr.api_clear_session()
 location.reload()
 ```
 
 To clear both terminal enrollment and cashier login:
 
 ```js
-await window.bold.api_clear_device()
+await window.athr.api_clear_device()
 location.reload()
 ```
 
@@ -81,5 +82,7 @@ npm run build
 npm run dist   # Windows NSIS installer
 ```
 
-Preserve Electron's `bold_pos.sqlite` file whenever pending outbox sales exist.
-Never re-enter a sale after a print error until its `sync_id` is checked.
+ATHR uses `athr_pos.sqlite`. The first ATHR launch copies and verifies a legacy
+`bold_pos.sqlite` plus secure state without deleting the source. Preserve both
+files whenever pending outbox sales exist. Never re-enter a sale after a print
+error until its `sync_id` is checked.

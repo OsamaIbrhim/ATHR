@@ -23,12 +23,12 @@ await assertResponseOk(login, 'Admin BFF login failed')
 const getSetCookie = login.headers.getSetCookie?.bind(login.headers)
 const setCookies = getSetCookie ? getSetCookie() : [login.headers.get('set-cookie') || '']
 const cookie = setCookies
-  .flatMap(value => value.split(/,(?=\s*bold_admin_)/))
+  .flatMap(value => value.split(/,(?=\s*athr_admin_)/))
   .map(value => value.trim().split(';', 1)[0])
   .filter(Boolean)
   .join('; ')
-assert(cookie.includes('bold_admin_access='), 'Access cookie was not issued')
-assert(cookie.includes('bold_admin_refresh='), 'Refresh cookie was not issued')
+assert(cookie.includes('athr_admin_access='), 'Access cookie was not issued')
+assert(cookie.includes('athr_admin_refresh='), 'Refresh cookie was not issued')
 assert(setCookies.every(value => /HttpOnly/i.test(value)), 'Session cookies must be HttpOnly')
 
 const me = await fetch(`${adminBase}/api/backend/auth/me`, {

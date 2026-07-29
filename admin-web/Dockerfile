@@ -6,8 +6,8 @@ RUN npm ci
 
 FROM node:20.19-bookworm-slim AS build
 WORKDIR /app
-ARG NEXT_PUBLIC_API
-ENV NEXT_PUBLIC_API=${NEXT_PUBLIC_API}
+ARG ATHR_API_INTERNAL_BASE
+ENV ATHR_API_INTERNAL_BASE=${ATHR_API_INTERNAL_BASE}
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN mkdir -p public && npm run build

@@ -88,6 +88,7 @@ export function cleanupFactoryResetArtifacts() {
   }
   for (const name of names) {
     if (
+      name.startsWith('athr_pos.sqlite.factory-reset-') ||
       name.startsWith('bold_pos.sqlite.factory-reset-') ||
       name.startsWith('secure-state.bin.factory-reset-')
     ) {

@@ -1,9 +1,9 @@
-# Bold POS
+# ATHR Operations
 
-Bold POS is a multi-branch point-of-sale and inventory system for a men's
-clothing retailer in Egypt. The repository contains a NestJS/PostgreSQL API,
-an Arabic RTL Next.js administration application, and an offline-first
-Electron cashier application.
+ATHR Operations is one operations product containing Cashier, Warehouse, and
+Supervisor workspaces. This repository contains its NestJS/PostgreSQL API,
+Arabic RTL Next.js administration workspace, and offline-first Electron
+cashier runtime.
 
 This guide covers local installation, configuration, database setup,
 application workflows, testing, production deployment, backup and recovery,
@@ -74,7 +74,7 @@ before using real business data.
 
 ```mermaid
 flowchart TD
-    Admin["Admin Web<br/>Next.js"] --> API["Bold API<br/>NestJS"]
+    Admin["ATHR Operations Web<br/>Next.js"] --> API["ATHR API<br/>NestJS"]
     POS["Cashier POS<br/>Electron + local SQLite"] --> API
     API --> DB["PostgreSQL<br/>system of record"]
     API --> Notify["SMTP / WhatsApp<br/>optional integrations"]
@@ -101,8 +101,9 @@ the system into microservices at its current scale.
 | POS last reported state | PostgreSQL `PosTerminal` heartbeat fields |
 | POS last successful local synchronization | POS SQLite `sync_meta` |
 
-The POS cache is not authoritative. The server re-prices and re-validates every
-uploaded sale.
+The POS preserves the historical price paid by the customer. The server
+accepts an idempotent sale exactly once and records price or stock differences
+as reconciliation warnings instead of losing a completed offline sale.
 
 ## Repository layout
 
@@ -205,7 +206,7 @@ Open another terminal:
 ```bash
 cd admin-web
 npm ci
-NEXT_PUBLIC_API=http://localhost:3000/api/v1 npm run dev
+ATHR_API_INTERNAL_BASE=http://localhost:3000/api/v1 npm run dev
 ```
 
 Open `http://localhost:3001`.
@@ -297,26 +298,26 @@ and POS applications automatically rotate refresh tokens after a `401`.
 Keep secrets outside source control. Use the deployment platform's secret
 manager in production.
 
-### Admin variable
+### Admin API variable
 
-`NEXT_PUBLIC_API` is the browser-visible API base URL. It is embedded at build
-time for a production Next.js build:
+Production runtime requires an explicit HTTPS server-side API URL:
 
 ```bash
-NEXT_PUBLIC_API=https://api.example.com/api/v1 npm run build
+ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run start
 ```
 
 ### POS API address
 
-The POS defaults to `http://localhost:3000/api/v1`. For a development build,
-set another address once in Electron DevTools and restart:
+Development defaults to `http://localhost:3000/api/v1`. A packaged installation
+requires an explicit HTTPS address entered on the device setup screen or
+provided by the trusted launcher:
 
-```js
-localStorage.setItem('bold_api', 'https://api.example.com/api/v1')
+```bash
+ATHR_API_URL=https://api.example.com/api/v1 npm run dev:electron
 ```
 
-For a managed production rollout, replace this manual setting with an installer
-or device-enrollment configuration before distributing the application.
+The address is validated, cannot contain credentials, query, or fragment, and
+must end with `/api/v1`. There is no compiled Railway or customer URL in ATHR.
 
 ## Database setup and migrations
 
@@ -412,7 +413,7 @@ The production entry point is `backend/dist/src/main.js`.
 ```bash
 cd admin-web
 npm ci
-NEXT_PUBLIC_API=http://localhost:3000/api/v1 npm run dev
+ATHR_API_INTERNAL_BASE=http://localhost:3000/api/v1 npm run dev
 ```
 
 ### Admin production
@@ -420,8 +421,8 @@ NEXT_PUBLIC_API=http://localhost:3000/api/v1 npm run dev
 ```bash
 cd admin-web
 npm ci
-NEXT_PUBLIC_API=https://api.example.com/api/v1 npm run build
-NEXT_PUBLIC_API=https://api.example.com/api/v1 npm run start
+ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run build
+ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run start
 ```
 
 The configured production port is `3001`.
@@ -444,9 +445,11 @@ npm ci
 npm run dist
 ```
 
-Use `npm run pack` for an unpacked directory build. The POS data file is named
-`bold_pos.sqlite` and is stored in Electron's platform-specific `userData`
-directory. Preserve that file when troubleshooting unsynchronized sales.
+Use `npm run pack` for an unpacked directory build. ATHR stores local POS data
+in `athr_pos.sqlite` under Electron's platform-specific `userData` directory.
+On first launch it copies and verifies a legacy `bold_pos.sqlite` and encrypted
+secure state without deleting or overwriting the source, preserving pending
+demo sales.
 
 ## Accounts, authentication, and roles
 
@@ -872,7 +875,7 @@ shifts, and structured user-facing errors.
 
 Hard tests require a running API and a dedicated PostgreSQL database. Never
 point volume seeding at production. The volume seeder refuses to run unless the
-database URL contains `bold_perf`, unless the operator explicitly overrides the
+database URL contains `athr_perf`, unless the operator explicitly overrides the
 safety gate.
 
 Prepare a representative performance database:
@@ -1012,7 +1015,7 @@ critical advisories.
 - Generate a unique production `JWT_SECRET`.
 - Configure HTTPS for both Admin and API endpoints.
 - Set an exact production `CORS_ORIGINS` list. Do not use wildcard origins.
-- Configure `NEXT_PUBLIC_API` before building Admin.
+- Configure `ATHR_API_INTERNAL_BASE` before building Admin.
 - Decide how the packaged POS discovers the API without DevTools.
 - Configure process supervision for the API and Admin applications.
 - Centralize logs and database monitoring.
@@ -1055,12 +1058,12 @@ Do not expose PostgreSQL or Prisma Studio publicly.
 ```bash
 cd admin-web
 npm ci
-NEXT_PUBLIC_API=https://api.example.com/api/v1 npm run build
-NEXT_PUBLIC_API=https://api.example.com/api/v1 npm run start
+ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run build
+ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run start
 ```
 
-Because `NEXT_PUBLIC_API` is public browser configuration, it must contain an
-HTTPS URL reachable from cashier/admin networks.
+`ATHR_API_INTERNAL_BASE` is server-only runtime configuration. In production it
+must contain an explicit HTTPS API URL reachable by the Admin server.
 
 ### POS rollout
 

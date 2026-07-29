@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-contextBridge.exposeInMainWorld('bold', {
+contextBridge.exposeInMainWorld('athr', {
   search: (q: string) => ipcRenderer.invoke('pos:search', q),
   stock: (variant_id: string) => ipcRenderer.invoke('pos:stock', variant_id),
   sellers: () => ipcRenderer.invoke('pos:list_sellers'),
@@ -31,6 +31,9 @@ contextBridge.exposeInMainWorld('bold', {
   diagnostics_export: (rendererState: any) =>
     ipcRenderer.invoke('diagnostics:export', rendererState),
   api_bootstrap: () => ipcRenderer.invoke('api:bootstrap'),
+  api_get_config: () => ipcRenderer.invoke('api:get_config'),
+  api_set_base_url: (value: string) =>
+    ipcRenderer.invoke('api:set_base_url', value),
   api_enroll: (code: string, terminal: any) =>
     ipcRenderer.invoke('api:enroll', code, terminal),
   api_login: (phone: string, password: string) =>
@@ -50,6 +53,6 @@ contextBridge.exposeInMainWorld('bold', {
 
 declare global {
   interface Window {
-    bold: any
+    athr: any
   }
 }

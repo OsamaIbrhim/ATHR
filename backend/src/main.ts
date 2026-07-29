@@ -38,7 +38,7 @@ async function bootstrap() {
   }));
 
   const config = new DocumentBuilder()
-    .setTitle('Bold POS API')
+    .setTitle('ATHR Operations API')
     .setDescription('Multi-branch POS + Inventory – EGP, ar-EG')
     .setVersion('1.0')
     .addBearerAuth()
@@ -54,7 +54,7 @@ async function bootstrap() {
       component: 'server',
       status: 'running',
       port: environment.port,
-      message: `Bold API is running on port ${environment.port}`,
+      message: `ATHR API is running on port ${environment.port}`,
     }),
   )
 }

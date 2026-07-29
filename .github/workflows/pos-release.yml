@@ -35,7 +35,7 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_NOTES: ${{ inputs.notes }}
       RELEASE_MANDATORY: ${{ inputs.mandatory }}
-      RELEASE_TAG: pos-v${{ inputs.version }}
+      RELEASE_TAG: athr-pos-v${{ inputs.version }}
       CSC_LINK: ${{ secrets.POS_WINDOWS_CSC_LINK }}
       CSC_KEY_PASSWORD: ${{ secrets.POS_WINDOWS_CSC_KEY_PASSWORD }}
 
@@ -94,7 +94,7 @@ jobs:
 
       - name: Generate and verify the updater manifest
         run: |
-          INSTALLER="pos-electron/release/Bold-POS-Setup-${RELEASE_VERSION}.exe"
+          INSTALLER="pos-electron/release/ATHR-POS-Setup-${RELEASE_VERSION}.exe"
           test -f "$INSTALLER"
 
           node scripts/pos-release.mjs create \
@@ -105,11 +105,11 @@ jobs:
             --notes-env RELEASE_NOTES \
             --mandatory "$RELEASE_MANDATORY" \
             --source-sha "$GITHUB_SHA" \
-            --output pos-update.json \
+            --output athr-pos-update.json \
             --notes-output pos-release-notes.md
 
           node scripts/pos-release.mjs verify \
-            --manifest pos-update.json \
+            --manifest athr-pos-update.json \
             --installer "$INSTALLER"
 
           node --test scripts/pos-release.test.mjs
@@ -118,23 +118,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          INSTALLER="pos-electron/release/Bold-POS-Setup-${RELEASE_VERSION}.exe"
+          INSTALLER="pos-electron/release/ATHR-POS-Setup-${RELEASE_VERSION}.exe"
           gh release create "$RELEASE_TAG" \
-            "$INSTALLER#Bold POS Windows installer" \
-            "pos-update.json#POS updater manifest" \
+            "$INSTALLER#ATHR POS Windows installer" \
+            "athr-pos-update.json#ATHR POS updater manifest" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Bold POS ${RELEASE_VERSION}" \
+            --title "ATHR POS ${RELEASE_VERSION}" \
             --notes-file pos-release-notes.md \
             --latest
 
       - name: Write release summary
         run: |
           {
-            echo "## Bold POS ${RELEASE_VERSION} published"
+            echo "## ATHR POS ${RELEASE_VERSION} published"
             echo
             echo "- Tag: \`${RELEASE_TAG}\`"
             echo "- Source: \`${GITHUB_SHA}\`"
-            echo "- Stable manifest: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/pos-update.json"
-            echo "- Installer: https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Bold-POS-Setup-${RELEASE_VERSION}.exe"
+            echo "- Stable manifest: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/athr-pos-update.json"
+            echo "- Installer: https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/ATHR-POS-Setup-${RELEASE_VERSION}.exe"
           } >> "$GITHUB_STEP_SUMMARY"

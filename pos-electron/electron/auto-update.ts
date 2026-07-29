@@ -83,7 +83,7 @@ async function downloadInstaller(manifest: UpdateManifest) {
 
   const directory = path.join(app.getPath('userData'), 'updates')
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
-  const target = path.join(directory, `Bold-POS-${manifest.version}.exe`)
+  const target = path.join(directory, `ATHR-POS-${manifest.version}.exe`)
   const temporary = `${target}.download`
   fs.writeFileSync(temporary, bytes, { mode: 0o600 })
   if (fs.existsSync(target)) fs.unlinkSync(target)
@@ -98,7 +98,7 @@ async function offerUpdate(
   const notes = manifest.notes ? `\n\n${manifest.notes}` : ''
   const offer = await messageBox(options, {
     type: 'info',
-    title: 'تحديث Bold POS',
+    title: 'تحديث ATHR POS',
     message: `يتوفر إصدار جديد ${manifest.version}.`,
     detail:
       `الإصدار الحالي ${app.getVersion()}.${notes}\n\n` +
@@ -128,7 +128,7 @@ async function offerUpdate(
 
   const install = await messageBox(options, {
     type: manifest.mandatory ? 'warning' : 'info',
-    title: 'تثبيت تحديث Bold POS',
+    title: 'تثبيت تحديث ATHR POS',
     message: `تم تنزيل الإصدار ${manifest.version} والتحقق منه.`,
     detail:
       'سيغلق التطبيق ويفتح برنامج التثبيت. احفظ أي عملية حالية قبل المتابعة.',

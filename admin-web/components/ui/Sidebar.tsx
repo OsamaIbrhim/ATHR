@@ -16,14 +16,14 @@ export default function Sidebar(){
       setUserName(user?.name || '')
     }
     update()
-    window.addEventListener('bold-user-updated', update)
-    return () => window.removeEventListener('bold-user-updated', update)
+    window.addEventListener('athr-user-updated', update)
+    return () => window.removeEventListener('athr-user-updated', update)
   }, [])
   if (p === '/login') return null
   const visible = NAV_ITEMS.filter(({ capability }) => capabilities.includes(capability))
   return (
-    <aside className="w-64 shrink-0 bg-bold text-white min-h-screen p-4 overflow-y-auto">
-      <div className="text-2xl font-bold mb-6">Bold <span className="text-accent">Admin</span></div>
+    <aside className="w-64 shrink-0 bg-athr text-white min-h-screen p-4 overflow-y-auto">
+      <div className="text-2xl font-bold mb-6">ATHR <span className="text-accent">Operations</span></div>
       <nav className="space-y-1">
         {visible.map(({ href, label })=>(
           <Link key={href} href={href} className={`block px-3 py-2 rounded-xl ${p===href || (href !== '/' && p.startsWith(href))?'bg-white/15': 'hover:bg-white/10'}`}>{label}</Link>

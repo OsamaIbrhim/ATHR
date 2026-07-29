@@ -16,7 +16,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     setNetworkError(false)
     apiGet('/auth/me').then((user) => {
       localStorage.setItem('user', JSON.stringify(user))
-      window.dispatchEvent(new Event('bold-user-updated'))
+      window.dispatchEvent(new Event('athr-user-updated'))
       if (!canAccessPath(user, pathname)) {
         router.replace(firstAccessiblePath(user))
         setReady(false)

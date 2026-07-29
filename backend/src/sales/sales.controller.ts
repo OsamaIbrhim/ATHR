@@ -147,7 +147,7 @@ export class SalesController {
 
     res.set({
       'Content-Disposition':
-        `inline; filename="bold-${invoice.invoice_number}-${lang}.pdf"`,
+        `inline; filename="athr-${invoice.invoice_number}-${lang}.pdf"`,
     })
 
     res.send(buf)

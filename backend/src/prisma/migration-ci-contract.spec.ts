@@ -26,10 +26,10 @@ describe('migration CI database isolation', () => {
 
   it('uses a separate PostgreSQL database for each migration target and shadow', () => {
     const databaseNames = [
-      'bold_migrations_clean',
-      'bold_migrations_clean_shadow',
-      'bold_migrations_upgrade',
-      'bold_migrations_upgrade_shadow',
+      'athr_migrations_clean',
+      'athr_migrations_clean_shadow',
+      'athr_migrations_upgrade',
+      'athr_migrations_upgrade_shadow',
     ];
 
     for (const databaseName of databaseNames) {
@@ -41,7 +41,7 @@ describe('migration CI database isolation', () => {
 
     expect(new Set(databaseNames).size).toBe(databaseNames.length);
     expect(workflow).toContain('createdb');
-    expect(workflow).not.toMatch(/bold_migrations\?schema=/);
+    expect(workflow).not.toMatch(/athr_migrations\?schema=/);
   });
 
   it('authorizes destructive reset only in local seeded CI jobs', () => {
@@ -49,7 +49,7 @@ describe('migration CI database isolation', () => {
       const job = getJob(jobName);
 
       expect(job).toContain(
-        'DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_perf',
+        'DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_perf',
       );
       expect(job).toContain('npm run prisma:seed');
       expect(job).toContain(

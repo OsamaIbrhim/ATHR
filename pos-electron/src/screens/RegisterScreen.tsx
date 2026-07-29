@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../api'
-import { bold } from '../electron'
+import { athr } from '../electron'
 import { CartItem, Customer, DeviceCredential, HeldSale, OfflineAccountingContext, Product, Seller, Session, Shift, SyncState } from '../types'
 import { offlineAccountingSummaryMatches } from '../../electron/offline-accounting'
 import { ConfirmDialog, FieldError, Modal, NumericKeypad } from '../components/ui'
@@ -42,7 +42,7 @@ export function RegisterScreen({
   const loadHeldSales=useCallback(async()=>{
     if(!accountingReady){setHeldSales([]);return}
     setHeldLoading(true)
-    try{setHeldSales(await bold.held_sales())}
+    try{setHeldSales(await athr.held_sales())}
     catch(error){notify((error as Error).message,'error')}
     finally{setHeldLoading(false)}
   },[accountingReady,notify])
@@ -51,11 +51,12 @@ export function RegisterScreen({
     // Older builds stored unscoped drafts in renderer localStorage. They
     // cannot be trusted or attributed to the current cashier/shift.
     localStorage.removeItem('bold_pos_held_sales_v1')
+    localStorage.removeItem('athr_pos_held_sales_v1')
     void loadHeldSales()
   },[loadHeldSales])
 
   useEffect(()=>{
-    bold.sellers().then((rows)=>{
+    athr.sellers().then((rows)=>{
       setSellers(rows)
       setSellerId((current)=>rows.some((seller)=>seller.id===current)?current:'')
     }).catch(()=>setSellers([]))
@@ -65,7 +66,7 @@ export function RegisterScreen({
     const term=value.trim(); if(!term)return
     setSearching(true)
     try{
-      const local=await bold.search(term)
+      const local=await athr.search(term)
       if(local.length===1 && [local[0].barcode_ean13,local[0].barcode_internal,local[0].sku].includes(term)){await addProduct(local[0]);setResults([])}
       else setResults(local)
       if(!local.length) notify('لا توجد نتائج مطابقة في بيانات الجهاز','info')
@@ -79,7 +80,7 @@ export function RegisterScreen({
     const cachedAvailable=Number(product.qty)
     const available=Number.isFinite(cachedAvailable)
       ? cachedAvailable
-      : Number(await bold.stock(product.id))
+      : Number(await athr.stock(product.id))
 
     const existing=cart.find((item)=>item.variant_id===product.id)
     if(existing && existing.qty>=available){notify('لا توجد كمية إضافية متاحة من هذا الصنف','error');return}
@@ -119,7 +120,7 @@ export function RegisterScreen({
     if(!cart.length){notify('السلة فارغة','info');return}
     if(!accountingReady){notify('لا يمكن تعليق الفاتورة قبل تجهيز هوية الكاشير والوردية على هذا الجهاز.','error');return}
     try{
-      await bold.hold_sale({
+      await athr.hold_sale({
         items:cart.map((item)=>({variant_id:item.variant_id,qty:item.qty})),
         customer,
       })
@@ -132,7 +133,7 @@ export function RegisterScreen({
   const resumeHeldSale=async(sale:HeldSale)=>{
     if(cart.length){notify('أكمل أو علّق الفاتورة الحالية قبل استعادة مسودة أخرى.','error');return}
     try{
-      const resumed=await bold.resume_held_sale(sale.id)
+      const resumed=await athr.resume_held_sale(sale.id)
       setCart(resumed.items)
       setCustomer(resumed.customer)
       setHeldOpen(false)
@@ -146,7 +147,7 @@ export function RegisterScreen({
 
   const deleteHeldSale=async(sale:HeldSale)=>{
     try{
-      await bold.delete_held_sale(sale.id)
+      await athr.delete_held_sale(sale.id)
       await loadHeldSales()
       notify('تم حذف الفاتورة المعلقة.','success')
     }catch(error){notify((error as Error).message,'error')}
@@ -178,7 +179,7 @@ export function RegisterScreen({
 
   return <div className="app-shell">
     <header className="app-header">
-      <div className="header-brand"><div className="brand-mark small">B</div><div><b>Bold POS</b><span>{device.terminal_code}</span></div></div>
+      <div className="header-brand"><div className="brand-mark small">A</div><div><b>ATHR POS</b><span>{device.terminal_code}</span></div></div>
       <nav className="main-nav"><button className="active">نقطة البيع</button><button onClick={onSales}>الفواتير والمرتجعات</button></nav>
       <div className="header-status"><button className={`sync-pill ${syncState.sync_status}`} onClick={onSync}><span/><b>{syncState.sync_status==='success'?'متصل':syncState.sync_status==='syncing'?'مزامنة…':syncState.sync_status==='offline'?'غير متصل':'تنبيه'}</b><small>{syncState.pending_count} معلّق</small></button><div className="cashier-chip"><b>{session.user.name}</b><span>وردية منذ {new Date(shift.opened_at).toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})}</span></div><button className="button secondary compact" onClick={onLogout}>تسجيل الخروج</button><button className="button secondary compact" onClick={onCloseShift}>إغلاق الوردية</button></div>
     </header>
@@ -243,10 +244,10 @@ function CheckoutModal({open,items,customer,sellerId,session,device,shift,accoun
     paymentLock.current=true;setBusy(true);setError('')
     const payload={sync_id:crypto.randomUUID(),branch_id:branchId,seller_id:sellerId,customer_phone:phone||undefined,items:items.map((item)=>({variant_id:item.variant_id,qty:item.qty,unit_price:item.unit_price,unit_tax:item.unit_tax,sku:item.sku,name_ar:item.name_ar||item.name,name_en:item.name_en||'',size:item.size||undefined,color:item.color||undefined})),payment_method:method,language:'ar',local_total:totals.total}
     try{
-      const saved=await bold.sale(payload)
+      const saved=await athr.sale(payload)
       onSaleSaved()
       const receipt={invoice_number:`POS-${saved.sync_id.slice(0,8).toUpperCase()}`,occurred_at:saved.occurred_at,total:totals.total,subtotal:totals.subtotal,tax:totals.tax,payment_method:method,received:method==='cash'?receivedValue:undefined,change:method==='cash'?change:undefined,items}
-      const printResult=await bold.print(receipt,'ar').catch((printError)=>({ok:false,reason:(printError as Error).message}))
+      const printResult=await athr.print(receipt,'ar').catch((printError)=>({ok:false,reason:(printError as Error).message}))
       onCompleted({...receipt,sync_id:saved.sync_id,printed:!!printResult?.ok,print_error:printResult?.reason})
       notify('تم حفظ البيع محليًا بأمان','success')
     }catch(err){paymentLock.current=false;const value=err as Error;setError(value.message||'تعذر حفظ البيع محليًا');setBusy(false)}

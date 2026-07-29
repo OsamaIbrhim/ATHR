@@ -34,7 +34,7 @@ export default function Dashboard(){
   useEffect(() => { void load() }, [load])
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">لوحة التحكم – Bold</h1>
+      <h1 className="text-2xl font-bold">لوحة تحكم ATHR Operations</h1>
       {error && (
         <div className="card border border-red-200 bg-red-50 text-red-800" role="alert">
           {error}{' '}
@@ -55,7 +55,7 @@ export default function Dashboard(){
             .map(({ href, label, className }) => <a key={href} href={href} className={className}>{label}</a>)}
         </div>
       </div>
-      <div className="text-sm text-gray-500">API: {process.env.NEXT_PUBLIC_API || 'http://localhost:3000/api/v1'}</div>
+      <div className="text-sm text-gray-500">ATHR API: متصل عبر بوابة الخادم الآمنة</div>
     </div>
   )
 }

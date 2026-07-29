@@ -5,7 +5,7 @@ import React, {
   type KeyboardEvent,
 } from 'react'
 import { api, ApiError } from '../api'
-import { bold, LocalSale } from '../electron'
+import { athr, LocalSale } from '../electron'
 import {
   DeviceCredential,
   Invoice,
@@ -172,7 +172,7 @@ export function SalesScreen({
 
   const loadLocalSales = async () => {
     try {
-      setLocalSales(await bold.local_sales())
+      setLocalSales(await athr.local_sales())
     } catch {
       setLocalSales([])
     }
@@ -330,7 +330,7 @@ export function SalesScreen({
         <div className="header-brand">
           <div className="brand-mark small">B</div>
           <div>
-            <b>Bold POS</b>
+            <b>ATHR POS</b>
             <span>{device.terminal_code}</span>
           </div>
         </div>
@@ -923,7 +923,7 @@ function InvoiceModal({
       ),
     }))
 
-    const result = await bold.print(
+    const result = await athr.print(
       {
         invoice_number: invoice.invoice_number,
         occurred_at: invoice.occurred_at || invoice.created_at,

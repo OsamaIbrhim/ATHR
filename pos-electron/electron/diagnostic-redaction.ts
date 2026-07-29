@@ -52,5 +52,5 @@ export function diagnosticFilename(now = new Date()) {
     .toISOString()
     .replace(/[-:]/g, '')
     .replace(/\.\d{3}Z$/, 'Z')
-  return `bold-pos-diagnostics-${stamp}.json`
+  return `athr-pos-diagnostics-${stamp}.json`
 }

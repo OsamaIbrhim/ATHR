@@ -46,6 +46,6 @@ describe('POS diagnostic redaction', () => {
   it('creates a deterministic safe JSON filename', () => {
     expect(
       diagnosticFilename(new Date('2026-07-26T18:20:30.000Z')),
-    ).toBe('bold-pos-diagnostics-20260726T182030Z.json')
+    ).toBe('athr-pos-diagnostics-20260726T182030Z.json')
   })
 })

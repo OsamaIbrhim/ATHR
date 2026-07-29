@@ -4,6 +4,12 @@ import * as fs from 'fs'
 import * as os from 'os'
 import { randomUUID } from 'crypto'
 import { configureAutoUpdates } from './auto-update'
+import {
+  ApiConfigurationError,
+  normalizeApiBase,
+  resolveApiBase,
+} from './api-base'
+import { migrateLegacyLocalState } from './local-state-migration'
 import { POS_PROTOCOL_VERSION } from './pos-protocol'
 import { registerDiagnosticsIpc } from './diagnostics-runtime'
 import {
@@ -62,11 +68,51 @@ let db: any
 let win: BrowserWindow
 
 function dbPath() {
-  return path.join(app.getPath('userData'), 'bold_pos.sqlite')
+  return path.join(app.getPath('userData'), 'athr_pos.sqlite')
 }
 
 function secureStatePath() {
   return path.join(app.getPath('userData'), 'secure-state.bin')
+}
+
+function deploymentConfigPath() {
+  return path.join(app.getPath('userData'), 'deployment-config.json')
+}
+
+type DeploymentConfig = {
+  schema_version: 1
+  api_base_url: string
+}
+
+function readDeploymentConfig(): DeploymentConfig | null {
+  try {
+    const value = JSON.parse(fs.readFileSync(deploymentConfigPath(), 'utf8'))
+    if (value?.schema_version !== 1 || typeof value.api_base_url !== 'string') {
+      return null
+    }
+    return value
+  } catch {
+    return null
+  }
+}
+
+function writeDeploymentConfig(apiBaseUrl: string) {
+  const target = deploymentConfigPath()
+  const temporary = `${target}.tmp`
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(
+    temporary,
+    JSON.stringify(
+      {
+        schema_version: 1,
+        api_base_url: apiBaseUrl,
+      } satisfies DeploymentConfig,
+      null,
+      2,
+    ),
+    { mode: 0o600 },
+  )
+  fs.renameSync(temporary, target)
 }
 
 function saveDb() {
@@ -125,13 +171,48 @@ type ApiFailure = {
 
 type RefreshResult = 'refreshed' | 'rejected' | 'network_error'
 
-const API_BASE =
-  process.env.BOLD_API_URL ||
-  (app.isPackaged
-    ? 'https://boldsystem-production.up.railway.app/api/v1'
-    : 'http://localhost:3000/api/v1')
 const API_TIMEOUT_MS = 15_000
 let refreshPromise: Promise<RefreshResult> | null = null
+let configuredApiBase: string | null = null
+let autoUpdatesConfigured = false
+
+function apiConfiguration() {
+  try {
+    const resolved = resolveApiBase({
+      environmentValue: process.env.ATHR_API_URL,
+      persistedValue: readDeploymentConfig()?.api_base_url,
+      packaged: app.isPackaged,
+    })
+    configuredApiBase = resolved.apiBase
+    return {
+      configured: true,
+      api_base_url: resolved.apiBase,
+      source: resolved.source,
+      locked: resolved.locked,
+    }
+  } catch (error) {
+    configuredApiBase = null
+    return {
+      configured: false,
+      api_base_url: '',
+      source: 'none' as const,
+      locked: Boolean(String(process.env.ATHR_API_URL || '').trim()),
+      error:
+        error instanceof Error
+          ? error.message
+          : 'عنوان خادم ATHR غير مضبوط.',
+    }
+  }
+}
+
+function currentApiBase() {
+  if (configuredApiBase) return configuredApiBase
+  const configuration = apiConfiguration()
+  if (configuration.configured) return configuration.api_base_url
+  throw new ApiConfigurationError(
+    configuration.error || 'عنوان خادم ATHR مطلوب.',
+  )
+}
 
 
 function highestStoredSaleSequence() {
@@ -240,7 +321,7 @@ async function fetchWithTimeout(
     API_TIMEOUT_MS,
   )
   try {
-    return await fetch(`${API_BASE}${pathname}`, {
+    return await fetch(`${currentApiBase()}${pathname}`, {
       ...init,
       signal: controller.signal,
     })
@@ -840,7 +921,7 @@ async function initDb() {
   )
 
   if (!getMeta('device_id')) setMeta('device_id', randomUUID())
-  if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
+  if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'ATHR POS')
   if (!getMeta('sync_status')) setMeta('sync_status', 'never')
   setMeta(
     'terminal_sale_sequence',
@@ -903,10 +984,15 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  migrateLegacyLocalState({
+    appDataDirectory: app.getPath('appData'),
+    targetDirectory: app.getPath('userData'),
+  })
+  apiConfiguration()
   cleanupFactoryResetArtifacts()
   await initDb()
   registerDiagnosticsIpc({
-    apiBase: API_BASE,
+    apiBase: () => configuredApiBase || '',
     protocolVersion: POS_PROTOCOL_VERSION,
     dbPath,
     getSecureState: readSecureState,
@@ -935,8 +1021,14 @@ app.whenReady().then(async () => {
     envelope,
   })
   createWindow()
+  ensureAutoUpdates()
+})
+
+function ensureAutoUpdates() {
+  if (autoUpdatesConfigured || !configuredApiBase) return
+  autoUpdatesConfigured = true
   configureAutoUpdates({
-    manifestUrl: `${API_BASE}/pos-updates/latest`,
+    manifestUrl: `${configuredApiBase}/pos-updates/latest`,
     window: () => win,
     pendingOutboxCount: () =>
       Number(
@@ -945,14 +1037,44 @@ app.whenReady().then(async () => {
         )?.count || 0,
       ),
   })
-})
+}
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
 ipcMain.handle(
   'api:bootstrap',
-  () => envelope(() => publicBootstrapState()),
+  () =>
+    envelope(() => ({
+      ...publicBootstrapState(),
+      configuration: apiConfiguration(),
+    })),
+)
+
+ipcMain.handle('api:get_config', () => envelope(() => apiConfiguration()))
+
+ipcMain.handle(
+  'api:set_base_url',
+  (_event, rawValue: string) =>
+    envelope(() => {
+      const environmentValue = String(process.env.ATHR_API_URL || '').trim()
+      const apiBaseUrl = normalizeApiBase(rawValue, {
+        packaged: app.isPackaged,
+      })
+      if (
+        environmentValue &&
+        normalizeApiBase(environmentValue, { packaged: app.isPackaged }) !==
+          apiBaseUrl
+      ) {
+        throw new ApiConfigurationError(
+          'عنوان الخادم مضبوط بواسطة بيئة التشغيل ولا يمكن تغييره من الجهاز.',
+        )
+      }
+      if (!environmentValue) writeDeploymentConfig(apiBaseUrl)
+      configuredApiBase = apiBaseUrl
+      ensureAutoUpdates()
+      return apiConfiguration()
+    }),
 )
 
 ipcMain.handle(
@@ -1971,7 +2093,7 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') =
   </style>
 </head>
 <body>
-  <h2>Bold</h2>
+  <h2>ATHR</h2>
   <div class="center small">
     ملابس رجالي – Men's Clothing<br>
     ${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br>
@@ -1999,7 +2121,7 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') =
   <hr>
   <div class="center small">
     ${isAr ? 'سياسة الإرجاع: 14 يوم بحالة الشراء الأصلية' : 'Returns: 14 days original condition'}<br>
-    شكراً لتسوقكم في Bold – Thank you
+    شكرًا لاستخدامكم ATHR – Thank you
   </div>
 </body>
 </html>`

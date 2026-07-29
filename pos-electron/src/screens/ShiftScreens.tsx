@@ -12,7 +12,7 @@ export function OpenShiftScreen({ session, device, onOpened }:{session:Session,d
     event.preventDefault(); const value=Number(cash||0)
     if(!Number.isFinite(value)||value<0){setError('أدخل رصيد بداية صحيحًا.');return}
     setLoading(true);setError('')
-    try{const shift=await api.openShift(device.branch_id,value);localStorage.setItem('bold_current_shift',JSON.stringify(shift));onOpened(shift)}
+    try{const shift=await api.openShift(device.branch_id,value);localStorage.setItem('athr_current_shift',JSON.stringify(shift));onOpened(shift)}
     catch(err){const value=err as ApiError;setError(`${value.message}${value.requestId?` — المرجع: ${value.requestId}`:''}`)}
     finally{setLoading(false)}
   }
@@ -30,7 +30,7 @@ export function CloseShiftScreen({ shift, onCancel, onClosed }:{shift:Shift,onCa
     event.preventDefault();const value=Number(cash)
     if(!Number.isFinite(value)||value<0){setError('أدخل النقدية الفعلية الموجودة في الدرج.');return}
     setLoading(true);setError('')
-    try{const closed=await api.closeShift(shift.id,value);localStorage.removeItem('bold_current_shift');onClosed(closed)}
+    try{const closed=await api.closeShift(shift.id,value);localStorage.removeItem('athr_current_shift');onClosed(closed)}
     catch(err){const value=err as ApiError;setError(`${value.message}${value.requestId?` — المرجع: ${value.requestId}`:''}`)}
     finally{setLoading(false)}
   }

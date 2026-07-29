@@ -62,8 +62,8 @@ export class InvoicePdfService {
         size: 'A4',
         margin: MARGIN,
         info: {
-          Title: `Bold Invoice ${invoice.invoice_number || ''}`,
-          Author: 'Bold',
+          Title: `ATHR Invoice ${invoice.invoice_number || ''}`,
+          Author: 'ATHR Operations',
           Subject: lang === 'ar' ? 'فاتورة مبيعات' : 'Sales invoice',
         },
       });
@@ -89,7 +89,7 @@ export class InvoicePdfService {
         : formatBusinessDateTime(createdAt, isArabic ? 'ar-EG' : 'en-GB');
 
       doc.font('BoldStrong').fontSize(21).fillColor('#111827')
-        .text(text('بولد – ملابس رجالي', 'Bold – Menswear'), MARGIN, 42, {
+        .text(text('ATHR Operations', 'ATHR Operations'), MARGIN, 42, {
           width: CONTENT_WIDTH,
           align: isArabic ? 'right' : 'left',
         });
@@ -173,7 +173,7 @@ export class InvoicePdfService {
           'الإرجاع متاح خلال أربعة عشر يوماً وبحالة الشراء الأصلية.',
           'Returns are accepted within 14 days in original condition.',
         ), MARGIN, footerY, { width: CONTENT_WIDTH, align: isArabic ? 'right' : 'left' });
-      doc.text(text('شكراً لتسوقكم في بولد', 'Thank you for shopping at Bold'), MARGIN, footerY + 15, {
+      doc.text(text('شكرًا لاستخدامكم ATHR', 'Thank you for using ATHR'), MARGIN, footerY + 15, {
         width: CONTENT_WIDTH,
         align: isArabic ? 'right' : 'left',
       });

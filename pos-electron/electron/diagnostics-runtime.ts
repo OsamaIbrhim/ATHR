@@ -9,7 +9,7 @@ import {
 } from './diagnostic-redaction'
 
 type DiagnosticsDependencies = {
-  apiBase: string
+  apiBase: () => string
   protocolVersion: number
   dbPath: () => string
   getSecureState: () => any
@@ -125,10 +125,10 @@ function snapshot(
     schema_version: 2,
     generated_at: new Date().toISOString(),
     application: {
-      name: 'Bold POS',
+      name: 'ATHR POS',
       version: app.getVersion(),
       protocol_version: dependencies.protocolVersion,
-      api_base: safeApiBase(dependencies.apiBase),
+      api_base: safeApiBase(dependencies.apiBase()),
       packaged: app.isPackaged,
     },
     runtime: {
@@ -233,7 +233,7 @@ export function registerDiagnosticsIpc(
         snapshot(dependencies, rendererState),
       )
       const result = await dialog.showSaveDialog({
-        title: 'تصدير تشخيص Bold POS',
+        title: 'تصدير تشخيص ATHR POS',
         defaultPath: path.join(
           app.getPath('documents'),
           diagnosticFilename(),

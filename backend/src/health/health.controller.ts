@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
 import { PrismaService } from '../prisma/prisma.service';
+import { releaseMetadata } from '../config/release-metadata';
 
 @Controller('health')
 export class HealthController {
@@ -15,7 +16,7 @@ export class HealthController {
   live() {
     return {
       status: 'ok',
-      service: 'bold-pos-api',
+      ...releaseMetadata(),
     };
   }
 
@@ -26,13 +27,13 @@ export class HealthController {
       await this.prisma.$queryRawUnsafe('SELECT 1');
       return {
         status: 'ok',
-        service: 'bold-pos-api',
+        ...releaseMetadata(),
         database: 'ready',
       };
     } catch {
       throw new ServiceUnavailableException({
         status: 'error',
-        service: 'bold-pos-api',
+        ...releaseMetadata(),
         database: 'unavailable',
       });
     }

@@ -2,7 +2,7 @@ import './globals.css'
 import Sidebar from '@/components/ui/Sidebar'
 import { Toaster } from 'sonner'
 import AuthGate from '@/components/AuthGate'
-export const metadata = { title: 'Bold Admin', description: 'Bold POS Admin' }
+export const metadata = { title: 'ATHR Operations', description: 'ATHR Operations workspace' }
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ar" dir="rtl">
