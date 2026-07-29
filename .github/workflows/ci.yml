@@ -291,6 +291,9 @@ jobs:
           cat /tmp/bold-api.log
           exit 1
       - run: npm run test:hard:smoke
+      - name: Print API log on hard-smoke failure
+        if: failure()
+        run: cat /tmp/bold-api.log
 
   release-gate:
     name: release-gate

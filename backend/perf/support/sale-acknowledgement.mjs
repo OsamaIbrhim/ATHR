@@ -20,7 +20,7 @@ export function requireIdempotentReplay(original, replay) {
     original.sync_id !== replay.sync_id
   ) {
     throw new Error(
-      'Sale replay must acknowledge the same persisted invoice',
+      `Sale replay must acknowledge the same persisted invoice: original=${original.id}, replay=${replay.id}, sync_id=${original.sync_id}`,
     )
   }
 }
