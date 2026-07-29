@@ -1,3 +1,5 @@
+import { assertSafeResourcePath } from './resource-path'
+
 const ALLOWED_API_ROUTES = [
   ['GET', /^\/auth\/me$/],
   ['GET', /^\/products\/search\?/],
@@ -34,6 +36,11 @@ export function assertAllowedApiRequest(
   method: unknown,
 ) {
   const pathValue = String(pathname || '')
+  try {
+    assertSafeResourcePath(pathValue)
+  } catch {
+    throw new PosApiPolicyError()
+  }
   const methodValue =
     String(method || 'GET').toUpperCase()
   const allowed = ALLOWED_API_ROUTES.some(

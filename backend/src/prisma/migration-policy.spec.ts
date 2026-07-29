@@ -190,6 +190,10 @@ model Product {
       'prisma/migration-repairs.json is immutable',
     );
     expect(policyScript).toContain('INITIAL_REPAIR_MANIFEST_SHA256');
+    expect(policyScript).toContain(
+      'Migration repair records are append-only and immutable',
+    );
+    expect(policyScript).toContain('REPAIR_RECORD_PATH_PATTERN');
   });
 
   it('parses null-delimited git changes without path ambiguity', () => {

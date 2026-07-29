@@ -196,7 +196,6 @@ try {
       `
       invariant(saleChanged === 1, 'Unable to reserve one unit for ledger sale smoke')
 
-      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED')
       const sale = await tx.salesInvoice.create({
         data: {
           invoice_number: `LEDGER-SALE-${randomUUID()}`,
@@ -225,9 +224,28 @@ try {
         },
         include: { items: true },
       })
-      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE')
+      const saleMovementKey = `sale:${saleSyncId}:${variant.id}`
+      await tx.$queryRaw`
+        SELECT "record_inventory_movement"(
+          ${sourceBranch.id}::uuid,
+          ${variant.id}::uuid,
+          'sale'::"InventoryMovementType",
+          -1::integer,
+          0::integer,
+          'SalesInvoice'::text,
+          ${sale.id}::text,
+          ${sale.items[0].id}::text,
+          ${saleMovementKey}::text,
+          ${occurredAt}::timestamp,
+          ${actor.id}::uuid,
+          ${JSON.stringify({
+            sync_id: saleSyncId,
+            source: 'inventory-ledger-smoke',
+          })}::jsonb
+        )
+      `
       const saleMovement = await tx.inventoryMovement.findUnique({
-        where: { idempotency_key: `sale:${sale.items[0].id}` },
+        where: { idempotency_key: saleMovementKey },
       })
       invariant(saleMovement?.on_hand_delta === -1, 'Sale movement was not recorded')
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiPost } from './api'
+import { apiGet, apiPost } from './api'
+import { ResourcePathError } from './resource-path'
 
 describe('Admin API session policy', () => {
   beforeEach(() => {
@@ -23,5 +24,16 @@ describe('Admin API session policy', () => {
       credentials: 'same-origin',
     }))
     expect(new Headers(init?.headers).has('authorization')).toBe(false)
+  })
+
+  it.each([
+    '/sales/undefined',
+    '/shifts/null/close',
+    '/terminals/%75ndefined',
+  ])('rejects invalid resource paths before fetch: %s', async (path) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    await expect(apiGet(path)).rejects.toBeInstanceOf(ResourcePathError)
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })

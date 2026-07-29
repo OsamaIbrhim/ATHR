@@ -26,6 +26,10 @@ import {
   requiresFullCatalogRefresh,
 } from './catalog-format'
 import { assertAllowedApiRequest } from './api-policy'
+import {
+  buildResourcePath,
+  requireResourceId,
+} from './resource-path'
 import { validateLocalSaleInput } from './sale-validation'
 import {
   publicDevice,
@@ -1226,18 +1230,17 @@ ipcMain.handle(
   'api:issue_accounting',
   (_event, shiftId: string) =>
     envelope(async () => {
-      const normalizedShiftId = String(
-        shiftId || '',
-      ).trim()
-      if (!normalizedShiftId) {
-        throw {
-          message: 'هوية الوردية مطلوبة.',
-          code: 'SHIFT_ID_REQUIRED',
-        } satisfies ApiFailure
-      }
+      const normalizedShiftId = requireResourceId(
+        shiftId,
+        'Shift ID',
+      )
       const context =
         (await authenticatedFetch(
-          `/shifts/${encodeURIComponent(normalizedShiftId)}/offline-context`,
+          buildResourcePath(
+            '/shifts',
+            normalizedShiftId,
+            '/offline-context',
+          ),
           { method: 'POST' },
         )) as OfflineAccountingContext
       const state = readSecureState()

@@ -5,18 +5,43 @@ const actor = {
   role: 'cashier' as const,
   branch_id: 'branch-1',
 };
+const shiftId = '11111111-1111-4111-8111-111111111111';
 
 describe('ShiftsService', () => {
+  it.each([undefined, null, '', ' ', 'undefined', 'null'])(
+    'rejects an invalid shift ID before querying Prisma: %p',
+    async (value) => {
+      const findUnique = jest.fn();
+      const service = new ShiftsService({
+        shift: { findUnique },
+      } as any);
+
+      await expect(
+        service.issueOfflineContext(value as any, actor, {
+          id: 'terminal-1',
+          branch_id: 'branch-1',
+          last_sale_sequence: 0n,
+        }),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'RESOURCE_ID_INVALID',
+          field: 'shift_id',
+        }),
+      });
+      expect(findUnique).not.toHaveBeenCalled();
+    },
+  );
+
   it('calculates expected cash from sales and returns explicitly linked to the shift', async () => {
     const shiftFindUnique = jest.fn()
       .mockResolvedValueOnce({
-        id: 'shift-1',
+        id: shiftId,
         branch_id: 'branch-1',
         status: 'open',
         opening_cash: 50,
         opened_at: new Date(0),
       })
-      .mockResolvedValueOnce({ id: 'shift-1', status: 'closed' });
+      .mockResolvedValueOnce({ id: shiftId, status: 'closed' });
     const shiftUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const salesAggregate = jest.fn().mockResolvedValue({ _sum: { total: 500 } });
     const returnAggregate = jest.fn().mockResolvedValue({ _sum: { refund_total: 100 } });
@@ -30,16 +55,16 @@ describe('ShiftsService', () => {
     };
     const service = new ShiftsService(prisma as any);
 
-    await service.close('shift-1', actor, 440);
+    await service.close(shiftId, actor, 440);
 
     expect(salesAggregate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ shift_id: 'shift-1' }),
+        where: expect.objectContaining({ shift_id: shiftId }),
       }),
     );
     expect(returnAggregate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ shift_id: 'shift-1' }),
+        where: expect.objectContaining({ shift_id: shiftId }),
       }),
     );
     const data = shiftUpdateMany.mock.calls[0][0].data;
@@ -52,7 +77,7 @@ describe('ShiftsService', () => {
     const prisma = {
       shift: {
         findUnique: jest.fn().mockResolvedValue({
-          id: 'shift-1',
+          id: shiftId,
           branch_id: 'branch-1',
           status: 'open',
           closed_at: null,
@@ -61,7 +86,7 @@ describe('ShiftsService', () => {
     };
     const service = new ShiftsService(prisma as any);
     const result = await service.issueOfflineContext(
-      'shift-1',
+      shiftId,
       actor,
       {
         id: 'terminal-1',
@@ -77,7 +102,7 @@ describe('ShiftsService', () => {
       role: 'cashier',
       branch_id: 'branch-1',
       terminal_id: 'terminal-1',
-      shift_id: 'shift-1',
+      shift_id: shiftId,
       server_last_sale_sequence: '4',
     });
     expect(result).toHaveProperty('issued_at');

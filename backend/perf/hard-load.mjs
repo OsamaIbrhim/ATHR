@@ -1,5 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import process from 'node:process'
+import {
+  assertSafeResourcePath,
+  buildResourcePath,
+  parseJsonResponseBody,
+  requireNonEmptyString,
+  requireResourceId,
+  requireResourceRecord,
+  resolveResource,
+} from './support/resource-contract.mjs'
+import { requireCatalogV2ProductMap } from './support/catalog-contract.mjs'
+import {
+  requireIdempotentReplay,
+  requireSaleAcknowledgement,
+} from './support/sale-acknowledgement.mjs'
 
 const api = process.env.PERF_API_URL || 'http://localhost:3000/api/v1'
 const smoke =
@@ -33,12 +47,7 @@ function addFailure(code, message, details = {}) {
 }
 
 function parseBody(text) {
-  if (!text) return {}
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { raw: text.slice(0, 500) }
-  }
+  return parseJsonResponseBody(text)
 }
 
 function requestHeaders(init = {}) {
@@ -53,6 +62,7 @@ function serverDuration(response) {
 }
 
 async function timedJson(path, init = {}) {
+  assertSafeResourcePath(path)
   const started = performance.now()
   let response
   try {
@@ -253,16 +263,19 @@ function authorizationHeader(token) {
 
 async function ensureOpenShift(cashier, branchId) {
   const headers = authorizationHeader(cashier.access_token)
-  const current = await json(
-    `/shifts/current?branch_id=${encodeURIComponent(branchId)}`,
-    { headers },
+  return resolveResource(
+    () =>
+      json(`/shifts/current?branch_id=${encodeURIComponent(branchId)}`, {
+        headers,
+      }),
+    () =>
+      json('/shifts/open', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch_id: branchId, opening_cash: 0 }),
+      }),
+    'Performance shift',
   )
-  if (current) return current
-  return json('/shifts/open', {
-    method: 'POST',
-    headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ branch_id: branchId, opening_cash: 0 }),
-  })
 }
 
 async function createPerformanceTerminal(
@@ -283,32 +296,48 @@ async function createPerformanceTerminal(
       name: `Performance terminal ${index + 1}`,
     }),
   })
+  const enrollmentCode = requireNonEmptyString(
+    enrollment?.enrollment_code,
+    'Terminal enrollment code',
+  )
   const deviceId = randomUUID()
   const enrolled = await json('/terminals/enroll', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      enrollment_code: enrollment.enrollment_code,
+      enrollment_code: enrollmentCode,
       device_id: deviceId,
       name: `Performance terminal ${index + 1}`,
       app_version: 'perf',
     }),
   })
+  const terminal = requireResourceRecord(
+    enrolled?.terminal,
+    'Enrolled terminal',
+  )
+  const deviceToken = requireNonEmptyString(
+    enrolled?.device_token,
+    'Enrolled terminal device token',
+  )
   const headers = {
     Authorization: `Bearer ${cashier.access_token}`,
     'Content-Type': 'application/json',
     'x-pos-device-id': deviceId,
-    'x-pos-device-token': enrolled.device_token,
+    'x-pos-device-token': deviceToken,
     'x-pos-protocol-version': '2',
     'x-pos-app-version': '1.4.0',
   }
-  const context = await json(`/shifts/${encodeURIComponent(shiftId)}/offline-context`, {
-    method: 'POST',
-    headers,
-  })
+  const context = await json(
+    buildResourcePath('/shifts', shiftId, '/offline-context'),
+    {
+      method: 'POST',
+      headers,
+    },
+  )
+  requireResourceId(context?.session_id, 'Offline context session ID')
   return {
     deviceId,
-    terminalId: enrolled.terminal.id,
+    terminalId: terminal.id,
     headers,
     context,
   }
@@ -334,32 +363,34 @@ async function mutationIntegrityLoad(adminToken) {
       throw new Error('Performance cashier must be assigned to a branch')
     }
     const shift = await ensureOpenShift(cashier, branchId)
+    const shiftId = requireResourceId(shift.id, 'Performance shift ID')
 
-    const stockBefore = await prisma.inventoryStock.findFirst({
-      where: {
-        branch_id: branchId,
-        qty_on_hand: { gte: salesCount + 10 },
-        variant: { product: { is_active: true } },
-      },
-      include: { variant: true },
+    const cashierAccount = await prisma.user.findUnique({
+      where: { id: cashier.user.id },
+      select: { password_hash: true },
     })
-    if (!stockBefore) {
-      throw new Error(
-        `No active variant has at least ${salesCount + 10} units for the mutation load`,
-      )
+    if (!cashierAccount) {
+      throw new Error('Authenticated performance cashier is missing')
     }
-
-    const seller = await prisma.user.findFirst({
-      where: {
+    const seller = await prisma.user.upsert({
+      where: { phone: '+200100000004' },
+      update: {
         branch_id: branchId,
+        name: 'Performance Seller',
+        role: 'seller',
+        is_active: true,
+      },
+      create: {
+        branch_id: branchId,
+        name: 'Performance Seller',
+        phone: '+200100000004',
+        email: 'performance-seller@bold.local',
+        password_hash: cashierAccount.password_hash,
         role: 'seller',
         is_active: true,
       },
       select: { id: true, name: true },
     })
-    if (!seller) {
-      throw new Error('Performance seed must include an active seller')
-    }
 
     const workerCount = Math.min(concurrency, salesCount)
     const terminals = await Promise.all(
@@ -368,7 +399,7 @@ async function mutationIntegrityLoad(adminToken) {
           adminToken,
           cashier,
           branchId,
-          shift.id,
+          shiftId,
           index,
         ),
       ),
@@ -377,19 +408,28 @@ async function mutationIntegrityLoad(adminToken) {
       `/sync/pull?branch_id=${encodeURIComponent(branchId)}`,
       { headers: terminals[0].headers },
     )
-    const product = snapshot.products?.find(
-      (entry) => entry.id === stockBefore.variant_id,
-    )
-    if (
-      !product ||
-      product.catalog_version !== 2 ||
-      !product.sku ||
-      !product.name_ar ||
-      product.selling_price === undefined ||
-      product.unit_tax === undefined
-    ) {
+    const catalogProducts = requireCatalogV2ProductMap(snapshot)
+    const mutationProductIds = [...catalogProducts.values()]
+      .filter((product) => product.selling_price >= 0.01)
+      .map((product) => product.id)
+    const stockBefore = await prisma.inventoryStock.findFirst({
+      where: {
+        branch_id: branchId,
+        qty_on_hand: { gte: salesCount + 10 },
+        variant_id: { in: mutationProductIds },
+      },
+      include: { variant: true },
+      orderBy: { variant_id: 'asc' },
+    })
+    if (!stockBefore) {
       throw new Error(
-        `Catalog v2 snapshot is missing for variant ${stockBefore.variant_id}`,
+        `No catalog variant has at least ${salesCount + 10} units for the mutation load`,
+      )
+    }
+    const product = catalogProducts.get(stockBefore.variant_id)
+    if (!product) {
+      throw new Error(
+        `Selected mutation variant ${stockBefore.variant_id} is absent from the catalog contract`,
       )
     }
     const baseWorkerSales = Math.floor(salesCount / workerCount)
@@ -411,7 +451,7 @@ async function mutationIntegrityLoad(adminToken) {
             event_version: 2,
             sync_id: randomUUID(),
             branch_id: branchId,
-            shift_id: shift.id,
+            shift_id: shiftId,
             origin_cashier_id: cashier.user.id,
             cashier_name_snapshot: cashier.user.name,
             seller_id: seller.id,
@@ -429,16 +469,15 @@ async function mutationIntegrityLoad(adminToken) {
                 unit_price: Number(product.selling_price),
                 unit_tax: Number(product.unit_tax),
                 sku_snapshot: product.sku,
-                name_ar_snapshot: product.name_ar,
+                name_ar_snapshot: product.name_ar || product.name_en,
                 name_en_snapshot: product.name_en || undefined,
                 size_snapshot: product.size || undefined,
                 color_snapshot: product.color || undefined,
               },
             ],
           }
-          commands.push({ command, terminal })
           const started = performance.now()
-          await json('/pos/sale', {
+          const response = await json('/pos/sale', {
             method: 'POST',
             headers: {
               ...terminal.headers,
@@ -446,20 +485,39 @@ async function mutationIntegrityLoad(adminToken) {
             },
             body: JSON.stringify(command),
           })
+          const acknowledgement = requireSaleAcknowledgement(
+            response,
+            command.sync_id,
+            'Performance sale acknowledgement',
+          )
+          commands.push({ command, terminal, acknowledgement })
           latencies.push(performance.now() - started)
         }
       }),
     )
 
     const duplicate = commands[0]
-    await json('/pos/sale', {
+    const duplicateResponse = await json('/pos/sale', {
       method: 'POST',
       headers: duplicate.terminal.headers,
       body: JSON.stringify(duplicate.command),
     })
+    const duplicateAcknowledgement = requireSaleAcknowledgement(
+      duplicateResponse,
+      duplicate.command.sync_id,
+      'Performance sale replay acknowledgement',
+    )
+    requireIdempotentReplay(
+      duplicate.acknowledgement,
+      duplicateAcknowledgement,
+    )
 
     const invoices = await prisma.salesInvoice.findMany({
-      where: { sync_id: { in: commands.map(({ command }) => command.sync_id) } },
+      where: {
+        id: {
+          in: commands.map(({ acknowledgement }) => acknowledgement.id),
+        },
+      },
       include: { items: true },
     })
     if (invoices.length !== salesCount) {
@@ -501,7 +559,7 @@ async function mutationIntegrityLoad(adminToken) {
       if (
         invoice.cashier_id !== cashier.user.id ||
         invoice.received_by !== cashier.user.id ||
-        invoice.shift_id !== shift.id ||
+        invoice.shift_id !== shiftId ||
         invoice.terminal_id !== expected.terminal.terminalId ||
         invoice.offline_session_id !== expected.command.offline_session_id ||
         invoice.terminal_sequence?.toString() !== expected.command.terminal_sequence ||
@@ -567,7 +625,7 @@ async function mutationIntegrityLoad(adminToken) {
       event_version: 2,
       sync_id: deficitSyncId,
       branch_id: branchId,
-      shift_id: shift.id,
+      shift_id: shiftId,
       origin_cashier_id: cashier.user.id,
       cashier_name_snapshot: cashier.user.name,
       seller_id: seller.id,
@@ -588,7 +646,7 @@ async function mutationIntegrityLoad(adminToken) {
           unit_price: Number(product.selling_price),
           unit_tax: Number(product.unit_tax),
           sku_snapshot: product.sku,
-          name_ar_snapshot: product.name_ar,
+          name_ar_snapshot: product.name_ar || product.name_en,
           name_en_snapshot: product.name_en || undefined,
           size_snapshot: product.size || undefined,
           color_snapshot: product.color || undefined,
@@ -639,6 +697,92 @@ async function mutationIntegrityLoad(adminToken) {
       throw new Error(
         `Negative-stock invariant failed: invoices ${deficitInvoiceCount}, movements ${deficitMovementCount}, stock ${deficitStock?.qty_on_hand}`,
       )
+    }
+
+    const coverageRollback = 'NEGATIVE_STOCK_COST_PROBE_ROLLBACK'
+    try {
+      await prisma.$transaction(async (tx) => {
+        const coverageQuantity = 2
+        const coverageKey = `hard-smoke-deficit-coverage:${deficitSyncId}`
+        const coverageProduct = await tx.product.create({
+          data: {
+            name_en: `Negative coverage probe ${deficitSyncId}`,
+            name_ar: 'اختبار تغطية المخزون السالب',
+            has_variants: false,
+          },
+        })
+        const coverageVariant = await tx.productVariant.create({
+          data: {
+            product_id: coverageProduct.id,
+            sku: `NEGATIVE-COVERAGE-${deficitSyncId}`,
+            cost_price: 10,
+          },
+        })
+        await tx.inventoryStock.create({
+          data: {
+            branch_id: branchId,
+            variant_id: coverageVariant.id,
+            qty_on_hand: -1,
+          },
+        })
+        const coverageValue = new Prisma.Decimal(coverageVariant.cost_price)
+          .mul(coverageQuantity)
+          .toDecimalPlaces(2)
+          .toFixed(2)
+
+        await tx.inventoryStock.update({
+          where: {
+            branch_id_variant_id: {
+              branch_id: branchId,
+              variant_id: coverageVariant.id,
+            },
+          },
+          data: { qty_on_hand: { increment: coverageQuantity } },
+        })
+        await tx.$queryRaw`
+          SELECT "record_inventory_cost_movement"(
+            ${coverageVariant.id}::uuid,
+            ${branchId}::uuid,
+            'customer_return'::"InventoryCostMovementType",
+            ${coverageQuantity}::integer,
+            ${coverageValue}::numeric,
+            'HardSmokeNegativeStockCoverage'::text,
+            ${deficitSyncId}::text,
+            NULL::text,
+            NULL::uuid,
+            NULL::uuid,
+            NULL::uuid,
+            NULL::uuid,
+            ${coverageKey}::text,
+            ${new Date()}::timestamp,
+            ${cashier.user.id}::uuid,
+            NULL::numeric,
+            ${JSON.stringify({ source: 'hard-smoke' })}::jsonb
+          )
+        `
+        const coverage = await tx.inventoryCostMovement.findUnique({
+          where: { idempotency_key: coverageKey },
+        })
+        const metadata = coverage?.metadata || {}
+        if (
+          !coverage ||
+          coverage.global_quantity_before !== -1 ||
+          coverage.global_quantity_after !== 1 ||
+          coverage.inventory_value_before.toNumber() !== 0 ||
+          Number(metadata.negative_inventory_units_covered) !== 1
+        ) {
+          throw new Error('Negative inventory cost coverage policy failed')
+        }
+
+        throw new Error(coverageRollback)
+      })
+    } catch (error) {
+      if (error instanceof Error && error.message === coverageRollback) {
+        // The probe validates the accounting transition without changing the
+        // isolated hard-smoke dataset after the negative-stock assertion.
+      } else {
+        throw error
+      }
     }
 
     const result = {

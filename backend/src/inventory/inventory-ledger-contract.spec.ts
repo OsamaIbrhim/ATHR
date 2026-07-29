@@ -99,12 +99,106 @@ describe('inventory movement ledger contract', () => {
       'negative_inventory_units_covered',
     );
     expect(migration).toContain(
+      'CREATE OR REPLACE FUNCTION "record_inventory_cost_movement"',
+    );
+    expect(migration).not.toContain('pg_get_functiondef');
+    expect(migration).not.toContain('definition := replace');
+    expect(migration).toContain(
       'Outgoing cost movement cannot deepen a negative inventory deficit',
     );
     expect(hardLoad).toContain(
       'Negative-stock sale must be accepted with a warning and replay idempotently',
     );
     expect(hardLoad).toContain('deficitStock?.qty_on_hand !== -1');
+    expect(hardLoad).toContain(
+      'Negative inventory cost coverage policy failed',
+    );
+    expect(hardLoad).toContain(
+      'const coverageVariant = await tx.productVariant.create',
+    );
+    expect(hardLoad).toContain('qty_on_hand: -1');
+  });
+
+  it('keeps acceptance-first sales on one explicit inventory writer', () => {
+    const migration = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'prisma',
+        'migrations',
+        '202607290001_sales_inventory_single_writer',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    const salesService = fs.readFileSync(
+      path.join(process.cwd(), 'src', 'sales', 'sales.service.ts'),
+      'utf8',
+    );
+    const negativeBalanceMigration = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'prisma',
+        'migrations',
+        '202607290002_inventory_movement_negative_balance',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    const ledgerSmoke = fs.readFileSync(
+      path.join(process.cwd(), 'perf', 'inventory-ledger-smoke.mjs'),
+      'utf8',
+    );
+
+    expect(migration).toContain(
+      'DROP TRIGGER IF EXISTS "SalesInvoiceItem_inventory_movement"',
+    );
+    expect(migration).toContain(
+      'DROP FUNCTION IF EXISTS "record_sale_inventory_movement"()',
+    );
+    expect(migration).not.toContain('DROP FUNCTION IF EXISTS "record_inventory_movement"');
+    expect(salesService).toContain('qty_on_hand: { decrement: item.qty }');
+    expect(salesService).toContain(
+      '${`sale:${dto.sync_id}:${item.variant_id}`}::text',
+    );
+    expect(negativeBalanceMigration).toContain(
+      'DROP CONSTRAINT IF EXISTS "InventoryMovement_nonnegative_balances"',
+    );
+    expect(negativeBalanceMigration).toContain(
+      '"InventoryMovement_reserved_not_above_available_on_hand"',
+    );
+    expect(negativeBalanceMigration).toContain(
+      'GREATEST("on_hand_after", 0)',
+    );
+    expect(ledgerSmoke).toContain(
+      'SELECT "record_inventory_movement"(',
+    );
+    expect(ledgerSmoke).toContain(
+      'const saleMovementKey = `sale:${saleSyncId}:${variant.id}`',
+    );
+  });
+
+  it('allows the cost ledger to cover a negative sales deficit without weakening quantity arithmetic', () => {
+    const migration = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'prisma',
+        'migrations',
+        '202607290003_inventory_cost_negative_balance',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+
+    expect(migration).toContain(
+      'DROP CONSTRAINT IF EXISTS "InventoryCostMovement_quantity_consistency"',
+    );
+    expect(migration).toContain('"quantity_delta" <> 0');
+    expect(migration).toContain(
+      '"global_quantity_before" + "quantity_delta" =',
+    );
+    expect(migration).toContain('"global_quantity_after"');
+    expect(migration).not.toContain('"global_quantity_before" >= 0');
+    expect(migration).not.toContain('"global_quantity_after" >= 0');
   });
 
 

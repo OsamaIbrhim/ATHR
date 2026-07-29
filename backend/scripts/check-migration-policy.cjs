@@ -7,6 +7,8 @@ const { basename, join, resolve } = require('node:path');
 
 const MIGRATION_PATH_PATTERN =
   /^prisma\/migrations\/(\d{12,14}_[a-z0-9_]+)\/migration\.sql$/;
+const REPAIR_RECORD_PATH_PATTERN =
+  /^prisma\/migration-repairs\/(\d{12,14}_[a-z0-9_]+)\.json$/;
 const INITIAL_REPAIR_MANIFEST_SHA256 =
   'de096ebbd167eec1c0ed08fb0dbddfa77aad79043db74cc32c0e8c526d43d120';
 
@@ -282,6 +284,37 @@ function run(argv = process.argv.slice(2)) {
   const repairs = repairManifestContent
     ? JSON.parse(repairManifestContent).repairs || []
     : [];
+  const repairRecordChanges = changes.filter((change) =>
+    change.path.startsWith('prisma/migration-repairs/'),
+  );
+  for (const change of repairRecordChanges) {
+    const match = REPAIR_RECORD_PATH_PATTERN.exec(change.path);
+    if (!match) {
+      throw new Error(
+        `Repair record must use prisma/migration-repairs/<migration>.json: ${change.path}`,
+      );
+    }
+    if (change.status !== 'A') {
+      throw new Error(
+        `Migration repair records are append-only and immutable: ${change.path}`,
+      );
+    }
+
+    const record = JSON.parse(
+      readFileSync(join(backendRoot, change.path), 'utf8'),
+    );
+    if (
+      record.version !== 1 ||
+      record.migration !== match[1] ||
+      !record.baseSha256 ||
+      !record.repairedSha256 ||
+      !record.upgradeFromRef ||
+      !record.incident
+    ) {
+      throw new Error(`Invalid migration repair record: ${change.path}`);
+    }
+    repairs.push(record);
+  }
 
   const result = evaluateMigrationChanges({
     changes,
