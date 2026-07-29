@@ -10,6 +10,10 @@ import {
   resolveResource,
 } from './support/resource-contract.mjs'
 import { requireCatalogV2ProductMap } from './support/catalog-contract.mjs'
+import {
+  requireIdempotentReplay,
+  requireSaleAcknowledgement,
+} from './support/sale-acknowledgement.mjs'
 
 const api = process.env.PERF_API_URL || 'http://localhost:3000/api/v1'
 const smoke =
@@ -472,9 +476,8 @@ async function mutationIntegrityLoad(adminToken) {
               },
             ],
           }
-          commands.push({ command, terminal })
           const started = performance.now()
-          await json('/pos/sale', {
+          const response = await json('/pos/sale', {
             method: 'POST',
             headers: {
               ...terminal.headers,
@@ -482,20 +485,39 @@ async function mutationIntegrityLoad(adminToken) {
             },
             body: JSON.stringify(command),
           })
+          const acknowledgement = requireSaleAcknowledgement(
+            response,
+            command.sync_id,
+            'Performance sale acknowledgement',
+          )
+          commands.push({ command, terminal, acknowledgement })
           latencies.push(performance.now() - started)
         }
       }),
     )
 
     const duplicate = commands[0]
-    await json('/pos/sale', {
+    const duplicateResponse = await json('/pos/sale', {
       method: 'POST',
       headers: duplicate.terminal.headers,
       body: JSON.stringify(duplicate.command),
     })
+    const duplicateAcknowledgement = requireSaleAcknowledgement(
+      duplicateResponse,
+      duplicate.command.sync_id,
+      'Performance sale replay acknowledgement',
+    )
+    requireIdempotentReplay(
+      duplicate.acknowledgement,
+      duplicateAcknowledgement,
+    )
 
     const invoices = await prisma.salesInvoice.findMany({
-      where: { sync_id: { in: commands.map(({ command }) => command.sync_id) } },
+      where: {
+        id: {
+          in: commands.map(({ acknowledgement }) => acknowledgement.id),
+        },
+      },
       include: { items: true },
     })
     if (invoices.length !== salesCount) {
@@ -624,7 +646,7 @@ async function mutationIntegrityLoad(adminToken) {
           unit_price: Number(product.selling_price),
           unit_tax: Number(product.unit_tax),
           sku_snapshot: product.sku,
-          name_ar_snapshot: product.name_ar,
+          name_ar_snapshot: product.name_ar || product.name_en,
           name_en_snapshot: product.name_en || undefined,
           size_snapshot: product.size || undefined,
           color_snapshot: product.color || undefined,

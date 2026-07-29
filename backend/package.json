@@ -24,7 +24,7 @@
     "prisma:seed:production": "ts-node prisma/seed-production.ts",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "jest --runInBand",
-    "test:perf-contracts": "node --test perf/support/catalog-contract.test.mjs perf/support/resource-contract.test.mjs",
+    "test:perf-contracts": "node --test perf/support/catalog-contract.test.mjs perf/support/resource-contract.test.mjs perf/support/sale-acknowledgement.test.mjs",
     "test:soft": "npm run test:perf-contracts && npm test && npm run typecheck && npm run build"
   },
   "prisma": {
