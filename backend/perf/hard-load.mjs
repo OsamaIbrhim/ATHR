@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import process from 'node:process'
+import {
+  assertSafeResourcePath,
+  buildResourcePath,
+  parseJsonResponseBody,
+  requireNonEmptyString,
+  requireResourceId,
+  requireResourceRecord,
+  resolveResource,
+} from './support/resource-contract.mjs'
 
 const api = process.env.PERF_API_URL || 'http://localhost:3000/api/v1'
 const smoke =
@@ -33,12 +42,7 @@ function addFailure(code, message, details = {}) {
 }
 
 function parseBody(text) {
-  if (!text) return {}
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { raw: text.slice(0, 500) }
-  }
+  return parseJsonResponseBody(text)
 }
 
 function requestHeaders(init = {}) {
@@ -53,6 +57,7 @@ function serverDuration(response) {
 }
 
 async function timedJson(path, init = {}) {
+  assertSafeResourcePath(path)
   const started = performance.now()
   let response
   try {
@@ -253,16 +258,19 @@ function authorizationHeader(token) {
 
 async function ensureOpenShift(cashier, branchId) {
   const headers = authorizationHeader(cashier.access_token)
-  const current = await json(
-    `/shifts/current?branch_id=${encodeURIComponent(branchId)}`,
-    { headers },
+  return resolveResource(
+    () =>
+      json(`/shifts/current?branch_id=${encodeURIComponent(branchId)}`, {
+        headers,
+      }),
+    () =>
+      json('/shifts/open', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch_id: branchId, opening_cash: 0 }),
+      }),
+    'Performance shift',
   )
-  if (current) return current
-  return json('/shifts/open', {
-    method: 'POST',
-    headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ branch_id: branchId, opening_cash: 0 }),
-  })
 }
 
 async function createPerformanceTerminal(
@@ -283,32 +291,48 @@ async function createPerformanceTerminal(
       name: `Performance terminal ${index + 1}`,
     }),
   })
+  const enrollmentCode = requireNonEmptyString(
+    enrollment?.enrollment_code,
+    'Terminal enrollment code',
+  )
   const deviceId = randomUUID()
   const enrolled = await json('/terminals/enroll', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      enrollment_code: enrollment.enrollment_code,
+      enrollment_code: enrollmentCode,
       device_id: deviceId,
       name: `Performance terminal ${index + 1}`,
       app_version: 'perf',
     }),
   })
+  const terminal = requireResourceRecord(
+    enrolled?.terminal,
+    'Enrolled terminal',
+  )
+  const deviceToken = requireNonEmptyString(
+    enrolled?.device_token,
+    'Enrolled terminal device token',
+  )
   const headers = {
     Authorization: `Bearer ${cashier.access_token}`,
     'Content-Type': 'application/json',
     'x-pos-device-id': deviceId,
-    'x-pos-device-token': enrolled.device_token,
+    'x-pos-device-token': deviceToken,
     'x-pos-protocol-version': '2',
     'x-pos-app-version': '1.4.0',
   }
-  const context = await json(`/shifts/${encodeURIComponent(shiftId)}/offline-context`, {
-    method: 'POST',
-    headers,
-  })
+  const context = await json(
+    buildResourcePath('/shifts', shiftId, '/offline-context'),
+    {
+      method: 'POST',
+      headers,
+    },
+  )
+  requireResourceId(context?.session_id, 'Offline context session ID')
   return {
     deviceId,
-    terminalId: enrolled.terminal.id,
+    terminalId: terminal.id,
     headers,
     context,
   }
@@ -334,6 +358,7 @@ async function mutationIntegrityLoad(adminToken) {
       throw new Error('Performance cashier must be assigned to a branch')
     }
     const shift = await ensureOpenShift(cashier, branchId)
+    const shiftId = requireResourceId(shift.id, 'Performance shift ID')
 
     const stockBefore = await prisma.inventoryStock.findFirst({
       where: {
@@ -383,7 +408,7 @@ async function mutationIntegrityLoad(adminToken) {
           adminToken,
           cashier,
           branchId,
-          shift.id,
+          shiftId,
           index,
         ),
       ),
@@ -426,7 +451,7 @@ async function mutationIntegrityLoad(adminToken) {
             event_version: 2,
             sync_id: randomUUID(),
             branch_id: branchId,
-            shift_id: shift.id,
+            shift_id: shiftId,
             origin_cashier_id: cashier.user.id,
             cashier_name_snapshot: cashier.user.name,
             seller_id: seller.id,
@@ -516,7 +541,7 @@ async function mutationIntegrityLoad(adminToken) {
       if (
         invoice.cashier_id !== cashier.user.id ||
         invoice.received_by !== cashier.user.id ||
-        invoice.shift_id !== shift.id ||
+        invoice.shift_id !== shiftId ||
         invoice.terminal_id !== expected.terminal.terminalId ||
         invoice.offline_session_id !== expected.command.offline_session_id ||
         invoice.terminal_sequence?.toString() !== expected.command.terminal_sequence ||
@@ -582,7 +607,7 @@ async function mutationIntegrityLoad(adminToken) {
       event_version: 2,
       sync_id: deficitSyncId,
       branch_id: branchId,
-      shift_id: shift.id,
+      shift_id: shiftId,
       origin_cashier_id: cashier.user.id,
       cashier_name_snapshot: cashier.user.name,
       seller_id: seller.id,

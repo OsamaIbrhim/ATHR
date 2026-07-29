@@ -49,4 +49,17 @@ describe('Electron main API policy', () => {
       ),
     ).toThrow(PosApiPolicyError)
   })
+
+  it.each([
+    '/sales/undefined',
+    '/sales/null',
+    '/sales/%75ndefined',
+    '/shifts/undefined/close',
+    '/shifts/null/close',
+    '/shifts/%20/close',
+  ])('blocks an invalid resource path before IPC: %s', (path) => {
+    expect(() => assertAllowedApiRequest(path, 'GET')).toThrow(
+      PosApiPolicyError,
+    )
+  })
 })

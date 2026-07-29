@@ -1,3 +1,5 @@
+import { assertSafeApiPath } from './resource-path'
+
 const API_BASE = '/api/backend'
 
 const inFlightGets = new Map<string, Promise<any>>()
@@ -55,6 +57,7 @@ function clearSession() {
 }
 
 async function authorizedFetch(path: string, init: RequestInit = {}) {
+  assertSafeApiPath(path)
   const requestId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
     : `web-${Date.now()}-${Math.random().toString(16).slice(2)}`

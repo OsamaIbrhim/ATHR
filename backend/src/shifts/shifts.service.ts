@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { assertBranchAccess } from '../auth/branch-access';
 import { randomUUID } from 'crypto';
+import { requireResourceId } from '../common/resource-id';
 
 @Injectable()
 export class ShiftsService {
@@ -43,10 +44,13 @@ export class ShiftsService {
     actor: AuthenticatedUser,
     terminal: Pick<PosTerminal, 'id' | 'branch_id' | 'last_sale_sequence'>,
   ) {
+    const shiftId = requireResourceId(id, 'shift_id');
     if (actor.role !== 'cashier' && actor.role !== 'branch_manager') {
       throw new ForbiddenException('Only POS cashiers and branch managers can receive an offline accounting context');
     }
-    const shift = await this.prisma.shift.findUnique({ where: { id } });
+    const shift = await this.prisma.shift.findUnique({
+      where: { id: shiftId },
+    });
     if (!shift) throw new NotFoundException('Shift not found');
     if (shift.status !== 'open' || shift.closed_at) {
       throw new ConflictException('Offline accounting context requires an open shift');
@@ -85,7 +89,10 @@ export class ShiftsService {
     actor: AuthenticatedUser,
     closing_cash: number,
   ) {
-    const shift = await this.prisma.shift.findUnique({ where: { id } });
+    const shiftId = requireResourceId(id, 'shift_id');
+    const shift = await this.prisma.shift.findUnique({
+      where: { id: shiftId },
+    });
     if (!shift) throw new NotFoundException('Shift not found');
 
     assertBranchAccess(actor, shift.branch_id);
@@ -122,7 +129,7 @@ export class ShiftsService {
       .toDecimalPlaces(2);
 
     const changed = await this.prisma.shift.updateMany({
-      where: { id, status: 'open' },
+      where: { id: shiftId, status: 'open' },
       data: {
         closed_by: actor.sub,
         closing_cash,
@@ -135,7 +142,7 @@ export class ShiftsService {
     if (changed.count !== 1) {
       throw new ConflictException('Shift was already closed');
     }
-    return this.prisma.shift.findUnique({ where: { id } });
+    return this.prisma.shift.findUnique({ where: { id: shiftId } });
   }
 
   list(branch_id?: string) {
