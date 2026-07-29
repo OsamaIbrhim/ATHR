@@ -4,8 +4,8 @@ import { ensureSeededInventoryLedger } from '../prisma/ensure-seeded-inventory-l
 import { ensureSeededCostLedger } from '../prisma/ensure-seeded-cost-ledger.mjs'
 
 const databaseUrl = process.env.DATABASE_URL || ''
-if (!databaseUrl.includes('bold_perf') && process.env.PERF_ALLOW_VOLUME_SEED !== '1') {
-  throw new Error('Volume seeding is restricted to a database whose URL contains bold_perf. Set PERF_ALLOW_VOLUME_SEED=1 only for an isolated performance database.')
+if (!databaseUrl.includes('athr_perf') && process.env.PERF_ALLOW_VOLUME_SEED !== '1') {
+  throw new Error('Volume seeding is restricted to a database whose URL contains athr_perf. Set PERF_ALLOW_VOLUME_SEED=1 only for an isolated performance database.')
 }
 
 const prisma = new PrismaClient()

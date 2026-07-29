@@ -887,7 +887,7 @@ async function main() {
     if (dataset.products < minProducts || dataset.invoices < minInvoices) {
       addFailure(
         'DATASET_TOO_SMALL',
-        `Full hard test requires at least ${minProducts} products and ${minInvoices} invoices. Run npm run perf:seed against bold_perf first.`,
+        `Full hard test requires at least ${minProducts} products and ${minInvoices} invoices. Run npm run perf:seed against athr_perf first.`,
         {
           expected: { products: minProducts, invoices: minInvoices },
           actual: dataset,

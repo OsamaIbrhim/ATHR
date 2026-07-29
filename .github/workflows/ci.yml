@@ -47,11 +47,11 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: bold_migrations
+          POSTGRES_DB: athr_migrations
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d bold_migrations"
+          --health-cmd "pg_isready -U postgres -d athr_migrations"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -77,10 +77,10 @@ jobs:
           PGPASSWORD: postgres
         run: |
           for database in \
-            bold_migrations_clean \
-            bold_migrations_clean_shadow \
-            bold_migrations_upgrade \
-            bold_migrations_upgrade_shadow
+            athr_migrations_clean \
+            athr_migrations_clean_shadow \
+            athr_migrations_upgrade \
+            athr_migrations_upgrade_shadow
           do
             createdb \
               --host localhost \
@@ -105,9 +105,9 @@ jobs:
           --github-output "$GITHUB_OUTPUT"
       - name: Apply current migrations to a clean database twice
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean_shadow
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean_shadow
         run: |
           npx prisma generate
           npx prisma migrate deploy
@@ -124,8 +124,8 @@ jobs:
       - name: Build a populated database from the release baseline
         working-directory: migration-base/backend
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
         run: |
           npm ci
           npx prisma generate
@@ -133,9 +133,9 @@ jobs:
           npm run prisma:seed
       - name: Upgrade populated release data with current migrations
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade_shadow
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade_shadow
         run: |
           npx prisma generate
           npx prisma migrate deploy
@@ -171,17 +171,17 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: bold_admin_smoke
+          POSTGRES_DB: athr_admin_smoke
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d bold_admin_smoke"
+          --health-cmd "pg_isready -U postgres -d athr_admin_smoke"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_admin_smoke
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_admin_smoke
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_admin_smoke
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_admin_smoke
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
       ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
       ATHR_API_INTERNAL_BASE: http://localhost:3000/api/v1
@@ -210,16 +210,16 @@ jobs:
         working-directory: admin-web
       - name: Start Backend and Admin
         run: |
-          npm --prefix backend run start:prod > /tmp/bold-api.log 2>&1 &
-          npm --prefix admin-web run start > /tmp/bold-admin.log 2>&1 &
+          npm --prefix backend run start:prod > /tmp/athr-api.log 2>&1 &
+          npm --prefix admin-web run start > /tmp/athr-admin.log 2>&1 &
           for attempt in {1..30}; do
             curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null \
               && curl --silent --fail http://localhost:3001/login >/dev/null \
               && exit 0
             sleep 1
           done
-          cat /tmp/bold-api.log
-          cat /tmp/bold-admin.log
+          cat /tmp/athr-api.log
+          cat /tmp/athr-admin.log
           exit 1
       - run: npm run test:e2e:smoke
         working-directory: admin-web
@@ -249,11 +249,11 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: bold_perf
+          POSTGRES_DB: athr_perf
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d bold_perf"
+          --health-cmd "pg_isready -U postgres -d athr_perf"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -261,8 +261,8 @@ jobs:
       run:
         working-directory: backend
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_perf
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_perf
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
       ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
       PERF_LOGIN_PHONE: "+200100000000"
@@ -283,17 +283,17 @@ jobs:
       - run: npm run build
       - name: Start API
         run: |
-          npm run start:prod > /tmp/bold-api.log 2>&1 &
+          npm run start:prod > /tmp/athr-api.log 2>&1 &
           for attempt in {1..30}; do
             curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null && exit 0
             sleep 1
           done
-          cat /tmp/bold-api.log
+          cat /tmp/athr-api.log
           exit 1
       - run: npm run test:hard:smoke
       - name: Print API log on hard-smoke failure
         if: failure()
-        run: cat /tmp/bold-api.log
+        run: cat /tmp/athr-api.log
 
   release-gate:
     name: release-gate
@@ -332,11 +332,11 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: bold_perf
+          POSTGRES_DB: athr_perf
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d bold_perf"
+          --health-cmd "pg_isready -U postgres -d athr_perf"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -344,8 +344,8 @@ jobs:
       run:
         working-directory: backend
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_perf
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_perf
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
       ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
       PERF_LOGIN_PHONE: "+200100000000"
@@ -374,11 +374,11 @@ jobs:
       - run: npm run build
       - name: Start API
         run: |
-          npm run start:prod > /tmp/bold-api.log 2>&1 &
+          npm run start:prod > /tmp/athr-api.log 2>&1 &
           for attempt in {1..30}; do
             curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null && exit 0
             sleep 1
           done
-          cat /tmp/bold-api.log
+          cat /tmp/athr-api.log
           exit 1
       - run: npm run test:hard

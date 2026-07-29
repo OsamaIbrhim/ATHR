@@ -875,7 +875,7 @@ shifts, and structured user-facing errors.
 
 Hard tests require a running API and a dedicated PostgreSQL database. Never
 point volume seeding at production. The volume seeder refuses to run unless the
-database URL contains `bold_perf`, unless the operator explicitly overrides the
+database URL contains `athr_perf`, unless the operator explicitly overrides the
 safety gate.
 
 Prepare a representative performance database:
