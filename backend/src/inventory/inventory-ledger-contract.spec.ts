@@ -177,6 +177,30 @@ describe('inventory movement ledger contract', () => {
     );
   });
 
+  it('allows the cost ledger to cover a negative sales deficit without weakening quantity arithmetic', () => {
+    const migration = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'prisma',
+        'migrations',
+        '202607290003_inventory_cost_negative_balance',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+
+    expect(migration).toContain(
+      'DROP CONSTRAINT IF EXISTS "InventoryCostMovement_quantity_consistency"',
+    );
+    expect(migration).toContain('"quantity_delta" <> 0');
+    expect(migration).toContain(
+      '"global_quantity_before" + "quantity_delta" =',
+    );
+    expect(migration).toContain('"global_quantity_after"');
+    expect(migration).not.toContain('"global_quantity_before" >= 0');
+    expect(migration).not.toContain('"global_quantity_after" >= 0');
+  });
+
 
   it('keeps the remote-database smoke transaction bounded, configurable, and always disconnected', () => {
     const smoke = fs.readFileSync(
