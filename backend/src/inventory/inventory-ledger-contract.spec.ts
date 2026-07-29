@@ -115,6 +115,35 @@ describe('inventory movement ledger contract', () => {
     );
   });
 
+  it('keeps acceptance-first sales on one explicit inventory writer', () => {
+    const migration = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'prisma',
+        'migrations',
+        '202607290001_sales_inventory_single_writer',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    const salesService = fs.readFileSync(
+      path.join(process.cwd(), 'src', 'sales', 'sales.service.ts'),
+      'utf8',
+    );
+
+    expect(migration).toContain(
+      'DROP TRIGGER IF EXISTS "SalesInvoiceItem_inventory_movement"',
+    );
+    expect(migration).toContain(
+      'DROP FUNCTION IF EXISTS "record_sale_inventory_movement"()',
+    );
+    expect(migration).not.toContain('DROP FUNCTION IF EXISTS "record_inventory_movement"');
+    expect(salesService).toContain('qty_on_hand: { decrement: item.qty }');
+    expect(salesService).toContain(
+      '${`sale:${dto.sync_id}:${item.variant_id}`}::text',
+    );
+  });
+
 
   it('keeps the remote-database smoke transaction bounded, configurable, and always disconnected', () => {
     const smoke = fs.readFileSync(
