@@ -9,6 +9,7 @@ import {
   requireResourceRecord,
   resolveResource,
 } from './support/resource-contract.mjs'
+import { requireCatalogV2ProductMap } from './support/catalog-contract.mjs'
 
 const api = process.env.PERF_API_URL || 'http://localhost:3000/api/v1'
 const smoke =
@@ -360,20 +361,6 @@ async function mutationIntegrityLoad(adminToken) {
     const shift = await ensureOpenShift(cashier, branchId)
     const shiftId = requireResourceId(shift.id, 'Performance shift ID')
 
-    const stockBefore = await prisma.inventoryStock.findFirst({
-      where: {
-        branch_id: branchId,
-        qty_on_hand: { gte: salesCount + 10 },
-        variant: { product: { is_active: true } },
-      },
-      include: { variant: true },
-    })
-    if (!stockBefore) {
-      throw new Error(
-        `No active variant has at least ${salesCount + 10} units for the mutation load`,
-      )
-    }
-
     const cashierAccount = await prisma.user.findUnique({
       where: { id: cashier.user.id },
       select: { password_hash: true },
@@ -417,19 +404,25 @@ async function mutationIntegrityLoad(adminToken) {
       `/sync/pull?branch_id=${encodeURIComponent(branchId)}`,
       { headers: terminals[0].headers },
     )
-    const product = snapshot.products?.find(
-      (entry) => entry.id === stockBefore.variant_id,
-    )
-    if (
-      !product ||
-      product.catalog_version !== 2 ||
-      !product.sku ||
-      !product.name_ar ||
-      product.selling_price === undefined ||
-      product.unit_tax === undefined
-    ) {
+    const catalogProducts = requireCatalogV2ProductMap(snapshot)
+    const stockBefore = await prisma.inventoryStock.findFirst({
+      where: {
+        branch_id: branchId,
+        qty_on_hand: { gte: salesCount + 10 },
+        variant_id: { in: [...catalogProducts.keys()] },
+      },
+      include: { variant: true },
+      orderBy: { variant_id: 'asc' },
+    })
+    if (!stockBefore) {
       throw new Error(
-        `Catalog v2 snapshot is missing for variant ${stockBefore.variant_id}`,
+        `No catalog variant has at least ${salesCount + 10} units for the mutation load`,
+      )
+    }
+    const product = catalogProducts.get(stockBefore.variant_id)
+    if (!product) {
+      throw new Error(
+        `Selected mutation variant ${stockBefore.variant_id} is absent from the catalog contract`,
       )
     }
     const baseWorkerSales = Math.floor(salesCount / workerCount)
