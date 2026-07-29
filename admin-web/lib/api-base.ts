@@ -5,6 +5,10 @@ export class AdminApiConfigurationError extends Error {
   }
 }
 
+function isLoopback(hostname: string) {
+  return ['localhost', '127.0.0.1', '[::1]'].includes(hostname)
+}
+
 export function normalizeAdminApiBase(
   rawValue: string,
   options: { production: boolean },
@@ -30,7 +34,11 @@ export function normalizeAdminApiBase(
       'ATHR API URL cannot contain credentials, query, or fragment.',
     )
   }
-  if (options.production && url.protocol !== 'https:') {
+  if (
+    options.production &&
+    url.protocol !== 'https:' &&
+    !(url.protocol === 'http:' && isLoopback(url.hostname))
+  ) {
     throw new AdminApiConfigurationError(
       'ATHR production API must use HTTPS.',
     )

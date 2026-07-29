@@ -26,6 +26,21 @@ describe('ATHR Admin API configuration', () => {
     ).toBe('https://api.example.com/api/v1')
   })
 
+  it('allows production-mode loopback HTTP only for same-runner E2E', () => {
+    expect(
+      resolveAdminApiBase({
+        NODE_ENV: 'production',
+        ATHR_API_INTERNAL_BASE: 'http://127.0.0.1:3000/api/v1',
+      }),
+    ).toBe('http://127.0.0.1:3000/api/v1')
+    expect(() =>
+      resolveAdminApiBase({
+        NODE_ENV: 'production',
+        ATHR_API_INTERNAL_BASE: 'http://10.0.0.8:3000/api/v1',
+      }),
+    ).toThrow('HTTPS')
+  })
+
   it('does not accept credentials or an incorrect API path', () => {
     for (const value of [
       'https://user:pass@api.example.com/api/v1',
