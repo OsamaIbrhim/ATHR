@@ -10,7 +10,7 @@ import {
   isValidOfflineAccountingSummary,
   offlineAccountingSummaryMatches,
 } from '../electron/offline-accounting'
-import { bold, IpcEnvelope } from './electron'
+import { ApiConfiguration, athr, IpcEnvelope } from './electron'
 
 const TERMINAL_CONFIRMATION_DELAY_MS = 2_000
 const TERMINAL_CONFIRMATION_WINDOW_MS = 60_000
@@ -26,6 +26,7 @@ type SecureState = {
   auth?: PersistedAuth | null
   device?: DeviceCredential | null
   accounting?: OfflineAccountingContext | null
+  configuration?: ApiConfiguration
 }
 type TerminalEvidence = {
   code: string
@@ -120,7 +121,7 @@ function currentContextMatches(
 
 async function clearAccountingContext() {
   accountingContext = null
-  await bold.api_clear_accounting().catch(() => undefined)
+  await athr.api_clear_accounting().catch(() => undefined)
 }
 
 export function terminalCredentialDisposition(
@@ -173,19 +174,19 @@ async function clearSession() {
   session = null
   persistedAuth = null
   accountingContext = null
-  await bold.api_clear_session().catch(() => undefined)
-  window.dispatchEvent(new Event('bold-auth-expired'))
+  await athr.api_clear_session().catch(() => undefined)
+  window.dispatchEvent(new Event('athr-auth-expired'))
 }
 
 async function clearDevice() {
   device = null
   terminalEvidence = null
   accountingContext = null
-  await bold.api_clear_device().catch(() => undefined)
+  await athr.api_clear_device().catch(() => undefined)
   session = null
   persistedAuth = null
-  window.dispatchEvent(new Event('bold-auth-expired'))
-  window.dispatchEvent(new Event('bold-terminal-invalid'))
+  window.dispatchEvent(new Event('athr-auth-expired'))
+  window.dispatchEvent(new Event('athr-terminal-invalid'))
 }
 
 async function request<T = any>(
@@ -197,7 +198,7 @@ async function request<T = any>(
 ): Promise<T> {
   try {
     const value = unwrap(
-      await bold.api_request({
+      await athr.api_request({
         path,
         method: init.method,
         body: init.body,
@@ -239,13 +240,19 @@ async function request<T = any>(
 export const api = {
   base: 'electron-main',
 
+  apiConfiguration: async () =>
+    unwrap(await athr.api_get_config()) as ApiConfiguration,
+
+  configureApi: async (apiBaseUrl: string) =>
+    unwrap(await athr.api_set_base_url(apiBaseUrl)) as ApiConfiguration,
+
   bootstrap: async () => {
     for (const key of ['token', 'refresh_token', 'user', 'branch_id']) {
       localStorage.removeItem(key)
     }
 
     const secure = unwrap(
-      await bold.api_bootstrap(),
+      await athr.api_bootstrap(),
     ) as SecureState
     device = null
     session = null
@@ -254,7 +261,7 @@ export const api = {
 
     if (validDevice(secure.device)) device = secure.device
     else if (secure.device) {
-      await bold.api_clear_device()
+      await athr.api_clear_device()
     }
 
     if (validAuth(secure.auth)) {
@@ -289,7 +296,7 @@ export const api = {
         }
       }
     } else if (secure.auth) {
-      await bold.api_clear_session()
+      await athr.api_clear_session()
     }
 
     if (
@@ -305,13 +312,14 @@ export const api = {
     ) {
       accountingContext = secure.accounting
     } else if (secure.accounting) {
-      await bold.api_clear_accounting()
+      await athr.api_clear_accounting()
     }
 
     return {
       device,
       session,
       accountingContext,
+      configuration: secure.configuration || null,
       user: session?.user || null,
       offline: !!session && !navigator.onLine,
     }
@@ -326,7 +334,7 @@ export const api = {
     },
   ) => {
     const enrolled: DeviceCredential = unwrap(
-      await bold.api_enroll(
+      await athr.api_enroll(
         enrollmentCode,
         terminal,
       ),
@@ -343,7 +351,7 @@ export const api = {
       accounting: OfflineAccountingContext | null
       offline: boolean
     } = unwrap(
-      await bold.api_login(
+      await athr.api_login(
         normalizedPhone,
         password,
       ),
@@ -383,12 +391,12 @@ export const api = {
   },
 
   logout: async () => {
-    unwrap(await bold.api_logout())
+    unwrap(await athr.api_logout())
     session = null
     persistedAuth = null
     accountingContext = null
     window.dispatchEvent(
-      new Event('bold-auth-expired'),
+      new Event('athr-auth-expired'),
     )
   },
 
@@ -480,7 +488,7 @@ export const api = {
     }
 
     const issued = unwrap(
-      await bold.api_issue_accounting(
+      await athr.api_issue_accounting(
         shift.id,
       ),
     )

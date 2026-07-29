@@ -53,13 +53,13 @@ jobs:
         run: npm run dist
 
       - name: Show generated files
-        shell: pwsh
-        run: Get-ChildItem -Path release -Recurse -File | Select-Object FullName, Length
+        shell: bash
+        run: find release -type f -printf '%p %s bytes\n'
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: bold-pos-windows-${{ github.sha }}
+          name: athr-pos-windows-${{ github.sha }}
           path: |
             pos-electron/release/*.exe
             pos-electron/release/*.blockmap
@@ -72,7 +72,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: bold-pos-builder-debug-${{ github.sha }}
+          name: athr-pos-builder-debug-${{ github.sha }}
           path: pos-electron/release/builder-effective-config.yaml
           if-no-files-found: ignore
           retention-days: 7

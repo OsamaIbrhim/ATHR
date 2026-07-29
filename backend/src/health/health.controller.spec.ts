@@ -9,9 +9,11 @@ describe('HealthController', () => {
     };
     const controller = new HealthController(prisma as any);
 
-    expect(controller.live()).toEqual({
+    expect(controller.live()).toMatchObject({
       status: 'ok',
-      service: 'bold-pos-api',
+      product: 'ATHR',
+      service: 'athr-api',
+      configuration_schema: 1,
     });
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
     expect(
@@ -28,9 +30,10 @@ describe('HealthController', () => {
     };
     const controller = new HealthController(prisma as any);
 
-    await expect(controller.ready()).resolves.toEqual({
+    await expect(controller.ready()).resolves.toMatchObject({
       status: 'ok',
-      service: 'bold-pos-api',
+      product: 'ATHR',
+      service: 'athr-api',
       database: 'ready',
     });
     expect(prisma.$queryRawUnsafe).toHaveBeenCalledWith('SELECT 1');
@@ -50,12 +53,20 @@ describe('HealthController', () => {
     };
     const controller = new HealthController(prisma as any);
 
-    await expect(controller.ready()).rejects.toEqual(
-      new ServiceUnavailableException({
-        status: 'error',
-        service: 'bold-pos-api',
-        database: 'unavailable',
-      }),
-    );
+    let failure: unknown;
+    try {
+      await controller.ready();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ServiceUnavailableException);
+    expect(
+      (failure as ServiceUnavailableException).getResponse(),
+    ).toMatchObject({
+      status: 'error',
+      product: 'ATHR',
+      service: 'athr-api',
+      database: 'unavailable',
+    });
   });
 });

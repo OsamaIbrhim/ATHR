@@ -22,15 +22,15 @@ ENV NODE_ENV=production \
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates dumb-init openssl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 1001 bold \
-    && useradd --system --uid 1001 --gid bold --home-dir /app bold
+    && groupadd --system --gid 1001 athr \
+    && useradd --system --uid 1001 --gid athr --home-dir /app athr
 
-COPY --from=build --chown=bold:bold /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=bold:bold /app/node_modules ./node_modules
-COPY --from=build --chown=bold:bold /app/dist ./dist
-COPY --from=build --chown=bold:bold /app/prisma ./prisma
+COPY --from=build --chown=athr:athr /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=athr:athr /app/node_modules ./node_modules
+COPY --from=build --chown=athr:athr /app/dist ./dist
+COPY --from=build --chown=athr:athr /app/prisma ./prisma
 
-USER bold
+USER athr
 EXPOSE 3000
 
 ENTRYPOINT ["dumb-init", "--"]

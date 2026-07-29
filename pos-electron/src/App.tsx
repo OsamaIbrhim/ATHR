@@ -9,14 +9,16 @@ import {
   SyncState,
 } from './types'
 import { startSync, syncLoop } from './sync'
-import { bold } from './electron'
+import { ApiConfiguration, athr } from './electron'
 import { EnrollmentScreen } from './screens/EnrollmentScreen'
+import { ApiConfigurationScreen } from './screens/ApiConfigurationScreen'
 import { LoginScreen } from './screens/LoginScreen'
 import { CloseShiftScreen, OpenShiftScreen } from './screens/ShiftScreens'
 import { RegisterScreen } from './screens/RegisterScreen'
 import { SalesScreen } from './screens/SalesScreen'
 import { ScreenLoader, Toasts, ToastValue } from './components/ui'
 import { DiagnosticsConsole } from './components/DiagnosticsConsole'
+import { migrateLegacyLocalStorage } from './local-storage-migration'
 
 const emptySync: SyncState = {
   device_id: '',
@@ -33,6 +35,8 @@ const emptySync: SyncState = {
 
 export default function App() {
   const [booting, setBooting] = useState(true)
+  const [apiConfiguration, setApiConfiguration] =
+    useState<ApiConfiguration | null>(null)
   const [device, setDevice] = useState<DeviceCredential | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [shift, setShift] = useState<Shift | null>(null)
@@ -80,7 +84,7 @@ export default function App() {
   )
 
   const clearShiftState = useCallback(async () => {
-    localStorage.removeItem('bold_current_shift')
+    localStorage.removeItem('athr_current_shift')
     setShift(null)
     setAccountingContext(null)
     await api.clearOfflineAccountingContext()
@@ -92,14 +96,14 @@ export default function App() {
       try {
         const current = await api.currentShift(branchId)
         if (current) {
-          localStorage.setItem('bold_current_shift', JSON.stringify(current))
+          localStorage.setItem('athr_current_shift', JSON.stringify(current))
           setShift(current)
           await installAccountingContext(current)
         } else {
           await clearShiftState()
         }
       } catch (error) {
-        const cachedRaw = localStorage.getItem('bold_current_shift')
+        const cachedRaw = localStorage.getItem('athr_current_shift')
         if (
           error instanceof ApiError &&
           error.code === 'NETWORK_ERROR' &&
@@ -134,9 +138,11 @@ export default function App() {
   )
 
   useEffect(() => {
+    migrateLegacyLocalStorage(localStorage)
     api
       .bootstrap()
       .then((result) => {
+        setApiConfiguration(result.configuration)
         setDevice(result.device)
         setSession(result.session)
         setAccountingContext(result.accountingContext)
@@ -164,11 +170,11 @@ export default function App() {
       setDevice(null)
       setView('register')
     }
-    window.addEventListener('bold-auth-expired', expired)
-    window.addEventListener('bold-terminal-invalid', invalid)
+    window.addEventListener('athr-auth-expired', expired)
+    window.addEventListener('athr-terminal-invalid', invalid)
     return () => {
-      window.removeEventListener('bold-auth-expired', expired)
-      window.removeEventListener('bold-terminal-invalid', invalid)
+      window.removeEventListener('athr-auth-expired', expired)
+      window.removeEventListener('athr-terminal-invalid', invalid)
     }
   }, [])
 
@@ -205,7 +211,7 @@ export default function App() {
 
   const openShiftCompleted = useCallback(
     async (value: Shift) => {
-      localStorage.setItem('bold_current_shift', JSON.stringify(value))
+      localStorage.setItem('athr_current_shift', JSON.stringify(value))
       setShift(value)
       setView('register')
       const context = await installAccountingContext(value)
@@ -221,7 +227,7 @@ export default function App() {
 
   const requestShiftClose = useCallback(async () => {
     try {
-      const heldSales = await bold.held_sales()
+      const heldSales = await athr.held_sales()
       if (heldSales.length > 0) {
         notify(
           `لا يمكن إغلاق الوردية: توجد ${heldSales.length} فاتورة معلقة لهذا الكاشير. استكملها أو احذفها أولًا.`,
@@ -271,6 +277,14 @@ export default function App() {
 
   if (booting) {
     return <ScreenLoader message="جارٍ فحص الجهاز والجلسة الآمنة…" />
+  }
+  if (!apiConfiguration?.configured) {
+    return (
+      <ApiConfigurationScreen
+        initialValue={apiConfiguration?.api_base_url}
+        onConfigured={setApiConfiguration}
+      />
+    )
   }
   if (!device) {
     return (

@@ -6,7 +6,8 @@ export function GET() {
   return NextResponse.json(
     {
       status: 'ok',
-      service: 'bold-admin',
+      product: 'ATHR',
+      service: 'athr-operations-admin',
     },
     {
       headers: {

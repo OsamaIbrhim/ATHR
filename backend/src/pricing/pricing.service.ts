@@ -34,7 +34,7 @@ export type PriceQuote = {
 };
 
 /**
- * Bold Pricing Engine
+ * ATHR Pricing Engine
  * compound: Price = cost * (1+overhead) * (1+profit) * (1+tax)
  * Rules priority: variant > product > brand > category > global
  */

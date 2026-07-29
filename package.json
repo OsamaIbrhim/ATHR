@@ -1,5 +1,5 @@
 {
-  "name": "bold-system-workspace",
+  "name": "athr-operations-workspace",
   "private": true,
   "scripts": {
     "test:soft": "npm --prefix backend run test:soft && npm --prefix admin-web run test:soft && npm --prefix pos-electron run test:soft",

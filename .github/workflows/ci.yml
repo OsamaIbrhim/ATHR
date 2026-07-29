@@ -184,7 +184,7 @@ jobs:
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_admin_smoke
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
       ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
-      API_INTERNAL_BASE: http://localhost:3000/api/v1
+      ATHR_API_INTERNAL_BASE: http://localhost:3000/api/v1
       ADMIN_SMOKE_PHONE: "+200100000000"
       ADMIN_SMOKE_PASSWORD: Bold1234
     steps:

@@ -1,5 +1,5 @@
 import { api, ApiError } from './api'
-import { bold, BoldBridge } from './electron'
+import { athr, AthrBridge } from './electron'
 import { SyncState } from './types'
 import {
   assertPosCompatibility,
@@ -12,7 +12,7 @@ import {
 } from './sync-policy'
 
 type SyncBridge = Pick<
-  BoldBridge,
+  AthrBridge,
   | 'sync_get_status'
   | 'sync_set_status'
   | 'sync_get_outbox'
@@ -355,13 +355,13 @@ export function syncLoop(
 
   activeSync = performSync(
     branchId,
-    bold,
+    athr,
     api,
     options,
   )
     .catch(async error => {
       const previous =
-        await bold.sync_get_status()
+        await athr.sync_get_status()
 
       consecutiveSyncFailures += 1
       const decision = classifySyncError(
@@ -376,7 +376,7 @@ export function syncLoop(
         blocked_reason: decision.blockedReason,
       }
 
-      await bold.sync_set_status(failed)
+      await athr.sync_set_status(failed)
 
       return failed
     })
@@ -430,7 +430,7 @@ export function startSync(
     schedule(state)
   }
 
-  bold.sync_get_status()
+  athr.sync_get_status()
     .then((state) => {
       onStatus?.(state)
       void run(false)

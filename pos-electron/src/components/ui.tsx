@@ -5,7 +5,7 @@ export function ScreenLoader({ message }: { message: string }) {
     <main className="auth-shell">
       <section className="auth-card compact">
         <div className="brand-mark">B</div>
-        <h1>Bold POS</h1>
+        <h1>ATHR POS</h1>
         <div className="spinner" />
         <p className="muted">{message}</p>
       </section>

@@ -2,14 +2,11 @@ import 'server-only'
 
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
+import { resolveAdminApiBase } from './api-base'
 
-const ACCESS_COOKIE = 'bold_admin_access'
-const REFRESH_COOKIE = 'bold_admin_refresh'
-const API_BASE = (
-  process.env.API_INTERNAL_BASE ||
-  process.env.NEXT_PUBLIC_API ||
-  'http://localhost:3000/api/v1'
-).replace(/\/$/, '')
+const ACCESS_COOKIE = 'athr_admin_access'
+const REFRESH_COOKIE = 'athr_admin_refresh'
+const API_BASE = resolveAdminApiBase()
 
 type BackendSession = {
   access_token: string

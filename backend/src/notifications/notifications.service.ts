@@ -32,7 +32,7 @@ export class NotificationsService {
     }
     try {
       const info = await mailer.sendMail({
-        from: process.env.SMTP_FROM || '"Bold POS" <noreply@bold.eg>',
+        from: process.env.SMTP_FROM || '"ATHR Operations" <noreply@athr.local>',
         to, subject,
         text: text || subject,
         html,
@@ -71,20 +71,20 @@ export class NotificationsService {
     const totalSales = moneyString(report.total_sales || 0);
     const totalCost = moneyString(report.total_cost || 0);
     const profit = moneyString(report.total_profit || report.profit || 0);
-    const summary = `تقرير Bold\nالمبيعات: ${totalSales} ج\nالتكلفة: ${totalCost} ج\nالربح: ${profit} ج\nالفواتير: ${report.count||0}`;
+    const summary = `تقرير ATHR\nالمبيعات: ${totalSales} ج\nالتكلفة: ${totalCost} ج\nالربح: ${profit} ج\nالفواتير: ${report.count||0}`;
     const html = `
       <div dir="rtl" style="font-family:Cairo,Arial,sans-serif">
-      <h2>تقرير Bold اليومي</h2>
+      <h2>تقرير ATHR اليومي</h2>
       <p>المبيعات: <b>${totalSales} ج</b></p>
       <p>التكلفة: ${totalCost} ج</p>
       <p>الربح: <b>${profit} ج</b></p>
       <p>عدد الفواتير: ${report.count||0}</p>
-      <hr><small>Bold POS – ${formatBusinessDateTime(new Date())}</small>
+      <hr><small>ATHR Operations – ${formatBusinessDateTime(new Date())}</small>
       </div>`;
     const results:any = {};
     if (channels.includes('email')) {
-      const to = process.env.REPORT_EMAIL_TO || 'owner@bold.eg';
-      results.email = await this.sendEmail(to, 'تقرير Bold اليومي', html, summary);
+      const to = process.env.REPORT_EMAIL_TO || 'owner@athr.local';
+      results.email = await this.sendEmail(to, 'تقرير ATHR اليومي', html, summary);
     }
     if (channels.includes('whatsapp')) {
       const to = process.env.REPORT_WHATSAPP_TO || '+200100000000';

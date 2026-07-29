@@ -1,6 +1,6 @@
-# Bold Admin – Next.js
+# ATHR Operations – Next.js
 
-Arabic RTL administration application for Bold POS. See the repository
+Arabic RTL supervisor and operations workspace for ATHR. See the repository
 [full installation and operations guide](../README.md) for database migrations,
 deployment, recovery, security, and troubleshooting.
 
@@ -8,7 +8,7 @@ deployment, recovery, security, and troubleshooting.
 
 ```bash
 npm ci
-NEXT_PUBLIC_API=http://localhost:3000/api/v1 npm run dev
+ATHR_API_INTERNAL_BASE=http://localhost:3000/api/v1 npm run dev
 ```
 
 Open `http://localhost:3001`. Development seed owner credentials are documented

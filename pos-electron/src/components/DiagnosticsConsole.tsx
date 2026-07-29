@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { bold, FactoryResetStatus, IpcEnvelope, PosDiagnostics } from '../electron'
+import { athr, FactoryResetStatus, IpcEnvelope, PosDiagnostics } from '../electron'
 import {
   DeviceCredential,
   Session,
@@ -71,10 +71,10 @@ export function DiagnosticsConsole({
     setLoading(true)
     setError('')
     try {
-      setData(await bold.diagnostics_get())
+      setData(await athr.diagnostics_get())
       if (session.user.role === 'branch_manager') {
         setResetStatus(unwrap(
-          await bold.api_factory_reset_status(),
+          await athr.api_factory_reset_status(),
         ))
       }
     } catch (caught) {
@@ -95,7 +95,7 @@ export function DiagnosticsConsole({
   const copy = async () => {
     setNotice('')
     try {
-      await bold.diagnostics_copy(rendererState)
+      await athr.diagnostics_copy(rendererState)
       setNotice('تم نسخ تقرير تشخيص منقح بدون كلمات مرور أو رموز دخول.')
     } catch (caught) {
       setError((caught as Error).message)
@@ -105,7 +105,7 @@ export function DiagnosticsConsole({
   const exportReport = async () => {
     setNotice('')
     try {
-      const result = await bold.diagnostics_export(rendererState)
+      const result = await athr.diagnostics_export(rendererState)
       setNotice(
         result.canceled
           ? 'تم إلغاء التصدير.'
@@ -122,7 +122,7 @@ export function DiagnosticsConsole({
     setNotice('')
     try {
       const latest = unwrap(
-        await bold.api_factory_reset_status(),
+        await athr.api_factory_reset_status(),
       )
       setResetStatus(latest)
       if (!latest.can_reset) {
@@ -137,7 +137,7 @@ export function DiagnosticsConsole({
         throw new Error('اكتب كود الجهاز كاملًا للتأكيد.')
       }
       localStorage.clear()
-      unwrap(await bold.api_factory_reset(confirmation))
+      unwrap(await athr.api_factory_reset(confirmation))
       setNotice('تم إلغاء تسجيل الجهاز. سيعاد تشغيل نقطة البيع الآن.')
     } catch (caught) {
       setError(

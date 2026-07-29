@@ -64,8 +64,8 @@ export function validateReleaseVersion({ version, packageFile, lockFile, tag }) 
   if (versions.some((value) => value !== version)) {
     fail(`Release ${version} does not match package.json and package-lock.json: ${versions.join(', ')}`)
   }
-  if (tag !== `pos-v${version}`) {
-    fail(`Release tag must be pos-v${version}`)
+  if (tag !== `athr-pos-v${version}`) {
+    fail(`Release tag must be athr-pos-v${version}`)
   }
   return { version, tag }
 }
@@ -77,26 +77,30 @@ export async function createReleaseManifest({
   tag,
   notes,
   mandatory,
+  sourceSha = 'unknown',
   publishedAt = new Date().toISOString(),
 }) {
   if (!VERSION_PATTERN.test(version)) fail('Manifest version is invalid')
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
     fail('GitHub repository must use owner/name format')
   }
-  if (tag !== `pos-v${version}`) fail(`Manifest tag must be pos-v${version}`)
+  if (tag !== `athr-pos-v${version}`) fail(`Manifest tag must be athr-pos-v${version}`)
   const normalizedNotes = String(notes || '').trim()
   if (!normalizedNotes) fail('Release notes are required')
   if (normalizedNotes.length > 4_000) fail('Release notes must not exceed 4000 characters')
   if (!Number.isFinite(Date.parse(publishedAt))) fail('Publication date is invalid')
 
   const filename = path.basename(installer)
-  const expectedFilename = `Bold-POS-Setup-${version}.exe`
+  const expectedFilename = `ATHR-POS-Setup-${version}.exe`
   if (filename !== expectedFilename) {
     fail(`Installer must be named ${expectedFilename}`)
   }
   const sha256 = await sha256File(installer)
   const url = `https://github.com/${repository}/releases/download/${tag}/${encodeURIComponent(filename)}`
   return {
+    product: 'ATHR POS',
+    channel: 'stable',
+    source_sha: sourceSha,
     available: true,
     version,
     url,
@@ -110,6 +114,8 @@ export async function createReleaseManifest({
 export async function verifyReleaseManifest({ manifestFile, installer }) {
   const manifest = readJson(manifestFile)
   assert.equal(manifest.available, true, 'Manifest must advertise an available release')
+  assert.equal(manifest.product, 'ATHR POS', 'Manifest product identity is invalid')
+  assert.equal(manifest.channel, 'stable', 'Manifest release channel is invalid')
   assert.match(String(manifest.version || ''), VERSION_PATTERN, 'Manifest version is invalid')
   assert.equal(typeof manifest.mandatory, 'boolean', 'Manifest mandatory must be boolean')
   assert.match(String(manifest.sha256 || ''), SHA256_PATTERN, 'Manifest SHA-256 is invalid')
@@ -123,7 +129,7 @@ export async function verifyReleaseManifest({ manifestFile, installer }) {
 
 function releaseNotes({ version, notes, sha256, sourceSha }) {
   return [
-    `# Bold POS ${version}`,
+    `# ATHR POS ${version}`,
     '',
     notes.trim(),
     '',
@@ -159,6 +165,7 @@ async function main(argv) {
       tag: required(args, 'tag'),
       notes,
       mandatory: booleanValue(required(args, 'mandatory'), '--mandatory'),
+      sourceSha: required(args, 'source-sha'),
       publishedAt: args['published-at'] || new Date().toISOString(),
     })
     writeFileSync(required(args, 'output'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')

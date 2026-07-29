@@ -104,7 +104,7 @@ export type FactoryResetStatus = {
   can_reset: boolean
 }
 
-export type BoldBridge = {
+export type AthrBridge = {
   search(query: string): Promise<Product[]>
   stock(variantId: string): Promise<number>
   sellers(): Promise<Seller[]>
@@ -166,6 +166,8 @@ export type BoldBridge = {
   }>
 
   api_bootstrap(): Promise<IpcEnvelope<any>>
+  api_get_config(): Promise<IpcEnvelope<ApiConfiguration>>
+  api_set_base_url(value: string): Promise<IpcEnvelope<ApiConfiguration>>
   api_enroll(code: string, terminal: unknown): Promise<IpcEnvelope<any>>
   api_login(phone: string, password: string): Promise<IpcEnvelope<any>>
   api_logout(): Promise<IpcEnvelope<any>>
@@ -184,6 +186,14 @@ export type BoldBridge = {
   api_clear_accounting(): Promise<IpcEnvelope<any>>
 }
 
+export type ApiConfiguration = {
+  configured: boolean
+  api_base_url: string
+  source: 'environment' | 'device' | 'development' | 'none'
+  locked: boolean
+  error?: string
+}
+
 export type IpcEnvelope<T> =
   | { ok: true; data: T }
   | {
@@ -199,25 +209,25 @@ export type IpcEnvelope<T> =
       }
     }
 
-function resolveBridge(): BoldBridge {
+function resolveBridge(): AthrBridge {
   const runtimeWindow = (
     globalThis as typeof globalThis & {
       window?: {
-        bold?: BoldBridge
+        athr?: AthrBridge
       }
     }
   ).window
 
-  if (!runtimeWindow?.bold) {
+  if (!runtimeWindow?.athr) {
     throw new Error(
       'Electron preload bridge is unavailable',
     )
   }
 
-  return runtimeWindow.bold
+  return runtimeWindow.athr
 }
 
-export const bold = new Proxy({} as BoldBridge, {
+export const athr = new Proxy({} as AthrBridge, {
   get(_target, property: string | symbol) {
     const bridge = resolveBridge()
     const value = Reflect.get(

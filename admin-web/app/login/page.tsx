@@ -38,7 +38,7 @@ export default function Login(){
   }
   return (
     <div className="card max-w-sm mx-auto mt-20">
-      <h1 className="text-xl font-bold mb-4">تسجيل الدخول – Bold</h1>
+      <h1 className="text-xl font-bold mb-4">تسجيل الدخول – ATHR Operations</h1>
       <label className="text-sm" htmlFor="phone">رقم الهاتف</label>
       <input id="phone" className={`input mb-2 ${field==='phone'?'border-red-600':''}`} placeholder="01xxxxxxxxx" value={phone} onChange={e=>setPhone(e.target.value)} autoFocus aria-invalid={field==='phone'} />
       <label className="text-sm" htmlFor="password">كلمة المرور</label>

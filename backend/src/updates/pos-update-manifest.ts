@@ -263,7 +263,7 @@ export class PosUpdateManifestResolver {
         headers: {
           Accept: 'application/json',
           'Cache-Control': 'no-cache',
-          'User-Agent': 'Bold-POS-API',
+          'User-Agent': 'ATHR-Operations-API',
         },
       });
       if (!response.ok) {
