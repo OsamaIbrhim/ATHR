@@ -6,8 +6,8 @@ function requireNonEmptyString(value, label) {
 }
 
 function requireFiniteNumber(value, label) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error(`${label} must be a finite number`)
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative finite number`)
   }
   return value
 }
@@ -28,7 +28,14 @@ export function requireCatalogV2ProductMap(snapshot) {
 
     const id = requireNonEmptyString(product.id, `Catalog product ${index} ID`)
     requireNonEmptyString(product.sku, `Catalog product ${id} SKU`)
-    requireNonEmptyString(product.name_ar, `Catalog product ${id} Arabic name`)
+    if (
+      (typeof product.name_ar !== 'string' || product.name_ar.trim().length === 0) &&
+      (typeof product.name_en !== 'string' || product.name_en.trim().length === 0)
+    ) {
+      throw new Error(
+        `Catalog product ${id} must have an Arabic or English name`,
+      )
+    }
     requireFiniteNumber(product.selling_price, `Catalog product ${id} selling price`)
     requireFiniteNumber(product.unit_tax, `Catalog product ${id} unit tax`)
 

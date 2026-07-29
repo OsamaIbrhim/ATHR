@@ -405,11 +405,14 @@ async function mutationIntegrityLoad(adminToken) {
       { headers: terminals[0].headers },
     )
     const catalogProducts = requireCatalogV2ProductMap(snapshot)
+    const mutationProductIds = [...catalogProducts.values()]
+      .filter((product) => product.selling_price >= 0.01)
+      .map((product) => product.id)
     const stockBefore = await prisma.inventoryStock.findFirst({
       where: {
         branch_id: branchId,
         qty_on_hand: { gte: salesCount + 10 },
-        variant_id: { in: [...catalogProducts.keys()] },
+        variant_id: { in: mutationProductIds },
       },
       include: { variant: true },
       orderBy: { variant_id: 'asc' },
@@ -462,7 +465,7 @@ async function mutationIntegrityLoad(adminToken) {
                 unit_price: Number(product.selling_price),
                 unit_tax: Number(product.unit_tax),
                 sku_snapshot: product.sku,
-                name_ar_snapshot: product.name_ar,
+                name_ar_snapshot: product.name_ar || product.name_en,
                 name_en_snapshot: product.name_en || undefined,
                 size_snapshot: product.size || undefined,
                 color_snapshot: product.color || undefined,

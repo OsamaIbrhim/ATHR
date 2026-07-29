@@ -23,14 +23,26 @@ test('catalog fixture IDs come from the API snapshot, not a broader database que
   )
 })
 
+test('catalog fixtures accept the same language fallback as the POS runtime', () => {
+  const englishOnly = {
+    ...sellableProduct,
+    name_ar: null,
+    name_en: 'Test product',
+  }
+  const products = requireCatalogV2ProductMap({ products: [englishOnly] })
+  assert.equal(products.get(englishOnly.id), englishOnly)
+})
+
 test('catalog fixtures reject malformed version 2 products before mutations run', () => {
   for (const product of [
     { ...sellableProduct, catalog_version: 1 },
     { ...sellableProduct, id: '' },
     { ...sellableProduct, sku: '' },
-    { ...sellableProduct, name_ar: null },
+    { ...sellableProduct, name_ar: null, name_en: '' },
     { ...sellableProduct, selling_price: '100' },
     { ...sellableProduct, unit_tax: Number.NaN },
+    { ...sellableProduct, selling_price: -1 },
+    { ...sellableProduct, unit_tax: -1 },
   ]) {
     assert.throws(() => requireCatalogV2ProductMap({ products: [product] }))
   }
