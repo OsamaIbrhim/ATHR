@@ -24,6 +24,10 @@ const builtinPackages = new Set([
   ...builtinModules.map((name) => `node:${name}`),
   'node:test',
 ]);
+const requiredNativeToolchainPackages = new Map([
+  ['@rollup/rollup-linux-x64-gnu', '4.62.2'],
+  ['@rollup/rollup-win32-x64-msvc', '4.62.2'],
+]);
 
 export function findCycles(graph) {
   const cycles = [];
@@ -128,6 +132,9 @@ export function validateWorkspace() {
   const rootManifest = JSON.parse(
     readFileSync(join(repositoryRoot, 'package.json'), 'utf8'),
   );
+  const rootLock = JSON.parse(
+    readFileSync(join(repositoryRoot, 'package-lock.json'), 'utf8'),
+  );
   const workspaces = workspaceDirectories().map(readManifest);
   const names = new Map(
     workspaces.map((workspace) => [workspace.manifest.name, workspace]),
@@ -142,6 +149,19 @@ export function validateWorkspace() {
   }
   if (!existsSync(join(repositoryRoot, 'package-lock.json'))) {
     failures.push('The authoritative root package-lock.json is missing.');
+  }
+  for (const [dependency, version] of requiredNativeToolchainPackages) {
+    const locked = Object.entries(rootLock.packages ?? {}).some(
+      ([path, metadata]) =>
+        (path === `node_modules/${dependency}` ||
+          path.endsWith(`/node_modules/${dependency}`)) &&
+        metadata.version === version,
+    );
+    if (!locked) {
+      failures.push(
+        `Root lockfile must include ${dependency}@${version} for cross-platform CI.`,
+      );
+    }
   }
 
   const railwayConfig = readFileSync(
@@ -212,6 +232,16 @@ export function validateWorkspace() {
           ? `${directory} must preserve the application identity ${expectedApplicationName}.`
           : `${directory} must use an @athr/* shared-package name.`,
       );
+    }
+
+    if (directory === 'admin-web' || directory === 'pos-electron') {
+      for (const [dependency, version] of requiredNativeToolchainPackages) {
+        if (manifest.optionalDependencies?.[dependency] !== version) {
+          failures.push(
+            `${directory} must pin optional ${dependency}@${version}.`,
+          );
+        }
+      }
     }
 
     for (const group of dependencyGroups) {

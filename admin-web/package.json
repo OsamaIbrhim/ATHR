@@ -36,6 +36,10 @@
     "vite": "6.4.3",
     "vitest": "3.2.6"
   },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "4.62.2",
+    "@rollup/rollup-win32-x64-msvc": "4.62.2"
+  },
   "overrides": {
     "next": {
       "postcss": "8.5.23",
