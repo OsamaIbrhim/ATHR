@@ -1,7 +1,13 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
-watchPatterns = ["/backend/**"]
+dockerfilePath = "backend/Dockerfile"
+watchPatterns = [
+  "/backend/**",
+  "/packages/**",
+  "/package.json",
+  "/package-lock.json",
+  "/tsconfig.base.json"
+]
 
 [deploy]
 preDeployCommand = ["npm run prisma:migrate:deploy"]

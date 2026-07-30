@@ -6,15 +6,22 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates openssl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY backend/package.json ./backend/package.json
+COPY admin-web/package.json ./admin-web/package.json
+COPY pos-electron/package.json ./pos-electron/package.json
+COPY packages/contracts/package.json ./packages/contracts/package.json
+COPY packages/domain-core/package.json ./packages/domain-core/package.json
+COPY packages/error-registry/package.json ./packages/error-registry/package.json
+COPY packages/testing/package.json ./packages/testing/package.json
+RUN npm ci --workspace athr-operations-api --include-workspace-root=false --install-strategy=nested
 
 FROM dependencies AS build
-COPY . .
-RUN npm run build
+COPY backend ./backend
+RUN npm run build --workspace athr-operations-api
 
 FROM node:20.19-bookworm-slim AS runtime
-WORKDIR /app
+WORKDIR /app/backend
 
 ENV NODE_ENV=production \
     PORT=3000
@@ -25,10 +32,12 @@ RUN apt-get update \
     && groupadd --system --gid 1001 athr \
     && useradd --system --uid 1001 --gid athr --home-dir /app athr
 
-COPY --from=build --chown=athr:athr /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=athr:athr /app/node_modules ./node_modules
-COPY --from=build --chown=athr:athr /app/dist ./dist
-COPY --from=build --chown=athr:athr /app/prisma ./prisma
+COPY --from=build --chown=athr:athr /app/package.json /app/package-lock.json /app/
+COPY --from=build --chown=athr:athr /app/backend/package.json ./package.json
+COPY --from=build --chown=athr:athr /app/backend/node_modules ./node_modules
+COPY --from=build --chown=athr:athr /app/backend/dist ./dist
+COPY --from=build --chown=athr:athr /app/backend/prisma ./prisma
+COPY --from=build --chown=athr:athr /app/backend/scripts ./scripts
 
 USER athr
 EXPOSE 3000

@@ -16,6 +16,22 @@ permissions:
   contents: read
 
 jobs:
+  workspace:
+    name: workspace-foundation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.11
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run test:workspace
+      - run: npm run workspace:validate
+      - run: npm run test:shared
+      - run: npm run build:shared
+
   backend:
     runs-on: ubuntu-latest
     defaults:
@@ -31,11 +47,15 @@ jobs:
         with:
           node-version: 20.11
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
+        working-directory: ${{ github.workspace }}
       - run: npx prisma validate
       - run: npm run test:soft
       - run: npm audit --audit-level=high
+      - name: Build production API container from the workspace root
+        run: docker build --file backend/Dockerfile --tag athr-api:${{ github.sha }} .
+        working-directory: ${{ github.workspace }}
 
   migration-gate:
     name: migration-gate
@@ -70,8 +90,9 @@ jobs:
         with:
           node-version: 20.11
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
+        working-directory: ${{ github.workspace }}
       - name: Create isolated migration databases
         env:
           PGPASSWORD: postgres
@@ -122,12 +143,17 @@ jobs:
           ref: ${{ steps.policy.outputs.upgrade_ref }}
           path: migration-base
       - name: Build a populated database from the release baseline
-        working-directory: migration-base/backend
+        working-directory: migration-base
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
         run: |
-          npm ci
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm ci --prefix backend
+          fi
+          cd backend
           npx prisma generate
           npx prisma migrate deploy
           npm run prisma:seed
@@ -157,8 +183,9 @@ jobs:
         with:
           node-version: 20.11
           cache: npm
-          cache-dependency-path: admin-web/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
+        working-directory: ${{ github.workspace }}
       - run: npm run test:soft
       - run: npm audit --audit-level=high
 
@@ -193,13 +220,9 @@ jobs:
         with:
           node-version: 20.11
           cache: npm
-          cache-dependency-path: |
-            backend/package-lock.json
-            admin-web/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
-        working-directory: backend
-      - run: npm ci
-        working-directory: admin-web
+        working-directory: ${{ github.workspace }}
       - run: npx prisma migrate deploy
         working-directory: backend
       - run: npm run prisma:seed
@@ -235,8 +258,9 @@ jobs:
         with:
           node-version: 20.11
           cache: npm
-          cache-dependency-path: pos-electron/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
+        working-directory: ${{ github.workspace }}
       - run: npm run test:soft
       - run: npm audit --audit-level=high
 
@@ -276,8 +300,9 @@ jobs:
         with:
           node-version: 20.11
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
+        working-directory: ${{ github.workspace }}
       - run: npx prisma migrate deploy
       - run: npm run prisma:seed
       - run: npm run build
@@ -299,6 +324,7 @@ jobs:
     name: release-gate
     if: always() && github.event_name != 'schedule'
     needs:
+      - workspace
       - backend
       - migration-gate
       - admin
@@ -310,12 +336,14 @@ jobs:
       - name: Require every production gate
         env:
           BACKEND_RESULT: ${{ needs.backend.result }}
+          WORKSPACE_RESULT: ${{ needs.workspace.result }}
           MIGRATION_RESULT: ${{ needs.migration-gate.result }}
           ADMIN_RESULT: ${{ needs.admin.result }}
           ADMIN_E2E_RESULT: ${{ needs.admin-e2e-smoke.result }}
           POS_RESULT: ${{ needs.pos.result }}
           HARD_SMOKE_RESULT: ${{ needs.hard-smoke.result }}
         run: |
+          test "$WORKSPACE_RESULT" = "success"
           test "$BACKEND_RESULT" = "success"
           test "$MIGRATION_RESULT" = "success"
           test "$ADMIN_RESULT" = "success"
@@ -366,8 +394,9 @@ jobs:
         with:
           node-version: 20.11
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
+        working-directory: ${{ github.workspace }}
       - run: npx prisma migrate deploy
       - run: npm run prisma:seed
       - run: npm run perf:seed

@@ -1,9 +1,29 @@
 {
-  "name": "athr-operations-workspace",
+  "name": "athr-workspace",
   "private": true,
+  "packageManager": "npm@10.8.2",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/*",
+    "backend",
+    "admin-web",
+    "pos-electron"
+  ],
   "scripts": {
-    "test:soft": "npm --prefix backend run test:soft && npm --prefix admin-web run test:soft && npm --prefix pos-electron run test:soft",
-    "test:hard": "npm --prefix backend run test:hard",
-    "test:all": "npm run test:soft && npm run test:hard"
+    "build:shared": "npm run build --workspace @athr/contracts && npm run build --workspace @athr/domain-core && npm run build --workspace @athr/error-registry && npm run build --workspace @athr/testing",
+    "build:apps": "npm run build --workspace athr-operations-api && npm run build --workspace athr-operations-admin && npm run build --workspace athr-pos-electron",
+    "build": "npm run build:shared && npm run build:apps",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test:shared": "npm run test --workspace @athr/contracts && npm run test --workspace @athr/domain-core && npm run test --workspace @athr/error-registry && npm run test --workspace @athr/testing",
+    "test:workspace": "node --test scripts/check-workspace.test.mjs",
+    "test:soft": "npm run test:workspace && npm run workspace:validate && npm run test:shared && npm run build:shared && npm run test:soft --workspace athr-operations-api && npm run test:soft --workspace athr-operations-admin && npm run test:soft --workspace athr-pos-electron",
+    "test:hard": "npm run test:hard --workspace athr-operations-api",
+    "test:hard:smoke": "npm run test:hard:smoke --workspace athr-operations-api",
+    "test:all": "npm run test:soft && npm run test:hard",
+    "workspace:validate": "node scripts/check-workspace.mjs",
+    "workspace:graph": "node scripts/check-workspace.mjs --graph",
+    "workspace:cycles": "node scripts/check-workspace.mjs --cycles"
   }
 }

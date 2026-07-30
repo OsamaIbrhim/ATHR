@@ -19,6 +19,7 @@ out/
 .vite/
 .rspack/
 coverage/
+*.tsbuildinfo
 
 # Env / secrets
 .env
