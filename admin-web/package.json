@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
+    "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest run",
     "test:behavior": "vitest run app components lib",
     "test:e2e:smoke": "node scripts/e2e-smoke.mjs",
@@ -14,11 +15,11 @@
   "dependencies": {
     "@tanstack/react-query": "^5.35.0",
     "axios": "^1.7.0",
-    "bold-system-workspace": "file:..",
     "next": "15.5.21",
     "react": "18.3.0",
     "react-dom": "18.3.0",
     "recharts": "^2.12.0",
+    "server-only": "0.0.1",
     "sonner": "^1.4.0"
   },
   "devDependencies": {
@@ -34,6 +35,10 @@
     "typescript": "^5.4.0",
     "vite": "6.4.3",
     "vitest": "3.2.6"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "4.62.2",
+    "@rollup/rollup-win32-x64-msvc": "4.62.2"
   },
   "overrides": {
     "next": {

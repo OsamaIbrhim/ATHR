@@ -108,8 +108,13 @@ as reconciliation warnings instead of losing a completed offline sale.
 ## Repository layout
 
 ```text
-bold_system/
+athr/
 ├── .github/workflows/ci.yml   # Build, test, schema, and audit gates
+├── packages/                  # Stable cross-application ATHR foundations
+│   ├── contracts/
+│   ├── domain-core/
+│   ├── error-registry/
+│   └── testing/
 ├── backend/                   # NestJS API and Prisma data model
 │   ├── prisma/
 │   │   ├── migrations/        # Ordered PostgreSQL migrations
@@ -118,7 +123,9 @@ bold_system/
 │   ├── src/                   # API modules
 │   └── test/                  # Manual HTTP examples
 ├── admin-web/                 # Arabic RTL Next.js administration UI
-└── pos-electron/              # Offline-first Electron cashier UI
+├── pos-electron/              # Offline-first Electron cashier UI
+├── package.json               # npm workspace orchestration
+└── package-lock.json          # The only authoritative dependency lockfile
 ```
 
 ## Prerequisites
@@ -164,11 +171,27 @@ Alternatively, from `psql`:
 CREATE DATABASE bold_pos;
 ```
 
-### 2. Configure and start the API
+### 2. Install the workspace
+
+Install once from the repository root. Do not run separate installs inside
+applications and do not recreate child lockfiles.
 
 ```bash
-cd backend
-cp .env.example .env
+npm ci
+```
+
+Validate package ownership and dependency direction:
+
+```bash
+npm run workspace:validate
+npm run workspace:graph
+npm run workspace:cycles
+```
+
+### 3. Configure and start the API
+
+```bash
+cp backend/.env.example backend/.env
 ```
 
 Edit `.env` before starting. At minimum, set valid database URLs and a unique
@@ -182,11 +205,10 @@ openssl rand -hex 32
 Then install, migrate, seed, and run:
 
 ```bash
-npm ci
-npx prisma generate
-npx prisma migrate deploy
-npm run prisma:seed
-npm run start:dev
+npm run prisma:generate --workspace athr-operations-api
+npm run prisma:migrate:deploy --workspace athr-operations-api
+npm run prisma:seed --workspace athr-operations-api
+npm run start:dev --workspace athr-operations-api
 ```
 
 The API should be available at:
@@ -199,26 +221,22 @@ The API should be available at:
 > records before creating sample data. Never run it against a production or
 > shared database.
 
-### 3. Start the Admin application
+### 4. Start the Admin application
 
 Open another terminal:
 
 ```bash
-cd admin-web
-npm ci
-ATHR_API_INTERNAL_BASE=http://localhost:3000/api/v1 npm run dev
+ATHR_API_INTERNAL_BASE=http://localhost:3000/api/v1 npm run dev --workspace athr-operations-admin
 ```
 
 Open `http://localhost:3001`.
 
-### 4. Enroll and start the POS application
+### 5. Enroll and start the POS application
 
 Open another terminal:
 
 ```bash
-cd pos-electron
-npm ci
-npm run dev:electron
+npm run dev:electron --workspace athr-pos-electron
 ```
 
 Before the first cashier login:
@@ -1027,9 +1045,9 @@ critical advisories.
 
 1. Put the application into a controlled maintenance window.
 2. Back up PostgreSQL.
-3. Deploy the new API source and install from `package-lock.json`.
-4. Run `npx prisma migrate deploy` using `DIRECT_URL`.
-5. Run `npx prisma generate` and `npm run build`.
+3. Deploy the exact tested SHA and install from the root `package-lock.json`.
+4. Run the committed migration runner once using `DIRECT_URL`.
+5. Build through the root workspace commands.
 6. Start the API and verify health through Swagger/login.
 7. Build and deploy Admin with the correct public API URL.
 8. Test one non-critical POS device before broad rollout.
@@ -1041,13 +1059,23 @@ critical advisories.
 ### API host
 
 ```bash
-cd backend
 npm ci
-npx prisma generate
-npx prisma migrate deploy
-npm run build
-npm run start:prod
+npm run prisma:generate --workspace athr-operations-api
+npm run prisma:migrate:deploy --workspace athr-operations-api
+npm run build --workspace athr-operations-api
+npm run start:prod --workspace athr-operations-api
 ```
+
+Railway must build from the repository root with config file
+`/backend/railway.toml` and Dockerfile `backend/Dockerfile`. Clear dashboard
+custom build, start, and migration commands; the committed pre-deploy command
+is the only migration owner. Only one Railway service may run migrations for
+the target database/schema.
+
+Use a direct PostgreSQL endpoint for `DIRECT_URL` where reachable. Supavisor
+session pooling on port 5432 is the documented fallback. The migration runner
+rejects transaction pooling on port 6543 and keeps Prisma advisory locking
+enabled.
 
 Run the process behind a reverse proxy that terminates TLS, limits request
 sizes, sets appropriate timeouts, and forwards the original client address.
@@ -1056,11 +1084,14 @@ Do not expose PostgreSQL or Prisma Studio publicly.
 ### Admin host
 
 ```bash
-cd admin-web
 npm ci
-ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run build
-ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run start
+ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run build --workspace athr-operations-admin
+ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run start --workspace athr-operations-admin
 ```
+
+The Vercel project Root Directory remains `admin-web`. npm resolves the parent
+workspace and unified root lockfile, while Vercel publishes the project-root
+`.next` directory.
 
 `ATHR_API_INTERNAL_BASE` is server-only runtime configuration. In production it
 must contain an explicit HTTPS API URL reachable by the Admin server.
