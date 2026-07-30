@@ -1089,8 +1089,9 @@ ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run build --workspace 
 ATHR_API_INTERNAL_BASE=https://api.example.com/api/v1 npm run start --workspace athr-operations-admin
 ```
 
-The Vercel project root must be the repository root so `vercel.json` can use
-the workspace lockfile and emit `admin-web/.next`.
+The Vercel project Root Directory remains `admin-web`. npm resolves the parent
+workspace and unified root lockfile, while Vercel publishes the project-root
+`.next` directory.
 
 `ATHR_API_INTERNAL_BASE` is server-only runtime configuration. In production it
 must contain an explicit HTTPS API URL reachable by the Admin server.

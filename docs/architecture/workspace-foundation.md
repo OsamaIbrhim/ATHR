@@ -44,7 +44,8 @@ incrementally by owning work packages.
 - Railway source/root directory: repository root.
 - Railway config file: `/backend/railway.toml`.
 - Railway Dockerfile: `backend/Dockerfile`.
-- Vercel project root: repository root.
+- Vercel project root: `admin-web`; npm resolves the parent workspace and root
+  lockfile, while Vercel publishes the project-root `.next` directory.
 - Vercel config: `/vercel.json`.
 - POS installer: root install, then `athr-pos-electron` build/dist scripts.
 

@@ -169,9 +169,11 @@ export function validateWorkspace() {
   }
   if (
     vercelConfig.installCommand !== 'npm ci' ||
-    vercelConfig.outputDirectory !== 'admin-web/.next'
+    vercelConfig.outputDirectory !== '.next'
   ) {
-    failures.push('Vercel must install and build from the root workspace.');
+    failures.push(
+      'Vercel must resolve the root workspace and publish the admin-web project-root .next directory.',
+    );
   }
 
   for (const legacyLock of [
