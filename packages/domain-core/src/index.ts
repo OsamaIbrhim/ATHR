@@ -1,18 +1,35 @@
-declare const opaqueIdBrand: unique symbol;
+export { Money, MONEY_ROUNDING_MODE, SUPPORTED_CURRENCY_CODES } from './money';
+export type { MoneyWire, CurrencyCode } from './money';
 
-export type OpaqueId<TEntity extends string> = string & {
-  readonly [opaqueIdBrand]: TEntity;
-};
+export { Quantity, QUANTITY_DEFAULT_SCALE, parseUnitOfMeasureId } from './quantity';
+export type { QuantityWire, UnitOfMeasureId } from './quantity';
 
-export function parseOpaqueId<TEntity extends string>(
-  value: string,
-  entity: TEntity,
-): OpaqueId<TEntity> {
-  const normalized = value.trim();
+export { Percentage, PERCENTAGE_RATE_SCALE } from './percentage';
+export type { PercentageWire } from './percentage';
 
-  if (normalized.length === 0) {
-    throw new Error(`${entity} ID must not be empty.`);
-  }
+export {
+  parseOpaqueId,
+  parseTenantId,
+  parseIdempotencyKey,
+  parseClientOperationId,
+  parseCorrelationId,
+  parseCausationId,
+  parseAggregateVersion,
+} from './ids';
+export type {
+  OpaqueId,
+  TenantId,
+  IdempotencyKey,
+  ClientOperationId,
+  CorrelationId,
+  CausationId,
+  AggregateVersion,
+} from './ids';
 
-  return normalized as OpaqueId<TEntity>;
-}
+export { UtcTimestamp, BusinessDate } from './datetime';
+export type { OccurredAt, RecordedAt, EffectiveAt } from './datetime';
+
+export { ok, fail } from './result';
+export type { Result, DomainFailure } from './result';
+
+export { EmailAddress, PhoneNumber } from './identity-value-objects';
