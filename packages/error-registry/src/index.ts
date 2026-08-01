@@ -1,15 +1,15 @@
-export type RetryMode = 'never' | 'safe' | 'after-delay' | 'reconcile';
-export type OutcomeCertainty = 'known-success' | 'known-failure' | 'unknown';
+export { ERROR_CATEGORIES } from './categories';
+export type { ErrorCategory } from './categories';
 
-export interface ErrorDescriptor<TCode extends string = string> {
-  readonly code: TCode;
-  readonly retryMode: RetryMode;
-  readonly outcome: OutcomeCertainty;
-  readonly localizationKey: string;
-}
+export { RETRY_MODES } from './retry-modes';
+export type { RetryMode } from './retry-modes';
 
-export function defineError<TCode extends string>(
-  descriptor: ErrorDescriptor<TCode>,
-): Readonly<ErrorDescriptor<TCode>> {
-  return Object.freeze({ ...descriptor });
-}
+export { OUTCOME_CERTAINTIES } from './outcomes';
+export type { OutcomeCertainty } from './outcomes';
+
+export { COMMON_ERROR_CODES } from './codes/common';
+export { AUTH_ERROR_CODES } from './codes/auth';
+export { INTERNAL_ERROR_CODES } from './codes/internal';
+
+export { ERROR_SEVERITIES, ERROR_REGISTRY, getErrorMetadata } from './registry';
+export type { ErrorSeverity, ErrorMetadata, ErrorCode } from './registry';

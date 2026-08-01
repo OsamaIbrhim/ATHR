@@ -17,6 +17,8 @@ COPY packages/testing/package.json ./packages/testing/package.json
 RUN npm ci --workspace athr-operations-api --include-workspace-root=false --install-strategy=nested
 
 FROM dependencies AS build
+COPY packages ./packages
+RUN npm run build:shared
 COPY backend ./backend
 RUN npm run build --workspace athr-operations-api
 
