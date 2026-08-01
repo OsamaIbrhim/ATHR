@@ -60,6 +60,11 @@ import {
   sameMoney,
   toCents,
 } from './money'
+import { decimalToMinorUnits, minorUnitsToDecimal } from './money-codec'
+import {
+  migrateMoneyColumnsToMinorUnits,
+  MoneyColumnMigrationReport,
+} from './money-column-migration'
 // @ts-ignore
 import initSqlJs from 'sql.js'
 
@@ -77,6 +82,32 @@ function secureStatePath() {
 
 function deploymentConfigPath() {
   return path.join(app.getPath('userData'), 'deployment-config.json')
+}
+
+function moneyMigrationLogPath() {
+  return path.join(app.getPath('userData'), 'athr-money-migration.json')
+}
+
+/** Local-only record of the REAL -> minor-units backfill, for support engineers. Never sent to a server. */
+function logMoneyMigrationReport(report: MoneyColumnMigrationReport) {
+  try {
+    fs.mkdirSync(path.dirname(moneyMigrationLogPath()), { recursive: true })
+    fs.writeFileSync(
+      moneyMigrationLogPath(),
+      JSON.stringify(
+        {
+          version: 1,
+          migrated_at: new Date().toISOString(),
+          products: report.products,
+          sales_local: report.salesLocal,
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    )
+  } catch {}
+  console.log('[ATHR] money-column migration complete', JSON.stringify(report))
 }
 
 type DeploymentConfig = {
@@ -659,9 +690,11 @@ function hydrateHeldSale(row: any) {
       product?.available_qty,
     )
     const price = Number(
-      product?.selling_price,
+      minorUnitsToDecimal(Number(product?.selling_price_minor_units ?? 0)),
     )
-    const tax = Number(product?.unit_tax)
+    const tax = Number(
+      minorUnitsToDecimal(Number(product?.unit_tax_minor_units ?? 0)),
+    )
     if (
       !product ||
       !isValidCatalogProduct(product) ||
@@ -908,8 +941,26 @@ async function initDb() {
     `ALTER TABLE outbox ADD COLUMN updated_at TEXT`,
     `ALTER TABLE sales_local ADD COLUMN voided_at TEXT`,
     `ALTER TABLE sales_local ADD COLUMN void_reason TEXT`,
+    `ALTER TABLE products ADD COLUMN cost_price_minor_units INTEGER`,
+    `ALTER TABLE products ADD COLUMN selling_price_minor_units INTEGER`,
+    `ALTER TABLE products ADD COLUMN unit_tax_minor_units INTEGER DEFAULT 0`,
+    `ALTER TABLE sales_local ADD COLUMN total_minor_units INTEGER`,
   ]) {
     try { db.exec(migration) } catch {}
+  }
+
+  // One-time, idempotent backfill of the REAL money columns above into their
+  // decimal-safe *_minor_units counterparts. Never modifies or drops the
+  // REAL columns, so every pre-existing row (including pending offline
+  // sales) is preserved exactly as-is.
+  const moneyMigrationReport = migrateMoneyColumnsToMinorUnits({
+    query: (sql, params = []) => q(sql, params as any[]),
+    run: (sql, params = []) => run(sql, params as any[]),
+    getMeta,
+    setMeta,
+  })
+  if (!moneyMigrationReport.alreadyMigrated) {
+    logMoneyMigrationReport(moneyMigrationReport)
   }
 
   // A crash can leave an operation marked as sending after the server has
@@ -1425,7 +1476,7 @@ ipcMain.handle('pos:list_local_sales', () =>
        s.server_invoice_id,
        s.server_invoice_number,
        s.synced_at,
-       s.total,
+       s.total_minor_units,
        s.created_at,
        COALESCE(s.occurred_at,s.created_at) AS occurred_at,
        s.payment_method,
@@ -1447,7 +1498,10 @@ ipcMain.handle('pos:list_local_sales', () =>
      LEFT JOIN outbox o ON o.id=s.sync_id
      ORDER BY COALESCE(s.occurred_at,s.created_at) DESC
      LIMIT 100`,
-  ),
+  ).map((row: any) => {
+    const { total_minor_units, ...rest } = row
+    return { ...rest, total: Number(minorUnitsToDecimal(Number(total_minor_units ?? 0))) }
+  }),
 )
 
 ipcMain.handle('pos:list_held_sales', () => {
@@ -1728,8 +1782,9 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
     run(
       `INSERT INTO sales_local (
         sync_id,invoice_number,total,created_at,occurred_at,payment_method,
-        customer_phone,cashier_id,seller_id,shift_id,offline_session_id,terminal_sequence
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        customer_phone,cashier_id,seller_id,shift_id,offline_session_id,terminal_sequence,
+        total_minor_units
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         syncId,
         invoiceNumber,
@@ -1743,6 +1798,7 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
         context.shift_id,
         context.session_id,
         terminalSequence,
+        decimalToMinorUnits(localTotal),
       ],
     )
     run(
@@ -1771,7 +1827,7 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
 })
 
 ipcMain.handle('sync:get_outbox', () =>
-  q(`SELECT o.*,s.total AS local_total
+  q(`SELECT o.*,s.total_minor_units AS local_total_minor_units
      FROM outbox o
      LEFT JOIN sales_local s ON s.sync_id=o.id
      WHERE o.sync_status='pending'
@@ -1779,7 +1835,16 @@ ipcMain.handle('sync:get_outbox', () =>
        CASE WHEN o.terminal_sequence IS NULL THEN 0 ELSE 1 END,
        LENGTH(COALESCE(o.terminal_sequence,'')),
        o.terminal_sequence,
-       o.created_at`),
+       o.created_at`).map((row: any) => {
+    const { local_total_minor_units, ...rest } = row
+    return {
+      ...rest,
+      local_total:
+        local_total_minor_units === null || local_total_minor_units === undefined
+          ? null
+          : Number(minorUnitsToDecimal(Number(local_total_minor_units))),
+    }
+  }),
 )
 
 ipcMain.handle('sync:mark_sending', (_e, id: string) => {
@@ -2016,14 +2081,23 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
       run(`DELETE FROM stock WHERE variant_id=?`, [id])
     }
     for (const p of products) {
+      const sellingPrice = Number(p.selling_price || 0)
+      const unitTax = Number(p.unit_tax || 0)
       run(
-        `INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax,catalog_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT OR REPLACE INTO products (
+          id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,
+          cost_price,selling_price,unit_tax,catalog_version,
+          cost_price_minor_units,selling_price_minor_units,unit_tax_minor_units
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           p.id, p.sku, p.name_en || '', p.name_ar || '',
           p.barcode_ean13 || null, p.barcode_internal || null,
           p.size || null, p.color || null, 0,
-          Number(p.selling_price || 0), Number(p.unit_tax || 0),
+          sellingPrice, unitTax,
           Number(p.catalog_version || 0),
+          0,
+          decimalToMinorUnits(sellingPrice),
+          decimalToMinorUnits(unitTax),
         ],
       )
     }
