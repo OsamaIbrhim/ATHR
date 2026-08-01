@@ -326,6 +326,57 @@ jobs:
         if: failure()
         run: cat /tmp/athr-api.log
 
+  docker-runtime-smoke:
+    name: docker-runtime-smoke
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: athr_docker_smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d athr_docker_smoke"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_docker_smoke
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_docker_smoke
+      JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.11
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run prisma:migrate:deploy
+        working-directory: backend
+      - name: Build the production image exactly as Railway does
+        run: docker build --file backend/Dockerfile --tag athr-api:smoke .
+      - name: Run the production image and wait for a healthy response
+        run: |
+          docker run -d --name athr-api-smoke \
+            --network host \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e DIRECT_URL="$DIRECT_URL" \
+            -e JWT_SECRET="$JWT_SECRET" \
+            -e PORT=3000 \
+            athr-api:smoke
+          for attempt in {1..30}; do
+            curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null && exit 0
+            sleep 2
+          done
+          exit 1
+      - name: Print container logs
+        if: always()
+        run: docker logs athr-api-smoke
+
   release-gate:
     name: release-gate
     if: always() && github.event_name != 'schedule'
@@ -337,6 +388,7 @@ jobs:
       - admin-e2e-smoke
       - pos
       - hard-smoke
+      - docker-runtime-smoke
     runs-on: ubuntu-latest
     steps:
       - name: Require every production gate
@@ -348,6 +400,7 @@ jobs:
           ADMIN_E2E_RESULT: ${{ needs.admin-e2e-smoke.result }}
           POS_RESULT: ${{ needs.pos.result }}
           HARD_SMOKE_RESULT: ${{ needs.hard-smoke.result }}
+          DOCKER_RUNTIME_SMOKE_RESULT: ${{ needs.docker-runtime-smoke.result }}
         run: |
           test "$WORKSPACE_RESULT" = "success"
           test "$BACKEND_RESULT" = "success"
@@ -356,6 +409,7 @@ jobs:
           test "$ADMIN_E2E_RESULT" = "success"
           test "$POS_RESULT" = "success"
           test "$HARD_SMOKE_RESULT" = "success"
+          test "$DOCKER_RUNTIME_SMOKE_RESULT" = "success"
 
   hard-load:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

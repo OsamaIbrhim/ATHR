@@ -36,8 +36,10 @@ RUN apt-get update \
 
 COPY --from=build --chown=athr:athr /app/package.json /app/package-lock.json /app/
 COPY --from=build --chown=athr:athr /app/node_modules/@athr /app/node_modules/@athr
-COPY --from=build --chown=athr:athr /app/packages/contracts/package.json /app/packages/contracts/dist /app/packages/contracts/
-COPY --from=build --chown=athr:athr /app/packages/error-registry/package.json /app/packages/error-registry/dist /app/packages/error-registry/
+COPY --from=build --chown=athr:athr /app/packages/contracts/package.json /app/packages/contracts/package.json
+COPY --from=build --chown=athr:athr /app/packages/contracts/dist /app/packages/contracts/dist
+COPY --from=build --chown=athr:athr /app/packages/error-registry/package.json /app/packages/error-registry/package.json
+COPY --from=build --chown=athr:athr /app/packages/error-registry/dist /app/packages/error-registry/dist
 COPY --from=build --chown=athr:athr /app/backend/package.json ./package.json
 COPY --from=build --chown=athr:athr /app/backend/node_modules ./node_modules
 COPY --from=build --chown=athr:athr /app/backend/dist ./dist
