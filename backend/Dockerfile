@@ -35,6 +35,9 @@ RUN apt-get update \
     && useradd --system --uid 1001 --gid athr --home-dir /app athr
 
 COPY --from=build --chown=athr:athr /app/package.json /app/package-lock.json /app/
+COPY --from=build --chown=athr:athr /app/node_modules/@athr /app/node_modules/@athr
+COPY --from=build --chown=athr:athr /app/packages/contracts/package.json /app/packages/contracts/dist /app/packages/contracts/
+COPY --from=build --chown=athr:athr /app/packages/error-registry/package.json /app/packages/error-registry/dist /app/packages/error-registry/
 COPY --from=build --chown=athr:athr /app/backend/package.json ./package.json
 COPY --from=build --chown=athr:athr /app/backend/node_modules ./node_modules
 COPY --from=build --chown=athr:athr /app/backend/dist ./dist
