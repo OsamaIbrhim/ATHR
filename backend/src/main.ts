@@ -1,10 +1,11 @@
 import 'reflect-metadata';
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
-import { randomUUID } from 'crypto';
 import { ApiExceptionFilter } from './common/api-error.filter';
+import { RequestContextMiddleware } from './common/http/request-context.middleware';
+import { ResponseEnvelopeInterceptor } from './common/http/response-envelope.interceptor';
 import compression from 'compression';
 import { apiJsonReplacer } from './common/json-serialization';
 import { validateRuntimeEnvironment } from './config/environment';
@@ -22,14 +23,28 @@ async function bootstrap() {
   app.getHttpAdapter().getInstance().set('json replacer', apiJsonReplacer);
   app.setGlobalPrefix('api/v1');
   app.use(compression({ threshold: 1024 }));
-  app.use((req: any, res: any, next: () => void) => {
-    req.requestStartedAt = process.hrtime.bigint();
-    const supplied = String(req.headers['x-request-id'] || '');
-    req.requestId = /^[a-zA-Z0-9._-]{8,80}$/.test(supplied) ? supplied : randomUUID();
-    res.setHeader('x-request-id', req.requestId);
-    next();
-  });
+  // Formalizes the previous inline request-id middleware into a reusable
+  // class (identical request-id behavior — same validation pattern, same
+  // req.requestStartedAt/req.requestId fields PerformanceInterceptor and
+  // ApiExceptionFilter already read) and additionally issues X-Correlation-Id
+  // on every request, per API Contract v1.0 §6.
+  app.use(new RequestContextMiddleware().use);
+  // ApiExceptionFilter stays the sole *global* exception filter: NestJS only
+  // invokes the first catch-all filter that matches a given exception, so a
+  // second global catch-all (AthrExceptionFilter) would either never run
+  // (registered after) or silently replace this one's output on every
+  // not-yet-migrated route (registered before) — neither is additive. See
+  // docs/architecture/api-error-contract-foundation.md for the full
+  // reconciliation. AthrExceptionFilter is instead applied per-route via
+  // `@UseFilters(AthrExceptionFilter)`, which NestJS resolves before falling
+  // back to this global filter, on the two WP-003 proof-of-concept routes.
   app.useGlobalFilters(new ApiExceptionFilter());
+  // Additive: composes alongside PerformanceInterceptor (registered via
+  // APP_INTERCEPTOR in app.module.ts). Unlike exception filters, NestJS
+  // interceptors chain rather than short-circuit, so this is safe to add
+  // globally — it only transforms responses from handlers that opt in via
+  // `@Envelope(...)`; every other route's response is untouched.
+  app.useGlobalInterceptors(new ResponseEnvelopeInterceptor(app.get(Reflector)));
   app.enableCors({ origin: environment.corsOrigins, credentials: true });
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
