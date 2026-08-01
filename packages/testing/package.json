@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test \"test/*.test.cjs\""
+    "test": "npm run build && node --test test/testing.test.cjs"
   },
   "devDependencies": {
     "typescript": "^5.4.0"
