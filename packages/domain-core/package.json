@@ -8,7 +8,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "require": "./dist/index.js"
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "files": [
@@ -17,9 +18,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/domain-core.test.cjs"
+    "test": "npm run build && node --test dist/money.spec.js dist/quantity.spec.js dist/percentage.spec.js dist/ids.spec.js dist/datetime.spec.js dist/result.spec.js dist/identity-value-objects.spec.js"
   },
   "devDependencies": {
+    "@athr/contracts": "^0.1.0",
+    "@types/node": "^20.19.0",
     "typescript": "^5.4.0"
   }
 }

@@ -30,7 +30,6 @@ jobs:
       - run: npm run test:workspace
       - run: npm run workspace:validate
       - run: npm run test:shared
-      - run: npm run build:shared
 
   backend:
     runs-on: ubuntu-latest
@@ -49,8 +48,6 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
-        working-directory: ${{ github.workspace }}
-      - run: npm run build:shared
         working-directory: ${{ github.workspace }}
       - run: npx prisma validate
       - run: npm run test:soft
@@ -225,8 +222,6 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
         working-directory: ${{ github.workspace }}
-      - run: npm run build:shared
-        working-directory: ${{ github.workspace }}
       - run: npx prisma migrate deploy
         working-directory: backend
       - run: npm run prisma:seed
@@ -306,8 +301,6 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
-        working-directory: ${{ github.workspace }}
-      - run: npm run build:shared
         working-directory: ${{ github.workspace }}
       - run: npx prisma migrate deploy
       - run: npm run prisma:seed
@@ -456,8 +449,6 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
-        working-directory: ${{ github.workspace }}
-      - run: npm run build:shared
         working-directory: ${{ github.workspace }}
       - run: npx prisma migrate deploy
       - run: npm run prisma:seed

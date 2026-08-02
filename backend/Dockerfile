@@ -14,7 +14,7 @@ COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY packages/domain-core/package.json ./packages/domain-core/package.json
 COPY packages/error-registry/package.json ./packages/error-registry/package.json
 COPY packages/testing/package.json ./packages/testing/package.json
-RUN npm ci --workspace athr-operations-api --include-workspace-root=false --install-strategy=nested
+RUN npm ci --workspace athr-operations-api --include-workspace-root=false --install-strategy=nested --ignore-scripts
 
 FROM dependencies AS build
 COPY packages ./packages

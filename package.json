@@ -12,6 +12,7 @@
     "pos-electron"
   ],
   "scripts": {
+    "postinstall": "npm run build:shared",
     "build:shared": "npm run build --workspace @athr/contracts && npm run build --workspace @athr/domain-core && npm run build --workspace @athr/error-registry && npm run build --workspace @athr/testing",
     "build:apps": "npm run build --workspace athr-operations-api && npm run build --workspace athr-operations-admin && npm run build --workspace athr-pos-electron",
     "build": "npm run build:shared && npm run build:apps",
