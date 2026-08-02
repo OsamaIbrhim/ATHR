@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { QuantityWire as ContractsQuantityWire } from '@athr/contracts';
-import { Quantity, parseUnitOfMeasureId } from './quantity';
+import { Quantity, parseUnitOfMeasureId, type QuantityWire } from './quantity';
 
 const kg = parseUnitOfMeasureId('uom-kg');
 
@@ -48,9 +47,9 @@ test('construction never mutates a reused unit id', () => {
   assert.notEqual(first.toWire().value, second.toWire().value);
 });
 
-test('toWire/fromWire round-trip against the exact @athr/contracts QuantityWire shape', () => {
+test('toWire/fromWire round-trips through the QuantityWire shape', () => {
   const original = Quantity.of('5.000', kg, 'KG');
-  const wire: ContractsQuantityWire = original.toWire();
+  const wire: QuantityWire = original.toWire();
 
   assert.deepEqual(wire, { value: '5.000', unit_id: 'uom-kg', unit_code: 'KG' });
 

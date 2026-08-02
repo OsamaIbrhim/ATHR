@@ -19,6 +19,17 @@ const forbiddenDomainDependencies = new Set([
   'react',
   'react-dom',
 ]);
+// ATHR Dependency Rules v1.0 §3: layering is strictly one-directional —
+// @athr/contracts MAY depend on @athr/domain-core, never the reverse, and
+// @athr/testing is a dev-only leaf that nothing below it may depend on.
+// These are the packages sitting at the bottom of the graph, and the
+// packages they must never import from (directly or transitively via
+// package.json), regardless of build-order or install/hoisting quirks that
+// might otherwise let the edge "work" locally.
+const forbiddenReverseDependencies = new Map([
+  ['packages/domain-core', new Set(['@athr/contracts', '@athr/testing'])],
+  ['packages/error-registry', new Set(['@athr/contracts', '@athr/testing'])],
+]);
 const builtinPackages = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -69,21 +80,25 @@ export function packageNameFromSpecifier(specifier) {
   return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
 }
 
-function workspaceDirectories() {
-  const packageRoot = join(repositoryRoot, 'packages');
+function workspaceDirectories(root) {
+  const packageRoot = join(root, 'packages');
+  // Directory identifiers are logical labels compared against forward-slash
+  // literals throughout this file (e.g. 'packages/domain-core'); build them
+  // with `/` explicitly rather than `path.join`, which emits `\` on Windows
+  // and would silently defeat every directory-keyed check on that platform.
   const shared = existsSync(packageRoot)
     ? readdirSync(packageRoot)
-        .map((name) => join('packages', name))
+        .map((name) => `packages/${name}`)
         .filter((directory) =>
-          existsSync(join(repositoryRoot, directory, 'package.json')),
+          existsSync(join(root, directory, 'package.json')),
         )
     : [];
 
   return [...shared, ...applicationDirectories];
 }
 
-function readManifest(directory) {
-  const path = join(repositoryRoot, directory, 'package.json');
+function readManifest(root, directory) {
+  const path = join(root, directory, 'package.json');
   return {
     directory,
     path,
@@ -91,7 +106,7 @@ function readManifest(directory) {
   };
 }
 
-function sourceFiles(directory) {
+function sourceFiles(root, directory) {
   const files = [];
   const ignored = new Set([
     '.git',
@@ -115,7 +130,7 @@ function sourceFiles(directory) {
     }
   }
 
-  walk(join(repositoryRoot, directory));
+  walk(join(root, directory));
   return files;
 }
 
@@ -127,15 +142,17 @@ function importSpecifiers(path) {
   return [...matches].map((match) => match[1]);
 }
 
-export function validateWorkspace() {
+export function validateWorkspace(root = repositoryRoot) {
   const failures = [];
   const rootManifest = JSON.parse(
-    readFileSync(join(repositoryRoot, 'package.json'), 'utf8'),
+    readFileSync(join(root, 'package.json'), 'utf8'),
   );
   const rootLock = JSON.parse(
-    readFileSync(join(repositoryRoot, 'package-lock.json'), 'utf8'),
+    readFileSync(join(root, 'package-lock.json'), 'utf8'),
   );
-  const workspaces = workspaceDirectories().map(readManifest);
+  const workspaces = workspaceDirectories(root).map((directory) =>
+    readManifest(root, directory),
+  );
   const names = new Map(
     workspaces.map((workspace) => [workspace.manifest.name, workspace]),
   );
@@ -147,7 +164,7 @@ export function validateWorkspace() {
   if (rootManifest.dependencies || rootManifest.optionalDependencies) {
     failures.push('Root workspace must not contain runtime dependencies.');
   }
-  if (!existsSync(join(repositoryRoot, 'package-lock.json'))) {
+  if (!existsSync(join(root, 'package-lock.json'))) {
     failures.push('The authoritative root package-lock.json is missing.');
   }
   for (const [dependency, version] of requiredNativeToolchainPackages) {
@@ -165,15 +182,15 @@ export function validateWorkspace() {
   }
 
   const railwayConfig = readFileSync(
-    join(repositoryRoot, 'backend', 'railway.toml'),
+    join(root, 'backend', 'railway.toml'),
     'utf8',
   );
   const dockerfile = readFileSync(
-    join(repositoryRoot, 'backend', 'Dockerfile'),
+    join(root, 'backend', 'Dockerfile'),
     'utf8',
   );
   const vercelConfig = JSON.parse(
-    readFileSync(join(repositoryRoot, 'vercel.json'), 'utf8'),
+    readFileSync(join(root, 'vercel.json'), 'utf8'),
   );
 
   if (!/dockerfilePath\s*=\s*"backend\/Dockerfile"/.test(railwayConfig)) {
@@ -201,7 +218,7 @@ export function validateWorkspace() {
     'admin-web/package-lock.json',
     'pos-electron/package-lock.json',
   ]) {
-    if (existsSync(join(repositoryRoot, legacyLock))) {
+    if (existsSync(join(root, legacyLock))) {
       failures.push(`Legacy child lockfile must be removed: ${legacyLock}.`);
     }
   }
@@ -255,6 +272,11 @@ export function validateWorkspace() {
             `${manifest.name} has forbidden dependency ${dependency}@${version}.`,
           );
         }
+        if (forbiddenReverseDependencies.get(directory)?.has(dependency)) {
+          failures.push(
+            `${manifest.name} must not depend on ${dependency} (forbidden reverse edge per ATHR Dependency Rules v1.0 §3).`,
+          );
+        }
         if (
           applicationDirectories.has(directory) &&
           names.has(dependency) &&
@@ -271,11 +293,11 @@ export function validateWorkspace() {
       failures.push(`${manifest.name} must declare explicit exports.`);
     }
 
-    for (const path of sourceFiles(directory)) {
+    for (const path of sourceFiles(root, directory)) {
       for (const specifier of importSpecifiers(path)) {
         if (specifier.startsWith('.')) {
           const target = relative(
-            repositoryRoot,
+            root,
             resolve(dirname(path), specifier),
           ).replaceAll('\\', '/');
           const targetApplication = [...applicationDirectories].find(
@@ -285,7 +307,7 @@ export function validateWorkspace() {
 
           if (targetApplication && targetApplication !== directory) {
             failures.push(
-              `${relative(repositoryRoot, path)} imports source from ${targetApplication}.`,
+              `${relative(root, path)} imports source from ${targetApplication}.`,
             );
           }
         }
@@ -295,7 +317,7 @@ export function validateWorkspace() {
 
         if (dependency.startsWith('bold-')) {
           failures.push(
-            `${relative(repositoryRoot, path)} imports forbidden ${dependency}.`,
+            `${relative(root, path)} imports forbidden ${dependency}.`,
           );
         }
         if (
@@ -303,7 +325,7 @@ export function validateWorkspace() {
           !declared.has(dependency)
         ) {
           failures.push(
-            `${relative(repositoryRoot, path)} imports undeclared dependency ${dependency}.`,
+            `${relative(root, path)} imports undeclared dependency ${dependency}.`,
           );
         }
         if (
@@ -311,6 +333,11 @@ export function validateWorkspace() {
           forbiddenDomainDependencies.has(dependency)
         ) {
           failures.push(`@athr/domain-core must not import ${dependency}.`);
+        }
+        if (forbiddenReverseDependencies.get(directory)?.has(dependency)) {
+          failures.push(
+            `${relative(root, path)} imports ${dependency}, a forbidden reverse edge per ATHR Dependency Rules v1.0 §3.`,
+          );
         }
         if (
           (directory === 'packages/contracts' ||

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { PercentageWire as ContractsPercentageWire } from '@athr/contracts';
-import { Percentage } from './percentage';
+import { Percentage, type PercentageWire } from './percentage';
 
 test('constructs Percentage from a canonical rate decimal string', () => {
   const rate = Percentage.fromRate('0.15');
@@ -31,9 +30,9 @@ test('construction is immutable across repeated calls', () => {
   assert.equal(second.toWire().rate, '0.200000');
 });
 
-test('toWire/fromWire round-trip against the exact @athr/contracts PercentageWire shape', () => {
+test('toWire/fromWire round-trips through the PercentageWire shape', () => {
   const original = Percentage.fromRate('0.14');
-  const wire: ContractsPercentageWire = original.toWire();
+  const wire: PercentageWire = original.toWire();
 
   assert.deepEqual(wire, { rate: '0.140000', display_percent: '14.0000' });
 

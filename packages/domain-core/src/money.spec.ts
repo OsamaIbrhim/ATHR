@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { MoneyWire as ContractsMoneyWire } from '@athr/contracts';
-import { Money } from './money';
+import { Money, type MoneyWire } from './money';
 import { Percentage } from './percentage';
 
 test('constructs Money from a valid decimal string and currency', () => {
@@ -59,9 +58,9 @@ test('isNegative/isZero/equals reflect the underlying minor units', () => {
   assert.equal(Money.of('5.00', 'EGP').equals(Money.of('5.00', 'USD')), false);
 });
 
-test('toWire/fromWire round-trip against the exact @athr/contracts MoneyWire shape', () => {
+test('toWire/fromWire round-trips through the MoneyWire shape', () => {
   const original = Money.of('42.50', 'SAR');
-  const wire: ContractsMoneyWire = original.toWire();
+  const wire: MoneyWire = original.toWire();
 
   assert.deepEqual(wire, { amount: '42.50', currency: 'SAR' });
 
