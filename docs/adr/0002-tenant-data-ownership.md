@@ -1,7 +1,7 @@
 # ADR-0002: Tenant / Data Ownership
 
-**Status:** Proposed
-**Author:** Claude Code CLI (WP-005 Phase A)
+**Status:** Accepted
+**Author:** ATHR Planning (reviewed and finalized directly, not CLI-authored)
 **Requires approval from:** Osama (project owner) before Phase B may begin
 
 - **Date:** 2026-08-02
