@@ -10,11 +10,11 @@ const {
 } = require('./prisma-migrate-deploy.cjs');
 
 test('reports the repository migration history used by deployment', () => {
-  assert.equal(countMigrationFolders(), 30);
+  assert.equal(countMigrationFolders(), 34);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202607290001_sales_inventory_single_writer',
-    '202607290002_inventory_movement_negative_balance',
-    '202607290003_inventory_cost_negative_balance',
+    '202608020002_add_location_from_branch',
+    '202608020003_add_membership_from_user',
+    '202608020004_add_nullable_tenant_id_backfill',
   ]);
 });
 
