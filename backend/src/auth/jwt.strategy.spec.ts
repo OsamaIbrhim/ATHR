@@ -6,10 +6,14 @@ describe('JwtStrategy authorization recheck cache', () => {
   });
 
   it('coalesces concurrent database rechecks and briefly caches the result', async () => {
-    const prisma = { user: { findUnique: jest.fn().mockResolvedValue({
-      id: 'user-1', role: 'owner', branch_id: null, is_active: true,
-    }) } };
-    const strategy = new JwtStrategy(prisma as any);
+    const prisma = {
+      user: { findUnique: jest.fn().mockResolvedValue({
+        id: 'user-1', role: 'owner', branch_id: null, is_active: true,
+      }) },
+      membership: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    const permissionPolicy = { getCurrentVersion: jest.fn().mockResolvedValue(1) };
+    const strategy = new JwtStrategy(prisma as any, permissionPolicy as any);
     const [first, second] = await Promise.all([
       strategy.validate({ sub: 'user-1' }),
       strategy.validate({ sub: 'user-1' }),

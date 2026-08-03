@@ -10,6 +10,8 @@ export type { PercentageWire } from './percentage';
 export {
   parseOpaqueId,
   parseTenantId,
+  parseMembershipId,
+  parseInvitationId,
   parseIdempotencyKey,
   parseClientOperationId,
   parseCorrelationId,
@@ -19,6 +21,8 @@ export {
 export type {
   OpaqueId,
   TenantId,
+  MembershipId,
+  InvitationId,
   IdempotencyKey,
   ClientOperationId,
   CorrelationId,

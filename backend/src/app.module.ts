@@ -24,6 +24,7 @@ import { PerformanceInterceptor } from './common/performance.interceptor';
 import { HealthModule } from './health/health.module';
 import { SellersModule } from './sellers/sellers.module';
 import { UpdatesModule } from './updates/updates.module';
+import { IdentityModule } from './identity/identity.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { UpdatesModule } from './updates/updates.module';
     HealthModule,
     SellersModule,
     UpdatesModule,
+    IdentityModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

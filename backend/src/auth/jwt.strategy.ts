@@ -3,21 +3,26 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { getJwtSecret } from './jwt.config';
 import { PrismaService } from '../prisma/prisma.service';
+import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { IdentityClaims, resolveIdentityClaims } from './identity-claims';
 import { Capability, effectiveCapabilities } from './permissions';
 
+// WP-006 §2 item 6: `IdentityClaims` fields are additive — every field that
+// existed before this WP (sub/role/branch_id/capabilities) is unchanged;
+// old-shape consumers that only read those keep working identically.
 type EffectiveUser = {
   sub: string;
   role: string;
   branch_id: string | null;
   capabilities: Capability[];
-};
+} & IdentityClaims;
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   private readonly cache = new Map<string, { expiresAt: number; user: EffectiveUser }>();
   private readonly inFlight = new Map<string, Promise<EffectiveUser>>();
 
-  constructor(private prisma: PrismaService) {
+  constructor(private prisma: PrismaService, private permissionPolicy: PermissionPolicyService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       secretOrKey: getJwtSecret()
@@ -58,11 +63,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user?.is_active) throw new UnauthorizedException();
     // The very short cache coalesces bursts from one logged-in user while role,
     // branch, disable, and revocation changes still take effect within 1 second.
+    const identityClaims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id);
     return {
       sub: user.id,
       role: user.role,
       branch_id: user.branch_id,
       capabilities: effectiveCapabilities(user),
+      ...identityClaims,
     };
   }
 }

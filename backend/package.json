@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "@athr/contracts": "^0.1.0",
+    "@athr/domain-core": "^0.1.0",
     "@athr/error-registry": "^0.1.0",
     "@nestjs/common": "11.1.28",
     "@nestjs/core": "11.1.28",

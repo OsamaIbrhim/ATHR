@@ -27,9 +27,11 @@ describe('AuthService refresh rotation', () => {
     const prisma = {
       $transaction: jest.fn((callback) => callback(tx)),
       refreshToken: { create: jest.fn(), updateMany: jest.fn() },
+      membership: { findFirst: jest.fn().mockResolvedValue(null) },
     };
     const jwt = { signAsync: jest.fn().mockResolvedValue('access-token') };
-    return { service: new AuthService(prisma as any, jwt as any), tx, jwt };
+    const permissionPolicy = { getCurrentVersion: jest.fn().mockResolvedValue(1) };
+    return { service: new AuthService(prisma as any, jwt as any, permissionPolicy as any), tx, jwt };
   }
 
   it('revokes the presented token and returns a newly stored opaque token', async () => {
