@@ -38,6 +38,8 @@ COPY --from=build --chown=athr:athr /app/package.json /app/package-lock.json /ap
 COPY --from=build --chown=athr:athr /app/node_modules/@athr /app/node_modules/@athr
 COPY --from=build --chown=athr:athr /app/packages/contracts/package.json /app/packages/contracts/package.json
 COPY --from=build --chown=athr:athr /app/packages/contracts/dist /app/packages/contracts/dist
+COPY --from=build --chown=athr:athr /app/packages/domain-core/package.json /app/packages/domain-core/package.json
+COPY --from=build --chown=athr:athr /app/packages/domain-core/dist /app/packages/domain-core/dist
 COPY --from=build --chown=athr:athr /app/packages/error-registry/package.json /app/packages/error-registry/package.json
 COPY --from=build --chown=athr:athr /app/packages/error-registry/dist /app/packages/error-registry/dist
 COPY --from=build --chown=athr:athr /app/backend/package.json ./package.json

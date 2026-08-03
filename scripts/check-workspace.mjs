@@ -204,6 +204,22 @@ export function validateWorkspace(root = repositoryRoot) {
   if (/CMD\s+\[[^\]]*(?:prisma|migrate)/i.test(dockerfile)) {
     failures.push('Backend runtime CMD must not execute database migrations.');
   }
+
+  // The runtime stage copies each shared package's build output in by hand, so
+  // adding an @athr/* dependency to backend/package.json without adding the
+  // matching COPY produces an image that builds fine and then dies at boot with
+  // MODULE_NOT_FOUND. That is only observable through a real container run, so
+  // assert it here instead — this check needs no Docker daemon.
+  const backendManifest = names.get('athr-operations-api')?.manifest;
+  for (const dependency of Object.keys(backendManifest?.dependencies ?? {})) {
+    if (!dependency.startsWith('@athr/')) continue;
+    const packageDirectory = dependency.slice('@athr/'.length);
+    if (!dockerfile.includes(`/app/packages/${packageDirectory}/dist`)) {
+      failures.push(
+        `Backend Dockerfile runtime stage must copy /app/packages/${packageDirectory}/dist for the ${dependency} dependency.`,
+      );
+    }
+  }
   if (
     vercelConfig.installCommand !== 'npm ci' ||
     vercelConfig.outputDirectory !== '.next'
