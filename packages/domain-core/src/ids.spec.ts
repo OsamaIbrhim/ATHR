@@ -6,6 +6,8 @@ import {
   parseClientOperationId,
   parseCorrelationId,
   parseIdempotencyKey,
+  parseInvitationId,
+  parseMembershipId,
   parseOpaqueId,
   parseTenantId,
 } from './ids';
@@ -24,6 +26,13 @@ test('concrete ID parsers reject empty values with a brand-specific message', ()
   assert.throws(() => parseClientOperationId(''), /ClientOperationId ID must not be empty/);
   assert.throws(() => parseCorrelationId(''), /CorrelationId ID must not be empty/);
   assert.throws(() => parseCausationId(''), /CausationId ID must not be empty/);
+  assert.throws(() => parseMembershipId(''), /Membership ID must not be empty/);
+  assert.throws(() => parseInvitationId(''), /Invitation ID must not be empty/);
+});
+
+test('MembershipId and InvitationId parsers accept and normalize a valid value', () => {
+  assert.equal(parseMembershipId(' membership-1 '), 'membership-1');
+  assert.equal(parseInvitationId(' invitation-1 '), 'invitation-1');
 });
 
 test('concrete ID parsers accept and normalize a valid value', () => {

@@ -22,6 +22,16 @@ export function parseTenantId(value: string): TenantId {
   return parseOpaqueId(value, 'Tenant');
 }
 
+export type MembershipId = OpaqueId<'Membership'>;
+export function parseMembershipId(value: string): MembershipId {
+  return parseOpaqueId(value, 'Membership');
+}
+
+export type InvitationId = OpaqueId<'Invitation'>;
+export function parseInvitationId(value: string): InvitationId {
+  return parseOpaqueId(value, 'Invitation');
+}
+
 export type IdempotencyKey = OpaqueId<'IdempotencyKey'>;
 export function parseIdempotencyKey(value: string): IdempotencyKey {
   return parseOpaqueId(value, 'IdempotencyKey');
