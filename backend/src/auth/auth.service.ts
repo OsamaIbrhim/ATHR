@@ -4,11 +4,17 @@ import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'crypto';
 import { Prisma, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { resolveIdentityClaims } from './identity-claims';
 import { effectiveCapabilities } from './permissions';
 
 @Injectable()
 export class AuthService {
-  constructor(private prisma: PrismaService, private jwt: JwtService) {}
+  constructor(
+    private prisma: PrismaService,
+    private jwt: JwtService,
+    private permissionPolicy: PermissionPolicyService,
+  ) {}
 
   async login(phone: string, password: string) {
     const user = await this.prisma.user.findUnique({ where: { phone } });
@@ -69,7 +75,20 @@ export class AuthService {
         expires_at: new Date(Date.now() + this.refreshLifetimeMs()),
       },
     });
-    const payload = { sub: user.id, role: user.role, branch_id: user.branch_id };
+    // WP-006 §2 item 6: additive only — every pre-existing claim/field below
+    // (sub/role/branch_id in the token payload; id/name/role/branch_id/
+    // capabilities in `user`) is unchanged. See auth/identity-claims.ts and
+    // the dual-compatibility regression test in dual-compatibility.spec.ts.
+    const identityClaims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id);
+    const payload = {
+      sub: user.id,
+      role: user.role,
+      branch_id: user.branch_id,
+      tenant_id: identityClaims.tenant_id,
+      membership_id: identityClaims.membership_id,
+      scope_set: identityClaims.scope_set,
+      permission_policy_version: identityClaims.permission_policy_version,
+    };
     return {
       access_token: await this.jwt.signAsync(payload),
       refresh_token: refreshToken,
@@ -79,6 +98,10 @@ export class AuthService {
         role: user.role,
         branch_id: user.branch_id,
         capabilities: effectiveCapabilities(user),
+        tenant_id: identityClaims.tenant_id,
+        membership_id: identityClaims.membership_id,
+        scope_set: identityClaims.scope_set,
+        permission_policy_version: identityClaims.permission_policy_version,
       },
     };
   }

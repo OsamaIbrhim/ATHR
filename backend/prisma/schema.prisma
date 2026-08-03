@@ -116,19 +116,21 @@ enum TenantAccessMode {
 }
 
 model Tenant {
-  id                   String               @id @default(uuid()) @db.Uuid
-  name                 String
-  access_mode          TenantAccessMode     @default(active)
-  default_locale       String               @default("ar")
-  default_timezone     String               @default("Africa/Cairo")
-  default_currency     String               @default("EGP")
-  created_at           DateTime             @default(now())
-  updated_at           DateTime             @updatedAt
-  organization_profile OrganizationProfile?
-  legal_entities       LegalEntity[]
-  locations            Location[]
-  warehouses           Warehouse[]
-  memberships          Membership[]
+  id                    String               @id @default(uuid()) @db.Uuid
+  name                  String
+  access_mode           TenantAccessMode     @default(active)
+  default_locale        String               @default("ar")
+  default_timezone      String               @default("Africa/Cairo")
+  default_currency      String               @default("EGP")
+  created_at            DateTime             @default(now())
+  updated_at            DateTime             @updatedAt
+  organization_profile  OrganizationProfile?
+  legal_entities        LegalEntity[]
+  locations             Location[]
+  warehouses            Warehouse[]
+  memberships           Membership[]
+  invitations           Invitation[]
+  support_access_grants SupportAccessGrant[]
 }
 
 model OrganizationProfile {
@@ -211,18 +213,128 @@ enum MembershipStatus {
 }
 
 model Membership {
-  id         String           @id @default(uuid()) @db.Uuid
-  tenantId   String           @db.Uuid
-  tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  identityId String           @db.Uuid
-  identity   User             @relation(fields: [identityId], references: [id], onDelete: Restrict)
-  role       MembershipRole
-  status     MembershipStatus @default(active)
-  created_at DateTime         @default(now())
-  updated_at DateTime         @updatedAt
+  id                       String                  @id @default(uuid()) @db.Uuid
+  tenantId                 String                  @db.Uuid
+  tenant                   Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  identityId               String                  @db.Uuid
+  identity                 User                    @relation(fields: [identityId], references: [id], onDelete: Restrict)
+  role                     MembershipRole
+  status                   MembershipStatus        @default(active)
+  created_at               DateTime                @default(now())
+  updated_at               DateTime                @updatedAt
+  access_scope_assignments AccessScopeAssignment[]
 
   @@unique([identityId, tenantId])
   @@index([tenantId])
+}
+
+// WP-006 (MT-MIG-005's identity/permission half only — see
+// docs/wp/WP-006-identity-membership-permission-model.md): Invitation,
+// AccessScopeAssignment, PermissionPolicySnapshot, SupportAccessGrant.
+// Additive only. Membership.role/status (above) are untouched; these new
+// tables layer explicit Access Scope (BR-SCP-*) and a versioned permission
+// catalog (ADR-0005) on top of the existing Membership row, and a
+// time-boxed, audited Support Access grant (ADR-0006) that is never a
+// standing Membership.
+enum InvitationStatus {
+  pending
+  accepted
+  expired
+  revoked
+}
+
+enum AccessScopeType {
+  tenant_wide
+  location
+  warehouse
+  terminal
+}
+
+enum SupportAccessMode {
+  metadata_only
+  read_only_diagnostic
+  assisted_operation
+  break_glass
+}
+
+model Invitation {
+  id                     String           @id @default(uuid()) @db.Uuid
+  tenant_id              String           @db.Uuid
+  tenant                 Tenant           @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  email                  String
+  role                   MembershipRole
+  scope_type             AccessScopeType
+  scope_ref_id           String?          @db.Uuid
+  token_hash             String           @unique
+  status                 InvitationStatus @default(pending)
+  // Soft actor references only (no Prisma relation/FK to User), matching the
+  // existing AuditLog.user_id convention — this module does not touch User.
+  invited_by_id          String?          @db.Uuid
+  purpose                String?
+  expires_at             DateTime
+  accepted_at            DateTime?
+  accepted_membership_id String?          @db.Uuid
+  revoked_at             DateTime?
+  created_at             DateTime         @default(now())
+  updated_at             DateTime         @updatedAt
+
+  @@index([tenant_id])
+  @@index([tenant_id, email])
+}
+
+model AccessScopeAssignment {
+  id             String          @id @default(uuid()) @db.Uuid
+  membership_id  String          @db.Uuid
+  membership     Membership      @relation(fields: [membership_id], references: [id], onDelete: Cascade)
+  // BR-SCP-101: scope_type is always required (no nullable/absent state is
+  // representable), and scope_ref_id is required for every type except
+  // tenant_wide — enforced at the service layer, not by a DB CHECK, so the
+  // application error path (ACCESS_SCOPE_REFERENCE_REQUIRED) stays uniform.
+  scope_type     AccessScopeType
+  scope_ref_id   String?         @db.Uuid
+  grant_source   String          @db.VarChar(64)
+  effective_from DateTime        @default(now())
+  effective_to   DateTime?
+  created_at     DateTime        @default(now())
+
+  @@index([membership_id])
+}
+
+// Global, platform-wide catalog — system roles are not tenant-editable in
+// MVP (ADR-0003 item 6), so this snapshot is versioned once, not per-tenant.
+model PermissionPolicySnapshot {
+  id         String   @id @default(uuid()) @db.Uuid
+  version    Int      @unique
+  grants     Json
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+}
+
+model SupportAccessGrant {
+  id                      String            @id @default(uuid()) @db.Uuid
+  tenant_id               String            @db.Uuid
+  tenant                  Tenant            @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  // Platform Operator identity is intentionally not a Prisma relation to
+  // User: ADR-0006 item 1 requires a Platform Operator never be a standing
+  // Tenant Membership, and there is no Platform Operator identity table in
+  // this WP's scope (support-tooling UI/auth is a later WP) — this is a
+  // soft reference, same convention as AuditLog.user_id.
+  operator_identity_id    String            @db.Uuid
+  mode                    SupportAccessMode
+  purpose                 String
+  scopes                  Json
+  read_only               Boolean           @default(true)
+  approved_by_identity_id String?           @db.Uuid
+  consent_obtained        Boolean           @default(false)
+  starts_at               DateTime          @default(now())
+  expires_at              DateTime
+  revoked_at              DateTime?
+  revoked_reason          String?
+  reason                  String
+  created_at              DateTime          @default(now())
+
+  @@index([tenant_id])
+  @@index([tenant_id, expires_at])
 }
 
 model SellerCommissionSettings {
