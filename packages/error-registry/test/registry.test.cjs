@@ -63,7 +63,12 @@ test('publishes the exact Error Catalog §8 severity list', () => {
 });
 
 test('every code group is registered under ERROR_REGISTRY with matching metadata', () => {
-  for (const group of [errorRegistry.COMMON_ERROR_CODES, errorRegistry.AUTH_ERROR_CODES, errorRegistry.INTERNAL_ERROR_CODES]) {
+  for (const group of [
+    errorRegistry.COMMON_ERROR_CODES,
+    errorRegistry.AUTH_ERROR_CODES,
+    errorRegistry.INTERNAL_ERROR_CODES,
+    errorRegistry.IDENTITY_ERROR_CODES,
+  ]) {
     for (const definition of group) {
       assert.deepEqual(errorRegistry.ERROR_REGISTRY[definition.code], definition);
       assert.deepEqual(errorRegistry.getErrorMetadata(definition.code), definition);
@@ -97,6 +102,27 @@ test('scoped auth codes match the Backend JWT-guard-reachable set exactly', () =
 test('scoped internal codes match Error Catalog §24 exactly', () => {
   const codes = errorRegistry.INTERNAL_ERROR_CODES.map((definition) => definition.code).sort();
   assert.deepEqual(codes, ['INTERNAL_ERROR', 'UNEXPECTED_PROCESSING_ERROR']);
+});
+
+test('scoped identity codes match the WP-006 identity module reachable set exactly', () => {
+  const codes = errorRegistry.IDENTITY_ERROR_CODES.map((definition) => definition.code).sort();
+  assert.deepEqual(codes, [
+    'ACCESS_SCOPE_REFERENCE_REQUIRED',
+    'ACCESS_SCOPE_REQUIRED',
+    'INVITATION_ALREADY_ACCEPTED',
+    'INVITATION_EXPIRED',
+    'INVITATION_NOT_FOUND',
+    'INVITATION_TOKEN_INVALID',
+    'LAST_OWNER_SAFEGUARD_VIOLATION',
+    'MEMBERSHIP_ALREADY_EXISTS',
+    'MEMBERSHIP_INVALID_STATE_TRANSITION',
+    'MEMBERSHIP_NOT_FOUND',
+    'SUPPORT_ACCESS_CONSENT_REQUIRED',
+    'SUPPORT_ACCESS_GRANT_EXPIRED',
+    'SUPPORT_ACCESS_GRANT_NOT_FOUND',
+    'TENANT_CONTEXT_MISMATCH',
+    'TENANT_CONTEXT_UNRESOLVABLE',
+  ]);
 });
 
 test('every registered code carries HTTP status, retry mode, outcome and severity (Error Catalog §29)', () => {

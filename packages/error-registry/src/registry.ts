@@ -13,6 +13,7 @@ import type { OutcomeCertainty } from './outcomes';
 import { COMMON_ERROR_CODES } from './codes/common';
 import { AUTH_ERROR_CODES } from './codes/auth';
 import { INTERNAL_ERROR_CODES } from './codes/internal';
+import { IDENTITY_ERROR_CODES } from './codes/identity';
 
 export const ERROR_SEVERITIES = ['info', 'warning', 'error', 'critical'] as const;
 export type ErrorSeverity = (typeof ERROR_SEVERITIES)[number];
@@ -33,12 +34,14 @@ const REGISTERED_DEFINITIONS = [
   ...COMMON_ERROR_CODES,
   ...AUTH_ERROR_CODES,
   ...INTERNAL_ERROR_CODES,
+  ...IDENTITY_ERROR_CODES,
 ] as const;
 
 export type ErrorCode =
   | (typeof COMMON_ERROR_CODES)[number]['code']
   | (typeof AUTH_ERROR_CODES)[number]['code']
-  | (typeof INTERNAL_ERROR_CODES)[number]['code'];
+  | (typeof INTERNAL_ERROR_CODES)[number]['code']
+  | (typeof IDENTITY_ERROR_CODES)[number]['code'];
 
 export const ERROR_REGISTRY: Readonly<Record<ErrorCode, ErrorMetadata>> = Object.freeze(
   Object.fromEntries(REGISTERED_DEFINITIONS.map((definition) => [definition.code, definition])),
