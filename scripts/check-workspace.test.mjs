@@ -39,7 +39,12 @@ test('detects workspace dependency cycles', () => {
  * lets a test inject the exact kind of forbidden edge WP-004 shipped with:
  * an @athr/contracts import inside @athr/domain-core.
  */
-function writeFixtureWorkspace({ domainCoreDependencies = {}, domainCoreImport = '' } = {}) {
+function writeFixtureWorkspace({
+  domainCoreDependencies = {},
+  domainCoreImport = '',
+  backendDependencies = {},
+  dockerfile = 'CMD ["node", "dist/main.js"]\n',
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'check-workspace-fixture-'));
 
   writeFileSync(
@@ -68,10 +73,14 @@ function writeFixtureWorkspace({ domainCoreDependencies = {}, domainCoreImport =
     join(root, 'backend', 'railway.toml'),
     'dockerfilePath = "backend/Dockerfile"\nrun = "npm run prisma:migrate:deploy"\n',
   );
-  writeFileSync(join(root, 'backend', 'Dockerfile'), 'CMD ["node", "dist/main.js"]\n');
+  writeFileSync(join(root, 'backend', 'Dockerfile'), dockerfile);
   writeFileSync(
     join(root, 'backend', 'package.json'),
-    JSON.stringify({ name: 'athr-operations-api', private: true }),
+    JSON.stringify({
+      name: 'athr-operations-api',
+      private: true,
+      dependencies: backendDependencies,
+    }),
   );
 
   for (const [directory, name] of [
@@ -153,6 +162,39 @@ test('validateWorkspace fails when @athr/domain-core imports @athr/contracts (WP
       ),
       `expected a forbidden-reverse-import failure, got: ${JSON.stringify(failures)}`,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validateWorkspace fails when a backend @athr/* dependency is missing from the Dockerfile runtime stage (WP-006 regression)', () => {
+  const root = writeFixtureWorkspace({
+    backendDependencies: { '@athr/domain-core': '^0.1.0' },
+  });
+  try {
+    const { failures } = validateWorkspace(root);
+    assert.ok(
+      failures.some((failure) =>
+        failure.includes(
+          'Backend Dockerfile runtime stage must copy /app/packages/domain-core/dist for the @athr/domain-core dependency.',
+        ),
+      ),
+      `expected a missing-runtime-COPY failure, got: ${JSON.stringify(failures)}`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validateWorkspace passes once the Dockerfile runtime stage copies the dependency', () => {
+  const root = writeFixtureWorkspace({
+    backendDependencies: { '@athr/domain-core': '^0.1.0' },
+    dockerfile:
+      'COPY --from=build /app/packages/domain-core/dist /app/packages/domain-core/dist\nCMD ["node", "dist/main.js"]\n',
+  });
+  try {
+    const { failures } = validateWorkspace(root);
+    assert.deepEqual(failures, []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
