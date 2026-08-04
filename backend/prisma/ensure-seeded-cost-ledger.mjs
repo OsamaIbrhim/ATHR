@@ -24,7 +24,8 @@ export async function ensureSeededCostLedger(
       "reference_id",
       "idempotency_key",
       "occurred_at",
-      "metadata"
+      "metadata",
+      "tenant_id"
     )
     SELECT
       variant."id",
@@ -46,7 +47,8 @@ export async function ensureSeededCostLedger(
       jsonb_build_object(
         'source', '${source.replaceAll("'", "''")}',
         'reason', 'seeded global moving-average opening value'
-      )
+      ),
+      variant."tenant_id"
     FROM "ProductVariant" variant
     JOIN (
       WITH on_hand AS (
