@@ -15,6 +15,9 @@ import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 import { CloseShiftDto, OpenShiftDto } from './dto/shift.dto';
 import { TerminalsService } from '../terminals/terminals.service';
+import { RequirePermission } from '../identity/permission.guard';
+import { TenantCtx } from '../identity/tenant-context.decorator';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Controller('shifts')
 @Roles('owner', 'branch_manager', 'cashier')
@@ -30,7 +33,7 @@ export class ShiftsController {
     @Query('branch_id') branch_id: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.list(resolveBranchScope(req.user, branch_id));
+    return this.svc.list(ctx, resolveBranchScope(req.user, branch_id));
   }
 
   @Get('current')
@@ -39,7 +42,7 @@ export class ShiftsController {
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     const effectiveBranch = resolveBranchScope(req.user, branch_id);
-    return effectiveBranch ? this.svc.current(effectiveBranch) : null;
+    return effectiveBranch ? this.svc.current(ctx, effectiveBranch) : null;
   }
 
   @Post('open')
@@ -47,7 +50,7 @@ export class ShiftsController {
     @Body() dto: OpenShiftDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.open(dto.branch_id, req.user, dto.opening_cash || 0);
+    return this.svc.open(ctx, dto.branch_id, req.user, dto.opening_cash || 0);
   }
 
   @Post(':id/offline-context')
@@ -63,7 +66,7 @@ export class ShiftsController {
       deviceToken,
       req.user,
     );
-    return this.svc.issueOfflineContext(id, req.user, terminal);
+    return this.svc.issueOfflineContext(ctx, id, req.user, terminal);
   }
 
   @Post(':id/close')
@@ -72,6 +75,6 @@ export class ShiftsController {
     @Body() dto: CloseShiftDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.close(id, req.user, dto.closing_cash);
+    return this.svc.close(ctx, id, req.user, dto.closing_cash);
   }
 }

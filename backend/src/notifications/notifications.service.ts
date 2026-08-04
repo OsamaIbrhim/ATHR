@@ -3,6 +3,7 @@ import * as nodemailer from 'nodemailer';
 import axios from 'axios';
 import { moneyString } from '../common/money';
 import { formatBusinessDateTime } from '../common/business-time';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class NotificationsService {
@@ -67,7 +68,17 @@ export class NotificationsService {
     }
   }
 
-  async sendReport(report: any, channels: string[]) {
+  /**
+   * WP-007 Phase A §A.3.2. This module owns no tenant-scoped table — it
+   * formats and dispatches a report payload the caller already produced, and
+   * its recipients come from environment configuration rather than tenant
+   * data. So tenant-scoping here is contextual: the context is threaded and
+   * stamped onto the dispatch so a report can never be attributed to, or
+   * silently delivered on behalf of, a tenant other than the caller's. Real
+   * per-tenant recipient routing needs a recipients table that does not exist
+   * yet; that is a later WP, not something to fake here.
+   */
+  async sendReport(context: TenantContext, report: any, channels: string[]) {
     const totalSales = moneyString(report.total_sales || 0);
     const totalCost = moneyString(report.total_cost || 0);
     const profit = moneyString(report.total_profit || report.profit || 0);
@@ -81,7 +92,7 @@ export class NotificationsService {
       <p>عدد الفواتير: ${report.count||0}</p>
       <hr><small>ATHR Operations – ${formatBusinessDateTime(new Date())}</small>
       </div>`;
-    const results:any = {};
+    const results:any = { tenant_id: context.tenantId };
     if (channels.includes('email')) {
       const to = process.env.REPORT_EMAIL_TO || 'owner@athr.local';
       results.email = await this.sendEmail(to, 'تقرير ATHR اليومي', html, summary);

@@ -1,4 +1,13 @@
 import { ShiftsService } from './shifts.service';
+import { ShiftsRepository } from './shifts.repository';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: the service delegates to a tenant-scoped repository and
+// takes a TenantContext. Shift lookups moved from `findUnique` to `findFirst`
+// (a tenant predicate cannot be expressed through a primary-key lookup), so
+// the doubles below expose `findFirst`. Assertions are otherwise unchanged,
+// with the tenant predicate added to the expected aggregate filters.
+const ctx = contextFor(TENANT_A);
 
 const actor = {
   sub: 'cashier-1',
@@ -7,17 +16,19 @@ const actor = {
 };
 const shiftId = '11111111-1111-4111-8111-111111111111';
 
+function serviceOver(prisma: any) {
+  return new ShiftsService(prisma as any, new ShiftsRepository(prisma as any));
+}
+
 describe('ShiftsService', () => {
   it.each([undefined, null, '', ' ', 'undefined', 'null'])(
     'rejects an invalid shift ID before querying Prisma: %p',
     async (value) => {
-      const findUnique = jest.fn();
-      const service = new ShiftsService({
-        shift: { findUnique },
-      } as any);
+      const findFirst = jest.fn();
+      const service = serviceOver({ shift: { findFirst } });
 
       await expect(
-        service.issueOfflineContext(value as any, actor, {
+        service.issueOfflineContext(ctx, value as any, actor, {
           id: 'terminal-1',
           branch_id: 'branch-1',
           last_sale_sequence: 0n,
@@ -28,12 +39,12 @@ describe('ShiftsService', () => {
           field: 'shift_id',
         }),
       });
-      expect(findUnique).not.toHaveBeenCalled();
+      expect(findFirst).not.toHaveBeenCalled();
     },
   );
 
   it('calculates expected cash from sales and returns explicitly linked to the shift', async () => {
-    const shiftFindUnique = jest.fn()
+    const shiftFindFirst = jest.fn()
       .mockResolvedValueOnce({
         id: shiftId,
         branch_id: 'branch-1',
@@ -47,24 +58,24 @@ describe('ShiftsService', () => {
     const returnAggregate = jest.fn().mockResolvedValue({ _sum: { refund_total: 100 } });
     const prisma = {
       shift: {
-        findUnique: shiftFindUnique,
+        findFirst: shiftFindFirst,
         updateMany: shiftUpdateMany,
       },
       salesInvoice: { aggregate: salesAggregate },
       return: { aggregate: returnAggregate },
     };
-    const service = new ShiftsService(prisma as any);
+    const service = serviceOver(prisma);
 
-    await service.close(shiftId, actor, 440);
+    await service.close(ctx, shiftId, actor, 440);
 
     expect(salesAggregate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ shift_id: shiftId }),
+        where: expect.objectContaining({ shift_id: shiftId, tenant_id: ctx.tenantId }),
       }),
     );
     expect(returnAggregate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ shift_id: shiftId }),
+        where: expect.objectContaining({ shift_id: shiftId, tenant_id: ctx.tenantId }),
       }),
     );
     const data = shiftUpdateMany.mock.calls[0][0].data;
@@ -76,7 +87,7 @@ describe('ShiftsService', () => {
   it('issues a plain terminal-bound context for an open shift in the same branch', async () => {
     const prisma = {
       shift: {
-        findUnique: jest.fn().mockResolvedValue({
+        findFirst: jest.fn().mockResolvedValue({
           id: shiftId,
           branch_id: 'branch-1',
           status: 'open',
@@ -84,8 +95,9 @@ describe('ShiftsService', () => {
         }),
       },
     };
-    const service = new ShiftsService(prisma as any);
+    const service = serviceOver(prisma);
     const result = await service.issueOfflineContext(
+      ctx,
       shiftId,
       actor,
       {

@@ -170,12 +170,18 @@ const REPORTING_PERMISSIONS = [
   'notifications.notification.resend',
 ] as const;
 
-/** Matrix §12 Tenant/Location — the Location half of the legacy `branches` module. */
+/**
+ * Matrix §12 Tenant/Location and §13 Membership — the Location half of the
+ * legacy `branches` module, and the read side of the legacy `users` module.
+ * (The membership *mutation* keys stay in WP-006's `IDENTITY_PERMISSIONS`;
+ * only the read key is added here, since §13 separates view from manage.)
+ */
 const TENANT_STRUCTURE_PERMISSIONS = [
   'location.view',
   'location.create',
   'location.update',
   'location.close',
+  'tenant.membership.view',
 ] as const;
 
 export const BUSINESS_PERMISSIONS = [
@@ -316,6 +322,8 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'notifications.notification.view',
   'notifications.notification.resend',
   'location.view',
+  // Legacy `branch_manager` can already list its branch's users today.
+  'tenant.membership.view',
 ];
 
 /** Matrix §48 Tenant Owner: everything in this catalog. */
