@@ -1,4 +1,4 @@
-import type { AccessScopeType } from '@prisma/client';
+import type { AccessScopeType, MembershipRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 
@@ -12,6 +12,10 @@ import { PermissionPolicyService } from '../identity/permission-policy.service';
 export interface IdentityClaims {
   readonly tenant_id: string | null;
   readonly membership_id: string | null;
+  // WP-007 Phase A: additive, same rule as the WP-006 claims above. Lets the
+  // global `PermissionGuard` evaluate a permission without a per-request
+  // database round trip; `null` still means "no active Membership".
+  readonly membership_role: MembershipRole | null;
   readonly scope_set: ReadonlyArray<{ scope_type: AccessScopeType; scope_ref_id: string | null }>;
   readonly permission_policy_version: number | null;
 }
@@ -19,6 +23,7 @@ export interface IdentityClaims {
 const EMPTY_CLAIMS: IdentityClaims = {
   tenant_id: null,
   membership_id: null,
+  membership_role: null,
   scope_set: [],
   permission_policy_version: null,
 };
@@ -44,6 +49,7 @@ export async function resolveIdentityClaims(
   return {
     tenant_id: membership.tenantId,
     membership_id: membership.id,
+    membership_role: membership.role,
     scope_set,
     permission_policy_version,
   };

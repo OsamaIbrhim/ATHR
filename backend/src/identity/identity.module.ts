@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { AccessScopeRepository } from './access-scope.repository';
 import { AccessScopeService } from './access-scope.service';
 import { InvitationController } from './invitation.controller';
@@ -14,12 +14,16 @@ import { SupportAccessGrantService } from './support-access-grant.service';
 import { TenantContextResolver } from './tenant-context.resolver';
 
 /**
- * WP-006: Identity, Membership and Permission Model. New, additive module —
- * `TenantContextResolver` is a plain provider here, not wired as a global
- * guard (WP-007 does that global wiring per MT-MIG-005/006). Nothing in
- * this module is imported by, or changes the behavior of, any existing
- * sales/inventory/catalog/customer module.
+ * WP-006: Identity, Membership and Permission Model.
+ *
+ * WP-007 Phase A makes this module `@Global()`: the global `TenantContextGuard`
+ * and `PermissionGuard` registered in `app.module.ts` need `PermissionPolicyService`,
+ * and every retrofitted module's repositories are tenant-scoped against the
+ * context those guards resolve. Marking it global avoids adding an
+ * `imports: [IdentityModule]` line to all 18 retrofitted modules for what is
+ * genuinely cross-cutting infrastructure.
  */
+@Global()
 @Module({
   controllers: [MembershipController, InvitationController, SupportAccessGrantController],
   providers: [
@@ -34,6 +38,12 @@ import { TenantContextResolver } from './tenant-context.resolver';
     SupportAccessGrantRepository,
     SupportAccessGrantService,
   ],
-  exports: [TenantContextResolver, PermissionPolicyService, MembershipService, AccessScopeService],
+  exports: [
+    TenantContextResolver,
+    PermissionPolicyService,
+    MembershipRepository,
+    MembershipService,
+    AccessScopeService,
+  ],
 })
 export class IdentityModule {}
