@@ -185,9 +185,9 @@ async function main() {
   }
 
   // Pricing rules
-  await prisma.pricingRule.create({ data: { name: 'Global Default EG', scope_type: 'global', overhead_percent: 20, profit_percent: 35, tax_percent: 14, formula: 'compound', is_protected: true, priority: 999 }});
-  await prisma.pricingRule.create({ data: { name: 'Jeans – 45% Profit', scope_type: 'category', scope_id: cat_j.id, overhead_percent: 20, profit_percent: 45, tax_percent: 14, formula: 'compound', priority: 50 }});
-  await prisma.pricingRule.create({ data: { name: 'T-Shirts – 30% Profit', scope_type: 'category', scope_id: cat_t.id, overhead_percent: 20, profit_percent: 30, tax_percent: 14, formula: 'compound', priority: 50 }});
+  await prisma.pricingRule.create({ data: { tenant_id, name: 'Global Default EG', scope_type: 'global', overhead_percent: 20, profit_percent: 35, tax_percent: 14, formula: 'compound', is_protected: true, priority: 999 }});
+  await prisma.pricingRule.create({ data: { tenant_id, name: 'Jeans – 45% Profit', scope_type: 'category', scope_id: cat_j.id, overhead_percent: 20, profit_percent: 45, tax_percent: 14, formula: 'compound', priority: 50 }});
+  await prisma.pricingRule.create({ data: { tenant_id, name: 'T-Shirts – 30% Profit', scope_type: 'category', scope_id: cat_t.id, overhead_percent: 20, profit_percent: 30, tax_percent: 14, formula: 'compound', priority: 50 }});
 
   // Customers
   const custData = [
@@ -238,7 +238,7 @@ async function main() {
         payment_method: paymentMethods[i % paymentMethods.length],
         language: 'ar',
         created_at: new Date(Date.now() - deterministicRandom()*30*86400000),
-        items: { create: items.map((item) => ({ ...item, tenant_id })) }
+        items: { create: items }
       }
     });
     salesInvoices.push(inv);
@@ -265,9 +265,9 @@ async function main() {
     subtotal: 4200, discount_amount: 200, discount_percent: 0, total: 4000,
     created_by: warehouse.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[0].id, qty: 50, unit_cost: 80 },
-      { tenant_id, variant_id: allVariants[1].id, qty: 30, unit_cost: 80 },
-      { tenant_id, variant_id: allVariants[4].id, qty: 20, unit_cost: 130 },
+      { variant_id: allVariants[0].id, qty: 50, unit_cost: 80 },
+      { variant_id: allVariants[1].id, qty: 30, unit_cost: 80 },
+      { variant_id: allVariants[4].id, qty: 20, unit_cost: 130 },
     ]}
   }});
   await prisma.purchaseInvoice.create({ data: {
@@ -276,8 +276,8 @@ async function main() {
     subtotal: 3100, discount_amount: 155, discount_percent: 5, total: 2945,
     created_by: warehouse.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[5].id, qty: 15, unit_cost: 160 },
-      { tenant_id, variant_id: allVariants[6].id, qty: 10, unit_cost: 90 },
+      { variant_id: allVariants[5].id, qty: 15, unit_cost: 160 },
+      { variant_id: allVariants[6].id, qty: 10, unit_cost: 90 },
     ]}
   }});
   await prisma.purchaseInvoice.create({ data: {
@@ -286,8 +286,8 @@ async function main() {
     subtotal: 5600, discount_amount: 300, discount_percent: 0, total: 5300,
     created_by: warehouse.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[10].id, qty: 25, unit_cost: 175 },
-      { tenant_id, variant_id: allVariants[15].id, qty: 20, unit_cost: 140 },
+      { variant_id: allVariants[10].id, qty: 25, unit_cost: 175 },
+      { variant_id: allVariants[15].id, qty: 20, unit_cost: 140 },
     ]}
   }});
 
@@ -297,8 +297,8 @@ async function main() {
     from_branch_id: b1.id, to_branch_id: b2.id,
     transfer_number: 'TR-2026001', status: 'received', created_by: manager.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[0].id, qty: 5 },
-      { tenant_id, variant_id: allVariants[2].id, qty: 3 },
+      { variant_id: allVariants[0].id, qty: 5 },
+      { variant_id: allVariants[2].id, qty: 3 },
     ]}
   }});
   await prisma.transfer.create({ data: {
@@ -306,7 +306,7 @@ async function main() {
     from_branch_id: b2.id, to_branch_id: b1.id,
     transfer_number: 'TR-2026002', status: 'pending', created_by: manager.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[5].id, qty: 2 },
+      { variant_id: allVariants[5].id, qty: 2 },
     ]}
   }});
 

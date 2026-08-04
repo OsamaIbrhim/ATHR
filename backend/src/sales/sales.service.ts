@@ -598,6 +598,7 @@ export class SalesService {
 
       await tx.auditLog.create({
         data: {
+          tenant_id: context.tenantId,
           user_id: linkedCashier?.id || null,
           action: warningCodes.size
             ? 'sale.accepted_with_warning'
@@ -644,6 +645,7 @@ export class SalesService {
         });
         await tx.auditLog.create({
           data: {
+            tenant_id: context.tenantId,
             user_id: linkedCashier?.id || null,
             action: 'shift.late_offline_sale.reconciled',
             entity: 'Shift',
@@ -815,6 +817,7 @@ export class SalesService {
           },
           update: { qty_on_hand: { increment: item.qty } },
           create: {
+            tenant_id: context.tenantId,
             branch_id: original.branch_id,
             variant_id: item.variant_id,
             qty_on_hand: item.qty,

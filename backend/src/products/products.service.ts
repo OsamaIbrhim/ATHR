@@ -135,10 +135,6 @@ export class ProductsService {
       has_variants: !!(dto.size || dto.color || dto.style),
       variants: {
         create: [{
-          // Child rows carry the same tenant explicitly. Prisma nested
-          // creates do not inherit the parent's scalar columns, and there is
-          // no composite foreign key to enforce it until Phase B.
-          tenant_id: context.tenantId,
           sku: dto.sku,
           barcode_ean13: dto.barcode_ean13 || null,
           barcode_internal: dto.barcode_internal || dto.sku,
@@ -148,7 +144,7 @@ export class ProductsService {
           cost_price: dto.cost_price,
         }],
       },
-    } as any);
+    });
     this.invalidateCounts();
     return product;
   }

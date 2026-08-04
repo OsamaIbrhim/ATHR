@@ -107,8 +107,8 @@ describe('products — cross-tenant isolation', () => {
     expect(prisma.productVariant.rows.find((row: any) => row.id === VARIANT_A).is_active).toBe(true);
   });
 
-  it('stamps a new product and its nested variant with the calling tenant', async () => {
-    const { service, prisma } = setup();
+  it('stamps a new product with the calling tenant', async () => {
+    const { service } = setup();
     const created: any = await service.createProduct(contextFor(TENANT_B), {
       name_en: 'New',
       sku: 'SKU-NEW',
@@ -116,6 +116,10 @@ describe('products — cross-tenant isolation', () => {
     } as any);
 
     expect(created.tenant_id).toBe(TENANT_B);
-    expect(prisma.product.rows.at(-1).variants.create[0].tenant_id).toBe(TENANT_B);
+    // WP-007 Phase B: ProductVariant's composite FK to Product now covers
+    // tenant_id, so the nested variant create no longer stamps it explicitly
+    // — Prisma derives it from the parent, and the DB-level composite FK
+    // (proven in the constraint-rejection suite) is what actually guarantees
+    // it can never diverge from the parent's tenant.
   });
 });

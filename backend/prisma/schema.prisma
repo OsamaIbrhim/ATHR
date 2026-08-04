@@ -11,7 +11,7 @@ datasource db {
 
 model Branch {
   id                       String                  @id @default(uuid()) @db.Uuid
-  code                     String                  @unique
+  code                     String
   name_ar                  String
   name_en                  String?
   address                  String?
@@ -19,7 +19,7 @@ model Branch {
   cash_drawer_enabled      Boolean                 @default(false)
   is_active                Boolean                 @default(true)
   created_at               DateTime                @default(now())
-  tenant_id                String?                 @db.Uuid
+  tenant_id                String                  @db.Uuid
   users                    User[]
   inventory                InventoryStock[]
   inventory_movements      InventoryMovement[]
@@ -35,6 +35,8 @@ model Branch {
   pos_terminals            PosTerminal[]
   pos_enrollment_codes     PosTerminalEnrollment[]
 
+  @@unique([tenant_id, code])
+  @@unique([tenant_id, id])
   @@index([tenant_id])
 }
 
@@ -345,7 +347,7 @@ model SellerCommissionSettings {
   period_length_days Int      @default(30)
   period_anchor      DateTime @default(now())
   updated_at         DateTime @updatedAt
-  tenant_id          String?  @db.Uuid
+  tenant_id          String   @db.Uuid
 
   @@index([tenant_id])
 }
@@ -357,7 +359,7 @@ model SellerCommissionOverride {
   target     Decimal? @db.Decimal(12, 2)
   bonus      Decimal? @db.Decimal(12, 2)
   updated_at DateTime @updatedAt
-  tenant_id  String?  @db.Uuid
+  tenant_id  String   @db.Uuid
 
   @@index([tenant_id])
 }
@@ -374,16 +376,17 @@ model SellerCommissionPeriod {
   closer               User                        @relation("SellerPeriodClosedBy", fields: [closed_by], references: [id], onDelete: Restrict)
   closed_at            DateTime                    @default(now())
   rows                 SellerCommissionPeriodRow[]
-  tenant_id            String?                     @db.Uuid
+  tenant_id            String                      @db.Uuid
 
-  @@unique([period_start, period_end_exclusive])
+  @@unique([tenant_id, period_start, period_end_exclusive], map: "SellerCommissionPeriod_tenant_period_dates_key")
+  @@unique([tenant_id, id])
   @@index([closed_at(sort: Desc)])
   @@index([tenant_id])
 }
 
 model SellerCommissionPeriodRow {
   period_id              String                 @db.Uuid
-  period                 SellerCommissionPeriod @relation(fields: [period_id], references: [id], onDelete: Cascade)
+  period                 SellerCommissionPeriod @relation(fields: [tenant_id, period_id], references: [tenant_id, id], onDelete: Cascade)
   seller_id              String                 @db.Uuid
   seller                 User                   @relation("SellerPeriodSeller", fields: [seller_id], references: [id], onDelete: Restrict)
   seller_name            String
@@ -400,7 +403,7 @@ model SellerCommissionPeriodRow {
   target_achieved        Boolean
   target_bonus           Decimal                @db.Decimal(12, 2)
   estimated_total        Decimal                @db.Decimal(12, 2)
-  tenant_id              String?                @db.Uuid
+  tenant_id              String                 @db.Uuid
 
   @@id([period_id, seller_id])
   @@index([seller_id, period_id])
@@ -416,8 +419,9 @@ model Supplier {
   created_at       DateTime          @default(now())
   purchases        PurchaseInvoice[]
   supplier_returns SupplierReturn[]
-  tenant_id        String?           @db.Uuid
+  tenant_id        String            @db.Uuid
 
+  @@unique([tenant_id, id])
   @@index([tenant_id])
 }
 
@@ -427,26 +431,29 @@ model Category {
   name_en   String?
   parent_id String?   @db.Uuid
   products  Product[]
-  tenant_id String?   @db.Uuid
+  tenant_id String    @db.Uuid
 
+  @@unique([tenant_id, id])
   @@index([tenant_id])
 }
 
 model Product {
   id           String           @id @default(uuid()) @db.Uuid
-  sku_base     String?          @unique
+  sku_base     String?
   name_en      String
   name_ar      String?
   category_id  String?          @db.Uuid
-  category     Category?        @relation(fields: [category_id], references: [id])
+  category     Category?        @relation(fields: [tenant_id, category_id], references: [tenant_id, id], onDelete: SetNull)
   brand        String?
   image_url    String?
   is_active    Boolean          @default(true)
   has_variants Boolean          @default(true)
   created_at   DateTime         @default(now())
   variants     ProductVariant[]
-  tenant_id    String?          @db.Uuid
+  tenant_id    String           @db.Uuid
 
+  @@unique([tenant_id, sku_base])
+  @@unique([tenant_id, id])
   @@index([is_active, created_at])
   @@index([name_en(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_en_trgm_idx")
   @@index([name_ar(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_ar_trgm_idx")
@@ -456,10 +463,10 @@ model Product {
 model ProductVariant {
   id                         String                    @id @default(uuid()) @db.Uuid
   product_id                 String                    @db.Uuid
-  product                    Product                   @relation(fields: [product_id], references: [id], onDelete: Cascade)
-  sku                        String                    @unique
+  product                    Product                   @relation(fields: [tenant_id, product_id], references: [tenant_id, id], onDelete: Cascade)
+  sku                        String
   barcode_ean13              String?
-  barcode_internal           String?                   @unique
+  barcode_internal           String?
   size                       String?
   color                      String?
   style                      String?
@@ -478,8 +485,11 @@ model ProductVariant {
   transfer_transit_movements TransferTransitMovement[]
   return_items               ReturnItem[]
   offer_suggestions          OfferSuggestion[]
-  tenant_id                  String?                   @db.Uuid
+  tenant_id                  String                    @db.Uuid
 
+  @@unique([tenant_id, sku])
+  @@unique([tenant_id, barcode_internal])
+  @@unique([tenant_id, id])
   @@index([barcode_ean13])
   @@index([created_at(sort: Desc), id(sort: Asc)])
   @@index([product_id])
@@ -500,7 +510,7 @@ model PricingRule {
   is_protected     Boolean @default(false)
   priority         Int     @default(100)
   is_active        Boolean @default(true)
-  tenant_id        String? @db.Uuid
+  tenant_id        String  @db.Uuid
 
   @@index([tenant_id])
 }
@@ -508,12 +518,12 @@ model PricingRule {
 model InventoryStock {
   branch_id    String         @db.Uuid
   variant_id   String         @db.Uuid
-  branch       Branch         @relation(fields: [branch_id], references: [id])
-  variant      ProductVariant @relation(fields: [variant_id], references: [id])
+  branch       Branch         @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  variant      ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   qty_on_hand  Int            @default(0)
   qty_reserved Int            @default(0)
   last_sold_at DateTime?
-  tenant_id    String?        @db.Uuid
+  tenant_id    String         @db.Uuid
 
   @@id([branch_id, variant_id])
   @@index([variant_id])
@@ -539,9 +549,9 @@ model InventoryMovement {
   id                String                @id @default(uuid()) @db.Uuid
   sequence          BigInt                @unique @default(autoincrement())
   branch_id         String                @db.Uuid
-  branch            Branch                @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  branch            Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   variant_id        String                @db.Uuid
-  variant           ProductVariant        @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+  variant           ProductVariant        @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type     InventoryMovementType
   on_hand_delta     Int
   reserved_delta    Int                   @default(0)
@@ -556,7 +566,7 @@ model InventoryMovement {
   created_by        String?               @db.Uuid
   creator           User?                 @relation("InventoryMovementCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
   metadata          Json?
-  tenant_id         String?               @db.Uuid
+  tenant_id         String                @db.Uuid
 
   @@index([branch_id, variant_id, occurred_at])
   @@index([variant_id, sequence], map: "InventoryMovement_variant_sequence_idx")
@@ -580,9 +590,9 @@ model InventoryCostMovement {
   id                       String                    @id @default(uuid()) @db.Uuid
   sequence                 BigInt                    @unique @default(autoincrement())
   variant_id               String                    @db.Uuid
-  variant                  ProductVariant            @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+  variant                  ProductVariant            @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   branch_id                String?                   @db.Uuid
-  branch                   Branch?                   @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  branch                   Branch?                   @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type            InventoryCostMovementType
   quantity_delta           Int
   global_quantity_before   Int
@@ -598,20 +608,20 @@ model InventoryCostMovement {
   reference_id             String                    @db.VarChar(128)
   reference_line_id        String?                   @db.VarChar(128)
   purchase_invoice_id      String?                   @db.Uuid
-  purchase_invoice         PurchaseInvoice?          @relation(fields: [purchase_invoice_id], references: [id], onDelete: Restrict)
+  purchase_invoice         PurchaseInvoice?          @relation(fields: [tenant_id, purchase_invoice_id], references: [tenant_id, id], onDelete: Restrict)
   purchase_invoice_item_id String?                   @db.Uuid
-  purchase_invoice_item    PurchaseInvoiceItem?      @relation(fields: [purchase_invoice_item_id], references: [id], onDelete: Restrict)
+  purchase_invoice_item    PurchaseInvoiceItem?      @relation(fields: [tenant_id, purchase_invoice_item_id], references: [tenant_id, id], onDelete: Restrict)
   supplier_return_id       String?                   @db.Uuid
-  supplier_return          SupplierReturn?           @relation(fields: [supplier_return_id], references: [id], onDelete: Restrict)
+  supplier_return          SupplierReturn?           @relation(fields: [tenant_id, supplier_return_id], references: [tenant_id, id], onDelete: Restrict)
   supplier_return_item_id  String?                   @db.Uuid
-  supplier_return_item     SupplierReturnItem?       @relation(fields: [supplier_return_item_id], references: [id], onDelete: Restrict)
+  supplier_return_item     SupplierReturnItem?       @relation(fields: [tenant_id, supplier_return_item_id], references: [tenant_id, id], onDelete: Restrict)
   idempotency_key          String                    @unique @db.VarChar(191)
   occurred_at              DateTime
   recorded_at              DateTime                  @default(now())
   created_by               String?                   @db.Uuid
   creator                  User?                     @relation("InventoryCostMovementCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
   metadata                 Json?
-  tenant_id                String?                   @db.Uuid
+  tenant_id                String                    @db.Uuid
 
   @@index([variant_id, sequence], map: "InventoryCostMovement_variant_sequence_idx")
   @@index([branch_id, occurred_at], map: "InventoryCostMovement_branch_occurred_at_idx")
@@ -626,7 +636,7 @@ model InventoryCostMovement {
 model Customer {
   id             String         @id @default(uuid()) @db.Uuid
   name           String?
-  phone          String?        @unique
+  phone          String?
   whatsapp       String?
   email          String?
   is_vip         Boolean        @default(false)
@@ -635,19 +645,21 @@ model Customer {
   total_spent    Decimal        @default(0) @db.Decimal(12, 2)
   created_at     DateTime       @default(now())
   sales          SalesInvoice[]
-  tenant_id      String?        @db.Uuid
+  tenant_id      String         @db.Uuid
 
+  @@unique([tenant_id, phone])
+  @@unique([tenant_id, id])
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Customer_name_trgm_idx")
   @@index([tenant_id])
 }
 
 model SalesInvoice {
   id                    String             @id @default(uuid()) @db.Uuid
-  invoice_number        String             @unique
+  invoice_number        String
   branch_id             String             @db.Uuid
-  branch                Branch             @relation(fields: [branch_id], references: [id])
+  branch                Branch             @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   customer_id           String?            @db.Uuid
-  customer              Customer?          @relation(fields: [customer_id], references: [id])
+  customer              Customer?          @relation(fields: [tenant_id, customer_id], references: [tenant_id, id], onDelete: SetNull)
   // cashier_id is the cashier who collected the payment, even when another
   // authenticated user uploads the command after reconnecting.
   cashier_id            String?            @db.Uuid
@@ -657,9 +669,9 @@ model SalesInvoice {
   received_by           String?            @db.Uuid
   receiver              User?              @relation("SalesReceivedBy", fields: [received_by], references: [id], onDelete: SetNull)
   terminal_id           String?            @db.Uuid
-  terminal              PosTerminal?       @relation(fields: [terminal_id], references: [id], onDelete: SetNull)
+  terminal              PosTerminal?       @relation(fields: [tenant_id, terminal_id], references: [tenant_id, id], onDelete: SetNull)
   shift_id              String?            @db.Uuid
-  shift                 Shift?             @relation(fields: [shift_id], references: [id], onDelete: SetNull)
+  shift                 Shift?             @relation(fields: [tenant_id, shift_id], references: [tenant_id, id], onDelete: SetNull)
   offline_session_id    String?            @db.Uuid
   terminal_sequence     BigInt?
   command_fingerprint   String?            @db.VarChar(64)
@@ -681,8 +693,10 @@ model SalesInvoice {
   items                 SalesInvoiceItem[]
   original_returns      Return[]           @relation("OriginalInvoiceReturns")
   exchange_returns      Return[]           @relation("ExchangeInvoiceReturns")
-  tenant_id             String?            @db.Uuid
+  tenant_id             String             @db.Uuid
 
+  @@unique([tenant_id, invoice_number])
+  @@unique([tenant_id, id])
   @@unique([terminal_id, terminal_sequence])
   @@index([branch_id, occurred_at])
   @@index([occurred_at(sort: Desc), id(sort: Desc)])
@@ -701,10 +715,10 @@ model SalesInvoice {
 model PosTerminal {
   id                 String         @id @default(uuid()) @db.Uuid
   device_id          String         @unique @db.Uuid
-  terminal_code      String         @unique
+  terminal_code      String
   name               String
   branch_id          String         @db.Uuid
-  branch             Branch         @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  branch             Branch         @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   app_version        String?
   last_seen_at       DateTime?
   last_sync_at       DateTime?
@@ -720,8 +734,10 @@ model PosTerminal {
   created_at         DateTime       @default(now())
   updated_at         DateTime       @updatedAt
   sales              SalesInvoice[]
-  tenant_id          String?        @db.Uuid
+  tenant_id          String         @db.Uuid
 
+  @@unique([tenant_id, terminal_code])
+  @@unique([tenant_id, id])
   @@index([branch_id, last_seen_at])
   @@index([tenant_id])
 }
@@ -730,14 +746,14 @@ model PosTerminalEnrollment {
   id            String    @id @default(uuid()) @db.Uuid
   code_hash     String    @unique
   branch_id     String    @db.Uuid
-  branch        Branch    @relation(fields: [branch_id], references: [id], onDelete: Cascade)
+  branch        Branch    @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Cascade)
   terminal_name String?
   created_by    String    @db.Uuid
   creator       User      @relation("TerminalEnrollmentCreatedBy", fields: [created_by], references: [id], onDelete: Cascade)
   expires_at    DateTime
   used_at       DateTime?
   created_at    DateTime  @default(now())
-  tenant_id     String?   @db.Uuid
+  tenant_id     String    @db.Uuid
 
   @@index([branch_id, expires_at])
   @@index([tenant_id])
@@ -749,7 +765,7 @@ model SyncChange {
   branch_id  String?  @db.Uuid
   entity_key String?
   created_at DateTime @default(now())
-  tenant_id  String?  @db.Uuid
+  tenant_id  String   @db.Uuid
 
   @@index([branch_id, sequence])
   @@index([sequence, kind])
@@ -759,9 +775,9 @@ model SyncChange {
 model SalesInvoiceItem {
   id               String         @id @default(uuid()) @db.Uuid
   sales_invoice_id String         @db.Uuid
-  invoice          SalesInvoice   @relation(fields: [sales_invoice_id], references: [id], onDelete: Cascade)
+  invoice          SalesInvoice   @relation(fields: [tenant_id, sales_invoice_id], references: [tenant_id, id], onDelete: Cascade)
   variant_id       String         @db.Uuid
-  variant          ProductVariant @relation(fields: [variant_id], references: [id])
+  variant          ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   qty              Int
   unit_price       Decimal        @db.Decimal(12, 2)
   unit_cost        Decimal        @db.Decimal(12, 2)
@@ -772,8 +788,9 @@ model SalesInvoiceItem {
   size_snapshot    String?        @db.VarChar(100)
   color_snapshot   String?        @db.VarChar(100)
   return_items     ReturnItem[]
-  tenant_id        String?        @db.Uuid
+  tenant_id        String         @db.Uuid
 
+  @@unique([tenant_id, id])
   @@index([sales_invoice_id])
   @@index([tenant_id])
 }
@@ -781,14 +798,14 @@ model SalesInvoiceItem {
 model Return {
   id                    String        @id @default(uuid()) @db.Uuid
   original_invoice_id   String        @db.Uuid
-  original_invoice      SalesInvoice  @relation("OriginalInvoiceReturns", fields: [original_invoice_id], references: [id], onDelete: Restrict)
+  original_invoice      SalesInvoice  @relation("OriginalInvoiceReturns", fields: [tenant_id, original_invoice_id], references: [tenant_id, id], onDelete: Restrict)
   new_invoice_id        String?       @db.Uuid
-  new_invoice           SalesInvoice? @relation("ExchangeInvoiceReturns", fields: [new_invoice_id], references: [id], onDelete: SetNull)
+  new_invoice           SalesInvoice? @relation("ExchangeInvoiceReturns", fields: [tenant_id, new_invoice_id], references: [tenant_id, id], onDelete: SetNull)
   branch_id             String        @db.Uuid
-  branch                Branch        @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  branch                Branch        @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   shift_id              String?       @db.Uuid
-  shift                 Shift?        @relation(fields: [shift_id], references: [id], onDelete: SetNull)
-  return_invoice_number String        @unique
+  shift                 Shift?        @relation(fields: [tenant_id, shift_id], references: [tenant_id, id], onDelete: SetNull)
+  return_invoice_number String
   reason                String?
   is_partial            Boolean       @default(false)
   created_by            String?       @db.Uuid
@@ -799,8 +816,10 @@ model Return {
   status                ReturnStatus  @default(completed)
   created_at            DateTime      @default(now())
   items                 ReturnItem[]
-  tenant_id             String?       @db.Uuid
+  tenant_id             String        @db.Uuid
 
+  @@unique([tenant_id, return_invoice_number])
+  @@unique([tenant_id, id])
   @@index([original_invoice_id, created_at])
   @@index([shift_id, created_at])
   @@index([tenant_id])
@@ -814,16 +833,16 @@ enum ReturnStatus {
 model ReturnItem {
   id                    String           @id @default(uuid()) @db.Uuid
   return_id             String           @db.Uuid
-  return_record         Return           @relation(fields: [return_id], references: [id], onDelete: Cascade)
+  return_record         Return           @relation(fields: [tenant_id, return_id], references: [tenant_id, id], onDelete: Cascade)
   sales_invoice_item_id String           @db.Uuid
-  sales_invoice_item    SalesInvoiceItem @relation(fields: [sales_invoice_item_id], references: [id], onDelete: Restrict)
+  sales_invoice_item    SalesInvoiceItem @relation(fields: [tenant_id, sales_invoice_item_id], references: [tenant_id, id], onDelete: Restrict)
   variant_id            String           @db.Uuid
-  variant               ProductVariant   @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+  variant               ProductVariant   @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   qty                   Int
   unit_price            Decimal          @db.Decimal(12, 2)
   unit_cost             Decimal          @db.Decimal(12, 2)
   unit_tax              Decimal          @db.Decimal(12, 2)
-  tenant_id             String?          @db.Uuid
+  tenant_id             String           @db.Uuid
 
   @@index([sales_invoice_item_id])
   @@index([tenant_id])
@@ -837,9 +856,9 @@ enum PurchaseInvoiceStatus {
 model PurchaseInvoice {
   id                           String                  @id @default(uuid()) @db.Uuid
   supplier_id                  String                  @db.Uuid
-  supplier                     Supplier                @relation(fields: [supplier_id], references: [id], onDelete: Restrict)
+  supplier                     Supplier                @relation(fields: [tenant_id, supplier_id], references: [tenant_id, id], onDelete: Restrict)
   branch_id                    String                  @db.Uuid
-  branch                       Branch                  @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  branch                       Branch                  @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   invoice_number               String?
   normalized_invoice_number    String?                 @db.VarChar(100)
   invoice_date                 DateTime?               @db.Date
@@ -865,9 +884,10 @@ model PurchaseInvoice {
   items                        PurchaseInvoiceItem[]
   cost_movements               InventoryCostMovement[]
   supplier_returns             SupplierReturn[]
-  tenant_id                    String?                 @db.Uuid
+  tenant_id                    String                  @db.Uuid
 
   @@unique([supplier_id, normalized_invoice_number], map: "PurchaseInvoice_supplier_normalized_number_key")
+  @@unique([tenant_id, id])
   @@index([branch_id, received_at], map: "PurchaseInvoice_branch_received_at_idx")
   @@index([supplier_id, invoice_date], map: "PurchaseInvoice_supplier_invoice_date_idx")
   @@index([status, received_at], map: "PurchaseInvoice_status_received_at_idx")
@@ -877,9 +897,9 @@ model PurchaseInvoice {
 model PurchaseInvoiceItem {
   id                    String                  @id @default(uuid()) @db.Uuid
   purchase_invoice_id   String                  @db.Uuid
-  purchase_invoice      PurchaseInvoice         @relation(fields: [purchase_invoice_id], references: [id], onDelete: Cascade)
+  purchase_invoice      PurchaseInvoice         @relation(fields: [tenant_id, purchase_invoice_id], references: [tenant_id, id], onDelete: Cascade)
   variant_id            String                  @db.Uuid
-  variant               ProductVariant          @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+  variant               ProductVariant          @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   qty                   Int
   unit_cost             Decimal                 @db.Decimal(18, 6)
   line_subtotal         Decimal?                @db.Decimal(18, 2)
@@ -892,8 +912,9 @@ model PurchaseInvoiceItem {
   cost_after            Decimal?                @db.Decimal(12, 2)
   cost_movements        InventoryCostMovement[]
   supplier_return_items SupplierReturnItem[]
-  tenant_id             String?                 @db.Uuid
+  tenant_id             String                  @db.Uuid
 
+  @@unique([tenant_id, id])
   @@index([purchase_invoice_id])
   @@index([variant_id])
   @@index([tenant_id])
@@ -906,12 +927,12 @@ enum SupplierReturnStatus {
 model SupplierReturn {
   id                      String                  @id @default(uuid()) @db.Uuid
   purchase_invoice_id     String                  @db.Uuid
-  purchase_invoice        PurchaseInvoice         @relation(fields: [purchase_invoice_id], references: [id], onDelete: Cascade)
+  purchase_invoice        PurchaseInvoice         @relation(fields: [tenant_id, purchase_invoice_id], references: [tenant_id, id], onDelete: Cascade)
   supplier_id             String                  @db.Uuid
-  supplier                Supplier                @relation(fields: [supplier_id], references: [id], onDelete: Restrict)
+  supplier                Supplier                @relation(fields: [tenant_id, supplier_id], references: [tenant_id, id], onDelete: Restrict)
   branch_id               String                  @db.Uuid
-  branch                  Branch                  @relation(fields: [branch_id], references: [id], onDelete: Restrict)
-  return_number           String                  @unique @db.VarChar(100)
+  branch                  Branch                  @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  return_number           String                  @db.VarChar(100)
   status                  SupplierReturnStatus    @default(posted)
   idempotency_key         String                  @unique @db.VarChar(191)
   command_fingerprint     String                  @db.VarChar(64)
@@ -925,8 +946,10 @@ model SupplierReturn {
   created_at              DateTime                @default(now())
   items                   SupplierReturnItem[]
   cost_movements          InventoryCostMovement[]
-  tenant_id               String?                 @db.Uuid
+  tenant_id               String                  @db.Uuid
 
+  @@unique([tenant_id, return_number])
+  @@unique([tenant_id, id])
   @@index([purchase_invoice_id, occurred_at])
   @@index([supplier_id, occurred_at])
   @@index([branch_id, occurred_at])
@@ -936,11 +959,11 @@ model SupplierReturn {
 model SupplierReturnItem {
   id                       String                  @id @default(uuid()) @db.Uuid
   supplier_return_id       String                  @db.Uuid
-  supplier_return          SupplierReturn          @relation(fields: [supplier_return_id], references: [id], onDelete: Cascade)
+  supplier_return          SupplierReturn          @relation(fields: [tenant_id, supplier_return_id], references: [tenant_id, id], onDelete: Cascade)
   purchase_invoice_item_id String                  @db.Uuid
-  purchase_invoice_item    PurchaseInvoiceItem     @relation(fields: [purchase_invoice_item_id], references: [id], onDelete: Cascade)
+  purchase_invoice_item    PurchaseInvoiceItem     @relation(fields: [tenant_id, purchase_invoice_item_id], references: [tenant_id, id], onDelete: Cascade)
   variant_id               String                  @db.Uuid
-  variant                  ProductVariant          @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+  variant                  ProductVariant          @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   qty                      Int
   credit_unit_cost         Decimal                 @db.Decimal(18, 6)
   credit_total             Decimal                 @db.Decimal(18, 2)
@@ -948,8 +971,9 @@ model SupplierReturnItem {
   inventory_value_removed  Decimal                 @db.Decimal(18, 2)
   purchase_price_variance  Decimal                 @db.Decimal(18, 2)
   cost_movements           InventoryCostMovement[]
-  tenant_id                String?                 @db.Uuid
+  tenant_id                String                  @db.Uuid
 
+  @@unique([tenant_id, id])
   @@index([supplier_return_id])
   @@index([purchase_invoice_item_id])
   @@index([variant_id])
@@ -959,11 +983,11 @@ model SupplierReturnItem {
 model Transfer {
   id                  String                    @id @default(uuid()) @db.Uuid
   from_branch_id      String                    @db.Uuid
-  from_branch         Branch                    @relation("TransferFromBranch", fields: [from_branch_id], references: [id], onDelete: Restrict)
+  from_branch         Branch                    @relation("TransferFromBranch", fields: [tenant_id, from_branch_id], references: [tenant_id, id], onDelete: Restrict)
   to_branch_id        String                    @db.Uuid
-  to_branch           Branch                    @relation("TransferToBranch", fields: [to_branch_id], references: [id], onDelete: Restrict)
+  to_branch           Branch                    @relation("TransferToBranch", fields: [tenant_id, to_branch_id], references: [tenant_id, id], onDelete: Restrict)
   status              TransferStatus            @default(pending)
-  transfer_number     String                    @unique
+  transfer_number     String
   idempotency_key     String?                   @db.VarChar(191)
   command_fingerprint String?                   @db.VarChar(64)
   created_by          String?                   @db.Uuid
@@ -983,8 +1007,10 @@ model Transfer {
   items               TransferItem[]
   commands            TransferCommand[]
   transit_movements   TransferTransitMovement[]
-  tenant_id           String?                   @db.Uuid
+  tenant_id           String                    @db.Uuid
 
+  @@unique([tenant_id, transfer_number])
+  @@unique([tenant_id, id])
   @@index([from_branch_id, created_at])
   @@index([to_branch_id, created_at])
   @@index([status, updated_at], map: "Transfer_status_updated_at_idx")
@@ -1002,18 +1028,19 @@ enum TransferStatus {
 model TransferItem {
   id                String                    @id @default(uuid()) @db.Uuid
   transfer_id       String                    @db.Uuid
-  transfer          Transfer                  @relation(fields: [transfer_id], references: [id], onDelete: Cascade)
+  transfer          Transfer                  @relation(fields: [tenant_id, transfer_id], references: [tenant_id, id], onDelete: Cascade)
   variant_id        String                    @db.Uuid
-  variant           ProductVariant            @relation(fields: [variant_id], references: [id])
+  variant           ProductVariant            @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   qty               Int
   shipped_qty       Int                       @default(0)
   received_qty      Int                       @default(0)
   damaged_qty       Int                       @default(0)
   missing_qty       Int                       @default(0)
   transit_movements TransferTransitMovement[]
-  tenant_id         String?                   @db.Uuid
+  tenant_id         String                    @db.Uuid
 
   @@unique([transfer_id, variant_id], map: "TransferItem_transfer_id_variant_id_key")
+  @@unique([tenant_id, id])
   @@index([tenant_id])
 }
 
@@ -1026,7 +1053,7 @@ enum TransferCommandType {
 model TransferCommand {
   id                  String              @id @db.Uuid
   transfer_id         String              @db.Uuid
-  transfer            Transfer            @relation(fields: [transfer_id], references: [id], onDelete: Restrict)
+  transfer            Transfer            @relation(fields: [tenant_id, transfer_id], references: [tenant_id, id], onDelete: Restrict)
   command_type        TransferCommandType
   idempotency_key     String              @unique @db.VarChar(191)
   command_fingerprint String              @db.VarChar(64)
@@ -1034,7 +1061,7 @@ model TransferCommand {
   created_by          String?             @db.Uuid
   creator             User?               @relation("TransferCommandCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
   created_at          DateTime            @default(now())
-  tenant_id           String?             @db.Uuid
+  tenant_id           String              @db.Uuid
 
   @@index([transfer_id, created_at])
   @@index([tenant_id])
@@ -1052,11 +1079,11 @@ model TransferTransitMovement {
   id               String                      @id @default(uuid()) @db.Uuid
   sequence         BigInt                      @unique @default(autoincrement())
   transfer_id      String                      @db.Uuid
-  transfer         Transfer                    @relation(fields: [transfer_id], references: [id], onDelete: Restrict)
+  transfer         Transfer                    @relation(fields: [tenant_id, transfer_id], references: [tenant_id, id], onDelete: Restrict)
   transfer_item_id String                      @db.Uuid
-  transfer_item    TransferItem                @relation(fields: [transfer_item_id], references: [id], onDelete: Restrict)
+  transfer_item    TransferItem                @relation(fields: [tenant_id, transfer_item_id], references: [tenant_id, id], onDelete: Restrict)
   variant_id       String                      @db.Uuid
-  variant          ProductVariant              @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+  variant          ProductVariant              @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type    TransferTransitMovementType
   quantity_delta   Int
   in_transit_after Int
@@ -1066,7 +1093,7 @@ model TransferTransitMovement {
   created_by       String?                     @db.Uuid
   creator          User?                       @relation("TransferTransitMovementCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
   metadata         Json?
-  tenant_id        String?                     @db.Uuid
+  tenant_id        String                      @db.Uuid
 
   @@index([transfer_id, sequence], map: "TransferTransitMovement_transfer_sequence_idx")
   @@index([transfer_item_id, sequence], map: "TransferTransitMovement_item_sequence_idx")
@@ -1077,9 +1104,9 @@ model TransferTransitMovement {
 model OfferSuggestion {
   id                String         @id @default(uuid()) @db.Uuid
   variant_id        String         @db.Uuid
-  variant           ProductVariant @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+  variant           ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   branch_id         String         @db.Uuid
-  branch            Branch         @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  branch            Branch         @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   days_unsold       Int
   current_price     Decimal        @db.Decimal(12, 2)
   suggested_price   Decimal        @db.Decimal(12, 2)
@@ -1088,7 +1115,7 @@ model OfferSuggestion {
   reviewed_by       String?        @db.Uuid
   reviewer          User?          @relation("OfferReviewedBy", fields: [reviewed_by], references: [id], onDelete: SetNull)
   created_at        DateTime       @default(now())
-  tenant_id         String?        @db.Uuid
+  tenant_id         String         @db.Uuid
 
   @@index([branch_id, status, created_at])
   @@index([tenant_id])
@@ -1102,7 +1129,7 @@ model AuditLog {
   entity_id  String?  @db.Uuid
   meta       Json?
   created_at DateTime @default(now())
-  tenant_id  String?  @db.Uuid
+  tenant_id  String   @db.Uuid
 
   @@index([tenant_id])
 }
@@ -1110,7 +1137,7 @@ model AuditLog {
 model Shift {
   id            String         @id @default(uuid()) @db.Uuid
   branch_id     String         @db.Uuid
-  branch        Branch         @relation(fields: [branch_id], references: [id])
+  branch        Branch         @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   opened_by     String         @db.Uuid
   opener        User           @relation("ShiftOpenedBy", fields: [opened_by], references: [id], onDelete: Restrict)
   closed_by     String?        @db.Uuid
@@ -1125,8 +1152,9 @@ model Shift {
   notes         String?
   sales         SalesInvoice[]
   returns       Return[]
-  tenant_id     String?        @db.Uuid
+  tenant_id     String         @db.Uuid
 
+  @@unique([tenant_id, id])
   @@index([branch_id, opened_at])
   @@index([tenant_id])
 }

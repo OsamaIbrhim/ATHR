@@ -704,8 +704,10 @@ async function mutationIntegrityLoad(adminToken) {
       await prisma.$transaction(async (tx) => {
         const coverageQuantity = 2
         const coverageKey = `hard-smoke-deficit-coverage:${deficitSyncId}`
+        const coverageBranch = await tx.branch.findUniqueOrThrow({ where: { id: branchId } })
         const coverageProduct = await tx.product.create({
           data: {
+            tenant_id: coverageBranch.tenant_id,
             name_en: `Negative coverage probe ${deficitSyncId}`,
             name_ar: 'اختبار تغطية المخزون السالب',
             has_variants: false,
@@ -713,6 +715,7 @@ async function mutationIntegrityLoad(adminToken) {
         })
         const coverageVariant = await tx.productVariant.create({
           data: {
+            tenant_id: coverageBranch.tenant_id,
             product_id: coverageProduct.id,
             sku: `NEGATIVE-COVERAGE-${deficitSyncId}`,
             cost_price: 10,
@@ -720,6 +723,7 @@ async function mutationIntegrityLoad(adminToken) {
         })
         await tx.inventoryStock.create({
           data: {
+            tenant_id: coverageBranch.tenant_id,
             branch_id: branchId,
             variant_id: coverageVariant.id,
             qty_on_hand: -1,

@@ -49,7 +49,7 @@ export class SuppliersRepository {
     });
   }
 
-  async save(context: TenantScope, data: Prisma.SupplierCreateInput): Promise<Supplier> {
+  async save(context: TenantScope, data: Omit<Prisma.SupplierCreateInput, 'tenant_id'>): Promise<Supplier> {
     return this.prisma.supplier.create({ data: { ...data, tenant_id: context.tenantId } });
   }
 

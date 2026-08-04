@@ -33,7 +33,7 @@ export class BranchesRepository {
     });
   }
 
-  async save(context: TenantScope, data: Prisma.BranchCreateInput): Promise<Branch> {
+  async save(context: TenantScope, data: Omit<Prisma.BranchCreateInput, 'tenant_id'>): Promise<Branch> {
     return this.prisma.branch.create({ data: { ...data, tenant_id: context.tenantId } });
   }
 
