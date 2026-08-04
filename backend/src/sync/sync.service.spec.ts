@@ -1,4 +1,8 @@
 import { SyncService } from './sync.service';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: pull() takes the resolved TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 describe('SyncService incremental synchronization', () => {
   const variant = {
@@ -49,7 +53,7 @@ describe('SyncService incremental synchronization', () => {
     const result = await new SyncService(
       prisma as any,
       pricing as any,
-    ).pull('branch-1');
+    ).pull(ctx, 'branch-1');
 
     expect(result).toMatchObject({
       mode: 'snapshot',
@@ -86,7 +90,7 @@ describe('SyncService incremental synchronization', () => {
     const pulling = new SyncService(
       prisma as any,
       pricing as any,
-    ).pull('branch-1');
+    ).pull(ctx, 'branch-1');
 
     await Promise.resolve();
     expect(prisma.productVariant.findMany).not.toHaveBeenCalled();
@@ -133,7 +137,7 @@ describe('SyncService incremental synchronization', () => {
     const result = await new SyncService(
       prisma as any,
       pricing as any,
-    ).pull('branch-1', '42');
+    ).pull(ctx, 'branch-1', '42');
 
     expect(result).toMatchObject({
       mode: 'delta',
@@ -158,7 +162,7 @@ describe('SyncService incremental synchronization', () => {
     const result = await new SyncService(
       prisma as any,
       {} as any,
-    ).pull('branch-1', '43');
+    ).pull(ctx, 'branch-1', '43');
 
     expect(result).toMatchObject({
       mode: 'delta',

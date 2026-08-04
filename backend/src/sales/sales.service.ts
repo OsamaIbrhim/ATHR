@@ -9,6 +9,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { deviceTenantContext } from '../identity/tenant-context.decorator';
 import { PosTerminal, Prisma } from '@prisma/client';
 import { PricingService } from '../pricing/pricing.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
@@ -265,11 +266,18 @@ export class SalesService {
 
   async createSale(
     dto: CreateSaleDto,
-    terminal: Pick<PosTerminal, 'id' | 'branch_id'>,
+    terminal: Pick<PosTerminal, 'id' | 'branch_id' | 'tenant_id'>,
   ) {
     if (!terminal || terminal.branch_id !== dto.branch_id) {
       throw new ForbiddenException('The terminal is not assigned to the sale branch');
     }
+
+    // WP-007 Phase A: this route is device-authenticated (@Public + PosProtocolGuard),
+    // so there is no session for TenantContextGuard to work from. The tenant
+    // comes from the enrolled terminal's own tenant_id, backfilled for every
+    // existing terminal by WP-005 Phase B, and fails closed if absent. Reading
+    // that existing column is not an enrollment change (Phase C, §A.4).
+    const context = deviceTenantContext(terminal);
 
     const receivedAt = new Date();
     const occurredAt = new Date(dto.occurred_at);
@@ -380,7 +388,11 @@ export class SalesService {
 
       const variantIds = normalized.lines.map((item) => item.variant_id);
       const variants = await tx.productVariant.findMany({
-        where: { id: { in: variantIds } },
+        where: {
+          id: { in: variantIds },
+          tenant_id: context.tenantId,
+          product: { tenant_id: context.tenantId },
+        },
         include: { product: true },
       });
       if (variants.length !== variantIds.length) {
@@ -391,7 +403,7 @@ export class SalesService {
       const variantsById = new Map<string, any>(
         variants.map((variant: any) => [variant.id, variant]),
       );
-      const currentQuotes = await this.pricing.calculateMany(variants, tx);
+      const currentQuotes = await this.pricing.calculateMany(context, variants, tx);
 
       const saleItems = normalized.lines.map((line) => {
         const variant = variantsById.get(line.variant_id)!;

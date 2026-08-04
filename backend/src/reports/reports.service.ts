@@ -9,6 +9,7 @@ import {
   sumMoney,
 } from '../common/money';
 import { businessDateRange } from '../common/business-time';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class ReportsService {
@@ -18,8 +19,9 @@ export class ReportsService {
     return businessDateRange(from, to);
   }
 
-  async sales(from: string, to: string, branch_id?: string) {
+  async sales(context: TenantContext, from: string, to: string, branch_id?: string) {
     const where: any = {
+      tenant_id: context.tenantId,
       status: 'completed',
       occurred_at: this.dateRange(from, to),
     };
@@ -29,6 +31,7 @@ export class ReportsService {
       include: { items: true },
     });
     const returnWhere: any = {
+      tenant_id: context.tenantId,
       status: 'completed',
       created_at: this.dateRange(from, to),
     };
@@ -87,10 +90,12 @@ export class ReportsService {
     };
   }
 
-  async bestSellers(branch_id?: string, limit = 20) {
+  async bestSellers(context: TenantContext, branch_id?: string, limit = 20) {
     const items = await this.prisma.salesInvoiceItem.findMany({
       where: {
+        tenant_id: context.tenantId,
         invoice: {
+          tenant_id: context.tenantId,
           status: 'completed',
           ...(branch_id ? { branch_id } : {}),
         },
@@ -99,7 +104,9 @@ export class ReportsService {
     });
     const returnedItems = await this.prisma.returnItem.findMany({
       where: {
+        tenant_id: context.tenantId,
         return_record: {
+          tenant_id: context.tenantId,
           status: 'completed',
           ...(branch_id ? { branch_id } : {}),
         },
@@ -155,9 +162,10 @@ export class ReportsService {
       .slice(0, limit);
   }
 
-  async profitByItem(from: string, to: string, branch_id?: string) {
+  async profitByItem(context: TenantContext, from: string, to: string, branch_id?: string) {
     const invoices = await this.prisma.salesInvoice.findMany({
       where: {
+        tenant_id: context.tenantId,
         status: 'completed',
         occurred_at: this.dateRange(from, to),
         ...(branch_id ? { branch_id } : {}),
@@ -168,7 +176,9 @@ export class ReportsService {
     });
     const returnedItems = await this.prisma.returnItem.findMany({
       where: {
+        tenant_id: context.tenantId,
         return_record: {
+          tenant_id: context.tenantId,
           status: 'completed',
           created_at: this.dateRange(from, to),
           ...(branch_id ? { branch_id } : {}),
@@ -249,11 +259,13 @@ export class ReportsService {
       }));
   }
 
-  async inventoryValuation(branch_id?: string) {
+  async inventoryValuation(context: TenantContext, branch_id?: string) {
     const stock = await this.prisma.inventoryStock.findMany({
-      where: branch_id
-        ? { branch_id, qty_on_hand: { gt: 0 } }
-        : { qty_on_hand: { gt: 0 } },
+      where: {
+        tenant_id: context.tenantId,
+        qty_on_hand: { gt: 0 },
+        ...(branch_id ? { branch_id } : {}),
+      },
       include: {
         variant: { include: { product: true } },
         branch: true,

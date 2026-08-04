@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class SyncService {
@@ -15,8 +16,8 @@ export class SyncService {
     return new Date(now + ttl).toISOString();
   }
 
-  async pull(branchId: string, cursor?: string) {
-    if (!cursor) return this.snapshot(branchId);
+  async pull(context: TenantContext, branchId: string, cursor?: string) {
+    if (!cursor) return this.snapshot(context, branchId);
     let parsedCursor: bigint;
     try {
       parsedCursor = BigInt(cursor);
@@ -27,6 +28,7 @@ export class SyncService {
 
     const changes = await this.prisma.syncChange.findMany({
       where: {
+        tenant_id: context.tenantId,
         sequence: { gt: parsedCursor },
         OR: [{ branch_id: null }, { branch_id: branchId }],
       },
@@ -35,7 +37,7 @@ export class SyncService {
     });
     const issuedAt = new Date().toISOString();
     const catalogValidUntil = this.catalogValidUntil();
-    const sellers = await this.sellers(branchId);
+    const sellers = await this.sellers(context, branchId);
     if (!changes.length) {
       return {
         mode: 'delta', cursor, server_time: issuedAt,
@@ -56,7 +58,8 @@ export class SyncService {
     const [variants, stock, rules] = await Promise.all([
       this.prisma.productVariant.findMany({
         where: {
-          product: { is_active: true },
+          tenant_id: context.tenantId,
+          product: { is_active: true, tenant_id: context.tenantId },
           is_active: true,
           ...(resetCatalog ? {} : { id: { in: [...requestedIds] } }),
         },
@@ -64,11 +67,12 @@ export class SyncService {
       }),
       this.prisma.inventoryStock.findMany({
         where: {
+          tenant_id: context.tenantId,
           branch_id: branchId,
           ...(resetCatalog ? {} : { variant_id: { in: [...requestedIds] } }),
         },
       }),
-      this.pricing.loadActiveRules(),
+      this.pricing.loadActiveRules(context),
     ]);
     const presentIds = new Set(variants.map((variant) => variant.id));
     const deletedVariantIds = resetCatalog ? [] : [...requestedIds].filter((id) => !presentIds.has(id));
@@ -89,16 +93,25 @@ export class SyncService {
     };
   }
 
-  private async snapshot(branchId: string) {
-    const cursor = await this.prisma.syncChange.aggregate({ _max: { sequence: true } });
+  private async snapshot(context: TenantContext, branchId: string) {
+    const cursor = await this.prisma.syncChange.aggregate({
+      where: { tenant_id: context.tenantId },
+      _max: { sequence: true },
+    });
     const [variants, stock, rules, sellers] = await Promise.all([
       this.prisma.productVariant.findMany({
-        where: { is_active: true, product: { is_active: true } },
+        where: {
+          tenant_id: context.tenantId,
+          is_active: true,
+          product: { is_active: true, tenant_id: context.tenantId },
+        },
         include: { product: true },
       }),
-      this.prisma.inventoryStock.findMany({ where: { branch_id: branchId } }),
-      this.pricing.loadActiveRules(),
-      this.sellers(branchId),
+      this.prisma.inventoryStock.findMany({
+        where: { tenant_id: context.tenantId, branch_id: branchId },
+      }),
+      this.pricing.loadActiveRules(context),
+      this.sellers(context, branchId),
     ]);
     const issuedAt = new Date().toISOString();
     const quotes = this.pricing.quoteMany(variants, rules);
@@ -116,11 +129,13 @@ export class SyncService {
     };
   }
 
-  private sellers(branchId: string) {
+  private sellers(context: TenantContext, branchId: string) {
     const users = (this.prisma as any).user;
     if (!users) return Promise.resolve([]);
     return users.findMany({
       where: {
+        // User has no tenant_id column (ADR-0003); scope through Membership.
+        memberships: { some: { tenantId: context.tenantId } },
         branch_id: branchId,
         role: 'seller',
         is_active: true,

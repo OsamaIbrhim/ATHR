@@ -6,10 +6,16 @@ import {
 } from '@nestjs/common';
 import { SalesService } from './sales.service';
 
+
 const branchId = '11111111-1111-4111-8111-111111111111';
+// WP-007 Phase A: the device-authenticated POS sale path derives its
+// TenantContext from the enrolled terminal's own tenant_id, so terminal
+// doubles carry one.
+const tenantId = '44444444-4444-4444-8444-444444444444';
 const terminal = {
   id: '22222222-2222-4222-8222-222222222222',
   branch_id: branchId,
+  tenant_id: tenantId,
 };
 const shiftId = '33333333-3333-4333-8333-333333333333';
 const sessionId = '44444444-4444-4444-8444-444444444444';

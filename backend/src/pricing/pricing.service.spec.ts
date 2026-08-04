@@ -1,9 +1,14 @@
 import { PricingService } from './pricing.service';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: pricing reads are tenant-scoped, so calculate/calculateMany
+// take a TenantScope first.
+const ctx = contextFor(TENANT_A);
 
 describe('PricingService', () => {
   it('uses category rules and keeps net plus tax equal to the quoted total', async () => {
     const prisma = {
-      productVariant: { findUnique: jest.fn().mockResolvedValue({
+      productVariant: { findFirst: jest.fn().mockResolvedValue({
         id: 'variant-1', product_id: 'product-1', cost_price: 85,
         product: { category_id: 'category-1', brand: 'Bold' },
       }) },
@@ -12,7 +17,7 @@ describe('PricingService', () => {
         profit_percent: 33, tax_percent: 14,
       }]) },
     };
-    const quote = await new PricingService(prisma as any).calculate('variant-1');
+    const quote = await new PricingService(prisma as any).calculate(ctx, 'variant-1');
     expect(quote.overhead_percent).toBe(17);
     expect(quote.selling_price).toBe(Math.round((quote.net_price + quote.tax_amount) * 100) / 100);
     expect(quote.selling_price.toString().split('.')[1]?.length || 0).toBeLessThanOrEqual(2);
@@ -32,7 +37,7 @@ describe('PricingService', () => {
       product: { category_id: null, brand: null },
     }));
 
-    const quotes = await new PricingService(prisma as any).calculateMany(variants);
+    const quotes = await new PricingService(prisma as any).calculateMany(ctx, variants);
 
     expect(prisma.pricingRule.findMany).toHaveBeenCalledTimes(1);
     expect(quotes.size).toBe(500);
