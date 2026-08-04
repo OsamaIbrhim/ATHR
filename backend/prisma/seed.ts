@@ -185,9 +185,9 @@ async function main() {
   }
 
   // Pricing rules
-  await prisma.pricingRule.create({ data: { name: 'Global Default EG', scope_type: 'global', overhead_percent: 20, profit_percent: 35, tax_percent: 14, formula: 'compound', is_protected: true, priority: 999 }});
-  await prisma.pricingRule.create({ data: { name: 'Jeans – 45% Profit', scope_type: 'category', scope_id: cat_j.id, overhead_percent: 20, profit_percent: 45, tax_percent: 14, formula: 'compound', priority: 50 }});
-  await prisma.pricingRule.create({ data: { name: 'T-Shirts – 30% Profit', scope_type: 'category', scope_id: cat_t.id, overhead_percent: 20, profit_percent: 30, tax_percent: 14, formula: 'compound', priority: 50 }});
+  await prisma.pricingRule.create({ data: { tenant_id, name: 'Global Default EG', scope_type: 'global', overhead_percent: 20, profit_percent: 35, tax_percent: 14, formula: 'compound', is_protected: true, priority: 999 }});
+  await prisma.pricingRule.create({ data: { tenant_id, name: 'Jeans – 45% Profit', scope_type: 'category', scope_id: cat_j.id, overhead_percent: 20, profit_percent: 45, tax_percent: 14, formula: 'compound', priority: 50 }});
+  await prisma.pricingRule.create({ data: { tenant_id, name: 'T-Shirts – 30% Profit', scope_type: 'category', scope_id: cat_t.id, overhead_percent: 20, profit_percent: 30, tax_percent: 14, formula: 'compound', priority: 50 }});
 
   // Customers
   const custData = [
