@@ -1,67 +1,44 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomerDto, UpdateCustomerDto } from './dto/customer.dto';
 import { decimal } from '../common/money';
+import { CustomersRepository } from './customers.repository';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class CustomersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly repository: CustomersRepository) {}
 
-  findAll(q?: string, take = 50) {
-    return this.prisma.customer.findMany({
-      where: q
-        ? {
-            OR: [
-              { phone: { contains: q } },
-              { name: { contains: q, mode: 'insensitive' } },
-              { email: { contains: q, mode: 'insensitive' } },
-            ],
-          }
-        : {},
-      take,
-      orderBy: { total_spent: 'desc' },
-    });
+  findAll(context: TenantContext, q?: string, take = 50) {
+    return this.repository.list(context, { search: q, take });
   }
 
-  findOne(id: string) {
-    return this.prisma.customer.findUnique({
-      where: { id },
-      include: {
-        sales: {
-          take: 20,
-          orderBy: [{ occurred_at: 'desc' }, { id: 'desc' }],
-        },
-      },
-    });
+  findOne(context: TenantContext, id: string) {
+    return this.repository.findByIdWithRecentSales(context, id);
   }
 
-  searchByPhone(phone: string) {
-    return this.prisma.customer.findUnique({ where: { phone } });
+  searchByPhone(context: TenantContext, phone: string) {
+    return this.repository.findByPhone(context, phone);
   }
 
-  create(data: CreateCustomerDto) {
-    return this.prisma.customer.create({ data });
+  create(context: TenantContext, data: CreateCustomerDto) {
+    return this.repository.save(context, data);
   }
 
-  update(id: string, data: UpdateCustomerDto) {
-    return this.prisma.customer.update({ where: { id }, data });
+  update(context: TenantContext, id: string, data: UpdateCustomerDto) {
+    return this.repository.update(context, id, data);
   }
 
   setVip(
+    context: TenantContext,
     id: string,
     is_vip: boolean,
     vip_price_tier = 'cost_plus_overhead',
   ) {
-    return this.prisma.customer.update({
-      where: { id },
-      data: { is_vip, vip_price_tier },
-    });
+    return this.repository.update(context, id, { is_vip, vip_price_tier });
   }
 
-  async loyaltyStatus(phone: string) {
-    const customer = await this.prisma.customer.findUnique({
-      where: { phone },
-    });
+  async loyaltyStatus(context: TenantContext, phone: string) {
+    const customer = await this.repository.findByPhone(context, phone);
     if (!customer) return { eligible: false };
     const eligible =
       customer.total_invoices >= 5 || decimal(customer.total_spent).gte(2000);
@@ -73,7 +50,7 @@ export class CustomersService {
     };
   }
 
-  remove(id: string) {
-    return this.prisma.customer.delete({ where: { id } });
+  remove(context: TenantContext, id: string) {
+    return this.repository.remove(context, id);
   }
 }

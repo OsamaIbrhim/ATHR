@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import type { TenantScope } from '../identity/tenant-context.type';
 
 type PriceableVariant = {
   id: string;
@@ -42,14 +43,22 @@ export type PriceQuote = {
 export class PricingService {
   constructor(private prisma: PrismaService) {}
 
-  async calculate(variantId: string, transaction?: Prisma.TransactionClient) {
+  // WP-007 Phase A §A.3.2: both the variant lookup and the pricing-rule query
+  // are tenant-scoped. Pricing rules are especially important to scope —
+  // another tenant's `global`-scope rule would otherwise win the priority sort
+  // and silently reprice this tenant's entire catalog.
+  async calculate(
+    context: TenantScope,
+    variantId: string,
+    transaction?: Prisma.TransactionClient,
+  ) {
     const db = transaction || this.prisma;
     const [variant, rules] = await Promise.all([
-      db.productVariant.findUnique({
-        where: { id: variantId },
+      db.productVariant.findFirst({
+        where: { id: variantId, tenant_id: context.tenantId },
         include: { product: true },
       }),
-      db.pricingRule.findMany({ where: { is_active: true }, orderBy: { priority: 'asc' } }),
+      this.loadActiveRules(context, transaction),
     ]);
     if (!variant) throw new NotFoundException('Variant not found');
     return this.quote(variant, rules);
@@ -57,17 +66,21 @@ export class PricingService {
 
   /** Calculate many prices after one rule query, avoiding the old 2N query pattern. */
   async calculateMany(
+    context: TenantScope,
     variants: PriceableVariant[],
     transaction?: Prisma.TransactionClient,
   ): Promise<Map<string, PriceQuote>> {
-    const rules = await this.loadActiveRules(transaction);
+    const rules = await this.loadActiveRules(context, transaction);
     return this.quoteMany(variants, rules);
   }
 
-  async loadActiveRules(transaction?: Prisma.TransactionClient): Promise<PriceRule[]> {
+  async loadActiveRules(
+    context: TenantScope,
+    transaction?: Prisma.TransactionClient,
+  ): Promise<PriceRule[]> {
     const db = transaction || this.prisma;
     return db.pricingRule.findMany({
-      where: { is_active: true },
+      where: { is_active: true, tenant_id: context.tenantId },
       orderBy: { priority: 'asc' },
     });
   }

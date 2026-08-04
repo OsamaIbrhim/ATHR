@@ -1,28 +1,47 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
 import { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
+import { SuppliersRepository } from './suppliers.repository';
+import type { TenantContext } from '../identity/tenant-context.type';
+
 @Injectable()
 export class SuppliersService {
-  constructor(private prisma: PrismaService) {}
-  findAll(q?: string) {
-    return this.prisma.supplier.findMany({
-      where: q ? {
-        OR: [
-          { name: { contains: q, mode: 'insensitive' } },
-          { company_name: { contains: q, mode: 'insensitive' } },
-          { alias_names: { has: q } }
-        ]
-      } : {},
-      orderBy: { name: 'asc' }
+  constructor(private readonly repository: SuppliersRepository) {}
+
+  findAll(context: TenantContext, q?: string) {
+    return this.repository.list(context, { search: q });
+  }
+
+  findOne(context: TenantContext, id: string) {
+    return this.repository.findByIdWithRecentPurchases(context, id);
+  }
+
+  create(context: TenantContext, data: CreateSupplierDto) {
+    return this.repository.save(context, {
+      name: data.name,
+      company_name: data.company_name,
+      phone: data.phone,
+      alias_names: data.alias_names || [],
     });
   }
-  findOne(id: string) { return this.prisma.supplier.findUnique({ where: { id }, include: { purchases: { take: 10, orderBy: { created_at: 'desc' } } } }); }
-  create(data: CreateSupplierDto) { return this.prisma.supplier.create({ data: { name: data.name, company_name: data.company_name, phone: data.phone, alias_names: data.alias_names || [] }}); }
-  update(id: string, data: UpdateSupplierDto) { return this.prisma.supplier.update({ where: { id }, data }); }
-  remove(id: string) { return this.prisma.supplier.delete({ where: { id } }); }
+
+  update(context: TenantContext, id: string, data: UpdateSupplierDto) {
+    return this.repository.update(context, id, data);
+  }
+
+  remove(context: TenantContext, id: string) {
+    return this.repository.remove(context, id);
+  }
+
   // alias resolver for OCR – "Mohamed Trading Co." -> Supplier Mohamed
-  async resolveAlias(name: string) {
-    const all = await this.prisma.supplier.findMany()
-    return all.find(s => s.name === name || s.company_name === name || s.alias_names.includes(name)) || null
+  async resolveAlias(context: TenantContext, name: string) {
+    const all = await this.repository.list(context);
+    return (
+      all.find(
+        (supplier) =>
+          supplier.name === name ||
+          supplier.company_name === name ||
+          supplier.alias_names.includes(name),
+      ) || null
+    );
   }
 }
