@@ -4,6 +4,10 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { TransfersService } from './transfers.service';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: every transfer entry point takes the resolved TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 const SOURCE_BRANCH_ID = '11111111-1111-4111-8111-111111111111';
 const DESTINATION_BRANCH_ID = '22222222-2222-4222-8222-222222222222';
@@ -126,6 +130,7 @@ describe('TransfersService', () => {
 
     await expect(
       service.create(
+      ctx,
         {
           from_branch_id: OTHER_BRANCH_ID,
           to_branch_id: DESTINATION_BRANCH_ID,
@@ -143,6 +148,7 @@ describe('TransfersService', () => {
     mockCommandFlow(service);
 
     await service.ship(
+      ctx,
       TRANSFER_ID,
       { command_id: SHIP_COMMAND_ID },
       sourceActor,
@@ -151,6 +157,7 @@ describe('TransfersService', () => {
     expect(tx.$executeRaw).toHaveBeenCalledTimes(3);
     expect((service as any).recordCommand).toHaveBeenCalledWith(
       tx,
+      ctx,
       TRANSFER_ID,
       'ship',
       SHIP_COMMAND_ID,
@@ -160,6 +167,7 @@ describe('TransfersService', () => {
     );
     expect((service as any).audit).toHaveBeenCalledWith(
       tx,
+      ctx,
       SOURCE_ACTOR_ID,
       'transfer.shipped',
       TRANSFER_ID,
@@ -174,6 +182,7 @@ describe('TransfersService', () => {
 
     await expect(
       service.ship(
+      ctx,
         TRANSFER_ID,
         { command_id: SHIP_COMMAND_ID },
         sourceActor,
@@ -189,6 +198,7 @@ describe('TransfersService', () => {
 
     await expect(
       service.ship(
+      ctx,
         TRANSFER_ID,
         { command_id: SHIP_COMMAND_ID },
         sourceActor,
@@ -206,6 +216,7 @@ describe('TransfersService', () => {
     tx.$queryRaw.mockResolvedValueOnce([{ quantity: 0n }]);
 
     await service.receive(
+      ctx,
       TRANSFER_ID,
       {
         command_id: RECEIVE_COMMAND_ID,
@@ -228,6 +239,10 @@ describe('TransfersService', () => {
       },
       update: { qty_on_hand: { increment: 3 } },
       create: {
+        // WP-007 Phase A: a stock row created by a receipt carries the
+        // tenant explicitly — Prisma's upsert-create inherits nothing, and
+        // there is no composite foreign key to enforce it until Phase B.
+        tenant_id: ctx.tenantId,
         branch_id: DESTINATION_BRANCH_ID,
         variant_id: VARIANT_ID,
         qty_on_hand: 3,
@@ -235,6 +250,7 @@ describe('TransfersService', () => {
     });
     expect((service as any).recordCommand).toHaveBeenCalledWith(
       tx,
+      ctx,
       TRANSFER_ID,
       'receive',
       RECEIVE_COMMAND_ID,
@@ -253,6 +269,7 @@ describe('TransfersService', () => {
     tx.$queryRaw.mockResolvedValueOnce([{ quantity: 2n }]);
 
     await service.receive(
+      ctx,
       TRANSFER_ID,
       {
         command_id: RECEIVE_COMMAND_ID,
@@ -268,6 +285,7 @@ describe('TransfersService', () => {
 
     expect((service as any).recordCommand).toHaveBeenCalledWith(
       tx,
+      ctx,
       TRANSFER_ID,
       'receive',
       RECEIVE_COMMAND_ID,
@@ -285,6 +303,7 @@ describe('TransfersService', () => {
     tx.$queryRaw.mockResolvedValueOnce([{ quantity: 0n }]);
 
     await service.receive(
+      ctx,
       TRANSFER_ID,
       {
         command_id: RECEIVE_COMMAND_ID,
@@ -316,6 +335,7 @@ describe('TransfersService', () => {
 
     await expect(
       service.receive(
+      ctx,
         TRANSFER_ID,
         {
           command_id: RECEIVE_COMMAND_ID,
@@ -341,6 +361,7 @@ describe('TransfersService', () => {
     mockCommandFlow(service);
 
     await service.cancel(
+      ctx,
       TRANSFER_ID,
       {
         command_id: CANCEL_COMMAND_ID,
@@ -352,6 +373,7 @@ describe('TransfersService', () => {
     expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
     expect((service as any).recordCommand).toHaveBeenCalledWith(
       tx,
+      ctx,
       TRANSFER_ID,
       'cancel',
       CANCEL_COMMAND_ID,

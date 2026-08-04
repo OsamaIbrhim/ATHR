@@ -7,6 +7,7 @@ import {
 import { Prisma, Transfer } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import type { TenantContext, TenantScope } from '../identity/tenant-context.type';
 import {
   CancelTransferDto,
   CreateTransferDto,
@@ -47,20 +48,23 @@ type TransferItemState = {
 export class TransfersService {
   constructor(private prisma: PrismaService) {}
 
-  list(branch_id?: string) {
+  list(context: TenantContext, branch_id?: string) {
     return this.prisma.transfer.findMany({
-      where: branch_id
-        ? { OR: [{ from_branch_id: branch_id }, { to_branch_id: branch_id }] }
-        : {},
+      where: {
+        tenant_id: context.tenantId,
+        ...(branch_id
+          ? { OR: [{ from_branch_id: branch_id }, { to_branch_id: branch_id }] }
+          : {}),
+      },
       include: { from_branch: true, to_branch: true, items: true },
       orderBy: { created_at: 'desc' },
       take: 50,
     });
   }
 
-  async get(id: string, actor: AuthenticatedUser) {
-    const transfer = await this.prisma.transfer.findUnique({
-      where: { id },
+  async get(context: TenantContext, id: string, actor: AuthenticatedUser) {
+    const transfer = await this.prisma.transfer.findFirst({
+      where: { id, tenant_id: context.tenantId },
       include: {
         from_branch: true,
         to_branch: true,
@@ -73,6 +77,7 @@ export class TransfersService {
       SELECT "status"::text, "from_branch_id", "to_branch_id", "command_fingerprint"
       FROM "Transfer"
       WHERE "id" = ${id}::uuid
+        AND "tenant_id" = ${context.tenantId}::uuid
     `;
     const items = await this.prisma.$queryRaw<TransferItemState[]>`
       SELECT
@@ -80,6 +85,7 @@ export class TransfersService {
         "damaged_qty", "missing_qty"
       FROM "TransferItem"
       WHERE "transfer_id" = ${id}::uuid
+        AND "tenant_id" = ${context.tenantId}::uuid
       ORDER BY "id"
     `;
     return {
@@ -92,7 +98,7 @@ export class TransfersService {
     };
   }
 
-  async create(dto: CreateTransferDto, actor: AuthenticatedUser) {
+  async create(context: TenantContext, dto: CreateTransferDto, actor: AuthenticatedUser) {
     if (dto.from_branch_id === dto.to_branch_id) {
       throw new BadRequestException(
         'Source and destination branches must be different',
@@ -128,6 +134,7 @@ export class TransfersService {
         SELECT "id", "command_fingerprint"
         FROM "Transfer"
         WHERE "idempotency_key" = ${commandId}
+          AND "tenant_id" = ${context.tenantId}::uuid
         FOR UPDATE
       `;
       if (existing) {
@@ -136,18 +143,25 @@ export class TransfersService {
             'Transfer command id belongs to a different payload',
           );
         }
-        return this.loadTransfer(tx, existing.id);
+        return this.loadTransfer(tx, context, existing.id);
       }
 
       const [branches, variantCount] = await Promise.all([
+        // Both branches must belong to the caller's tenant. Without this a
+        // transfer could be created with another tenant's branch as its
+        // destination, moving stock straight across the boundary.
         tx.branch.count({
           where: {
             id: { in: [dto.from_branch_id, dto.to_branch_id] },
+            tenant_id: context.tenantId,
             is_active: true,
           },
         }),
         tx.productVariant.count({
-          where: { id: { in: items.map((item) => item.variant_id) } },
+          where: {
+            id: { in: items.map((item) => item.variant_id) },
+            tenant_id: context.tenantId,
+          },
         }),
       ]);
       if (branches !== 2) {
@@ -165,36 +179,36 @@ export class TransfersService {
         INSERT INTO "Transfer" (
           "id", "from_branch_id", "to_branch_id", "status",
           "transfer_number", "created_by", "idempotency_key",
-          "command_fingerprint", "created_at", "updated_at"
+          "command_fingerprint", "tenant_id", "created_at", "updated_at"
         ) VALUES (
           ${id}::uuid, ${dto.from_branch_id}::uuid, ${dto.to_branch_id}::uuid,
           'pending'::"TransferStatus", ${transferNumber}, ${actor.sub}::uuid,
-          ${commandId}, ${fingerprint}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          ${commandId}, ${fingerprint}, ${context.tenantId}::uuid,
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
       `;
       for (const item of items) {
         await tx.$executeRaw`
           INSERT INTO "TransferItem" (
             "id", "transfer_id", "variant_id", "qty",
-            "shipped_qty", "received_qty", "damaged_qty", "missing_qty"
+            "shipped_qty", "received_qty", "damaged_qty", "missing_qty",
+            "tenant_id"
           ) VALUES (
             ${randomUUID()}::uuid, ${id}::uuid, ${item.variant_id}::uuid,
-            ${item.qty}, 0, 0, 0, 0
+            ${item.qty}, 0, 0, 0, 0, ${context.tenantId}::uuid
           )
         `;
       }
-      await this.audit(tx, actor.sub, 'transfer.created', id, {
+      await this.audit(tx, context, actor.sub, 'transfer.created', id, {
         command_id: commandId,
         transfer_number: transferNumber,
       });
-      return tx.transfer.findUniqueOrThrow({
-        where: { id },
-        include: { items: true, from_branch: true, to_branch: true },
-      });
+      return this.loadTransfer(tx, context, id);
     });
   }
 
   async ship(
+    context: TenantContext,
     id: string,
     dto: TransferCommandDto,
     actor: AuthenticatedUser,
@@ -203,26 +217,27 @@ export class TransfersService {
     const fingerprint = commandFingerprint({ transfer_id: id, action: 'ship' });
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
-      const transfer = await this.lockTransfer(tx, id);
+      const transfer = await this.lockTransfer(tx, context, id);
       assertBranchAccess(actor, transfer.from_branch_id, [
         'owner',
         'warehouse_manager',
       ]);
       if (
-        await this.replayCommand(tx, id, 'ship', commandId, fingerprint)
+        await this.replayCommand(tx, context, id, 'ship', commandId, fingerprint)
       ) {
-        return this.loadTransfer(tx, id);
+        return this.loadTransfer(tx, context, id);
       }
       if (transfer.status !== 'pending') {
         throw new ConflictException('Only a pending transfer can be shipped');
       }
 
-      const items = await this.lockItems(tx, id);
+      const items = await this.lockItems(tx, context, id);
       for (const item of items) {
         const changed = await tx.$executeRaw`
           UPDATE "InventoryStock"
           SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
           WHERE "branch_id" = ${transfer.from_branch_id}::uuid
+            AND "tenant_id" = ${context.tenantId}::uuid
             AND "variant_id" = ${item.variant_id}::uuid
             AND ("qty_on_hand" - "qty_reserved") >= ${item.qty}
         `;
@@ -247,6 +262,7 @@ export class TransfersService {
       `;
       await this.recordCommand(
         tx,
+        context,
         id,
         'ship',
         commandId,
@@ -254,14 +270,15 @@ export class TransfersService {
         'shipped',
         actor.sub,
       );
-      await this.audit(tx, actor.sub, 'transfer.shipped', id, {
+      await this.audit(tx, context, actor.sub, 'transfer.shipped', id, {
         command_id: commandId,
       });
-      return this.loadTransfer(tx, id);
+      return this.loadTransfer(tx, context, id);
     });
   }
 
   async receive(
+    context: TenantContext,
     id: string,
     dto: ReceiveTransferDto,
     actor: AuthenticatedUser,
@@ -285,15 +302,15 @@ export class TransfersService {
 
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
-      const transfer = await this.lockTransfer(tx, id);
+      const transfer = await this.lockTransfer(tx, context, id);
       assertBranchAccess(actor, transfer.to_branch_id, [
         'owner',
         'warehouse_manager',
       ]);
       if (
-        await this.replayCommand(tx, id, 'receive', commandId, fingerprint)
+        await this.replayCommand(tx, context, id, 'receive', commandId, fingerprint)
       ) {
-        return this.loadTransfer(tx, id);
+        return this.loadTransfer(tx, context, id);
       }
       if (!['shipped', 'partially_received'].includes(transfer.status)) {
         throw new ConflictException(
@@ -301,7 +318,7 @@ export class TransfersService {
         );
       }
 
-      const items = await this.lockItems(tx, id);
+      const items = await this.lockItems(tx, context, id);
       const requested = normalizedItems.length
         ? normalizedItems
         : items.map((item) => ({
@@ -351,6 +368,7 @@ export class TransfersService {
             },
             update: { qty_on_hand: { increment: receipt.received_qty } },
             create: {
+              tenant_id: context.tenantId,
               branch_id: transfer.to_branch_id,
               variant_id: item.variant_id,
               qty_on_hand: receipt.received_qty,
@@ -366,6 +384,7 @@ export class TransfersService {
             },
             update: {},
             create: {
+              tenant_id: context.tenantId,
               branch_id: transfer.to_branch_id,
               variant_id: item.variant_id,
               qty_on_hand: 0,
@@ -402,6 +421,7 @@ export class TransfersService {
       `;
       await this.recordCommand(
         tx,
+        context,
         id,
         'receive',
         commandId,
@@ -409,16 +429,17 @@ export class TransfersService {
         nextStatus,
         actor.sub,
       );
-      await this.audit(tx, actor.sub, 'transfer.received', id, {
+      await this.audit(tx, context, actor.sub, 'transfer.received', id, {
         command_id: commandId,
         status: nextStatus,
         items: requested,
       });
-      return this.loadTransfer(tx, id);
+      return this.loadTransfer(tx, context, id);
     });
   }
 
   async cancel(
+    context: TenantContext,
     id: string,
     dto: CancelTransferDto,
     actor: AuthenticatedUser,
@@ -431,15 +452,15 @@ export class TransfersService {
     });
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
-      const transfer = await this.lockTransfer(tx, id);
+      const transfer = await this.lockTransfer(tx, context, id);
       assertBranchAccess(actor, transfer.from_branch_id, [
         'owner',
         'warehouse_manager',
       ]);
       if (
-        await this.replayCommand(tx, id, 'cancel', commandId, fingerprint)
+        await this.replayCommand(tx, context, id, 'cancel', commandId, fingerprint)
       ) {
-        return this.loadTransfer(tx, id);
+        return this.loadTransfer(tx, context, id);
       }
       if (transfer.status !== 'pending') {
         throw new ConflictException(
@@ -457,6 +478,7 @@ export class TransfersService {
       `;
       await this.recordCommand(
         tx,
+        context,
         id,
         'cancel',
         commandId,
@@ -464,15 +486,15 @@ export class TransfersService {
         'cancelled',
         actor.sub,
       );
-      await this.audit(tx, actor.sub, 'transfer.cancelled', id, {
+      await this.audit(tx, context, actor.sub, 'transfer.cancelled', id, {
         command_id: commandId,
         reason: dto.reason.trim(),
       });
-      return this.loadTransfer(tx, id);
+      return this.loadTransfer(tx, context, id);
     });
   }
 
-  async reconcileInTransit(actor: AuthenticatedUser) {
+  async reconcileInTransit(context: TenantContext, actor: AuthenticatedUser) {
     if (actor.role !== 'owner' && actor.role !== 'warehouse_manager') {
       throw new ConflictException(
         'Only owner or warehouse manager can reconcile in-transit inventory',
@@ -493,12 +515,14 @@ export class TransfersService {
           item."shipped_qty" - item."received_qty" -
             item."damaged_qty" - item."missing_qty" AS expected_in_transit
         FROM "TransferItem" item
+        WHERE item."tenant_id" = ${context.tenantId}::uuid
       ),
       ledger AS (
         SELECT
           movement."transfer_item_id",
           COALESCE(SUM(movement."quantity_delta"), 0)::bigint AS ledger_in_transit
         FROM "TransferTransitMovement" movement
+        WHERE movement."tenant_id" = ${context.tenantId}::uuid
         GROUP BY movement."transfer_item_id"
       )
       SELECT
@@ -561,40 +585,54 @@ export class TransfersService {
     return `TR-${date}-${row.value.toString().padStart(8, '0')}`;
   }
 
-  private async lockTransfer(tx: Prisma.TransactionClient, id: string) {
+  private async lockTransfer(
+    tx: Prisma.TransactionClient,
+    context: TenantScope,
+    id: string,
+  ) {
     const [transfer] = await tx.$queryRaw<TransferStateRow[]>`
       SELECT
         "status"::text, "from_branch_id", "to_branch_id",
         "command_fingerprint"
       FROM "Transfer"
-      WHERE "id" = ${id}::uuid
+      WHERE "id" = ${id}::uuid AND "tenant_id" = ${context.tenantId}::uuid
       FOR UPDATE
     `;
     if (!transfer) throw new NotFoundException('Transfer not found');
     return transfer;
   }
 
-  private lockItems(tx: Prisma.TransactionClient, transferId: string) {
+  private lockItems(
+    tx: Prisma.TransactionClient,
+    context: TenantScope,
+    transferId: string,
+  ) {
     return tx.$queryRaw<TransferItemState[]>`
       SELECT
         "id", "variant_id", "qty", "shipped_qty", "received_qty",
         "damaged_qty", "missing_qty"
       FROM "TransferItem"
       WHERE "transfer_id" = ${transferId}::uuid
+        AND "tenant_id" = ${context.tenantId}::uuid
       ORDER BY "variant_id", "id"
       FOR UPDATE
     `;
   }
 
-  private loadTransfer(tx: Prisma.TransactionClient, id: string) {
-    return tx.transfer.findUniqueOrThrow({
-      where: { id },
+  private loadTransfer(
+    tx: Prisma.TransactionClient,
+    context: TenantScope,
+    id: string,
+  ) {
+    return tx.transfer.findFirstOrThrow({
+      where: { id, tenant_id: context.tenantId },
       include: { items: true, from_branch: true, to_branch: true },
     });
   }
 
   private async replayCommand(
     tx: Prisma.TransactionClient,
+    context: TenantScope,
     transferId: string,
     type: TransferCommandType,
     commandId: string,
@@ -604,6 +642,7 @@ export class TransfersService {
       SELECT "command_fingerprint", "result_status"
       FROM "TransferCommand"
       WHERE "idempotency_key" = ${commandId}
+        AND "tenant_id" = ${context.tenantId}::uuid
       FOR UPDATE
     `;
     if (!existing) return false;
@@ -617,6 +656,7 @@ export class TransfersService {
         SELECT 1
         FROM "TransferCommand"
         WHERE "idempotency_key" = ${commandId}
+          AND "tenant_id" = ${context.tenantId}::uuid
           AND "transfer_id" = ${transferId}::uuid
           AND "command_type" = ${type}::"TransferCommandType"
       ) AS "exists"
@@ -631,6 +671,7 @@ export class TransfersService {
 
   private recordCommand(
     tx: Prisma.TransactionClient,
+    context: TenantScope,
     transferId: string,
     type: TransferCommandType,
     commandId: string,
@@ -641,17 +682,20 @@ export class TransfersService {
     return tx.$executeRaw`
       INSERT INTO "TransferCommand" (
         "id", "transfer_id", "command_type", "idempotency_key",
-        "command_fingerprint", "result_status", "created_by", "created_at"
+        "command_fingerprint", "result_status", "created_by", "tenant_id",
+        "created_at"
       ) VALUES (
         ${randomUUID()}::uuid, ${transferId}::uuid,
         ${type}::"TransferCommandType", ${commandId}, ${fingerprint},
-        ${resultStatus}, ${actorId}::uuid, CURRENT_TIMESTAMP
+        ${resultStatus}, ${actorId}::uuid, ${context.tenantId}::uuid,
+        CURRENT_TIMESTAMP
       )
     `;
   }
 
   private audit(
     tx: Prisma.TransactionClient,
+    context: TenantScope,
     userId: string,
     action: string,
     entityId: string,
@@ -659,6 +703,7 @@ export class TransfersService {
   ) {
     return tx.auditLog.create({
       data: {
+        tenant_id: context.tenantId,
         user_id: userId,
         action,
         entity: 'Transfer',
