@@ -1,4 +1,11 @@
 import { InventoryService } from './inventory.service';
+import { InventoryRepository } from './inventory.repository';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: the service now delegates to a tenant-scoped repository and
+// takes a TenantContext. Intent and assertions are unchanged, with the tenant
+// predicate added to the expected where-clauses.
+const ctx = contextFor(TENANT_A);
 
 describe('InventoryService', () => {
   function setup() {
@@ -21,12 +28,12 @@ describe('InventoryService', () => {
         },
       ]),
     };
-    return { service: new InventoryService(prisma as any), prisma };
+    return { service: new InventoryService(new InventoryRepository(prisma as any)), prisma };
   }
 
   it('keeps inventory lookup scoped to the caller branch', async () => {
     const { service, prisma } = setup();
-    await service.lookup('variant-1', 'branch-1');
+    await service.lookup(ctx, 'variant-1', 'branch-1');
 
     expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -40,11 +47,11 @@ describe('InventoryService', () => {
 
   it('lists immutable movements in business occurrence order', async () => {
     const { service, prisma } = setup();
-    await service.movements('variant-1', 'branch-1', 50);
+    await service.movements(ctx, 'variant-1', 'branch-1', 50);
 
     expect(prisma.inventoryMovement.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { variant_id: 'variant-1', branch_id: 'branch-1' },
+        where: { tenant_id: ctx.tenantId, variant_id: 'variant-1', branch_id: 'branch-1' },
         orderBy: [
           { occurred_at: 'desc' },
           { recorded_at: 'desc' },
@@ -57,7 +64,7 @@ describe('InventoryService', () => {
 
   it('reports stock and ledger differences without hiding either balance', async () => {
     const { service } = setup();
-    const result = await service.reconcile('branch-1');
+    const result = await service.reconcile(ctx, 'branch-1');
 
     expect(result).toMatchObject({
       is_consistent: false,

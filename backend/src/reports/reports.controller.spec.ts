@@ -1,5 +1,9 @@
 import { ROLES_KEY } from '../auth/roles.guard';
 import { ReportsController } from './reports.controller';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: controller methods take the resolved TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 describe('ReportsController authorization', () => {
   const warehouseManager = {
@@ -58,12 +62,14 @@ describe('ReportsController authorization', () => {
     const { controller, reports } = setup();
 
     await controller.sales(
+      ctx,
       '2026-07-24',
       '2026-07-24',
       undefined,
       { user: warehouseManager } as any,
     );
     await controller.sales(
+      ctx,
       '2026-07-24',
       '2026-07-24',
       'branch-b',
@@ -72,12 +78,14 @@ describe('ReportsController authorization', () => {
 
     expect(reports.sales).toHaveBeenNthCalledWith(
       1,
+      ctx,
       '2026-07-24',
       '2026-07-24',
       undefined,
     );
     expect(reports.sales).toHaveBeenNthCalledWith(
       2,
+      ctx,
       '2026-07-24',
       '2026-07-24',
       'branch-b',
@@ -88,6 +96,7 @@ describe('ReportsController authorization', () => {
     const { controller, reports } = setup();
 
     await controller.sales(
+      ctx,
       '2026-07-24',
       '2026-07-24',
       undefined,
@@ -95,6 +104,7 @@ describe('ReportsController authorization', () => {
     );
 
     expect(reports.sales).toHaveBeenCalledWith(
+      ctx,
       '2026-07-24',
       '2026-07-24',
       'branch-a',

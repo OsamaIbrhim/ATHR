@@ -6,6 +6,9 @@ import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 import { TerminalsService } from '../terminals/terminals.service';
 import { PosProtocolGuard } from '../updates/pos-protocol.guard';
+import { RequirePermission } from '../identity/permission.guard';
+import { TenantCtx } from '../identity/tenant-context.decorator';
+import type { TenantContext } from '../identity/tenant-context.type';
 @Controller('sync')
 @Roles('owner', 'branch_manager', 'cashier')
 @RequireCapabilities('sales.create')
@@ -14,9 +17,11 @@ export class SyncController {
   @Post('push') push() {
     throw new NotImplementedException('Batch push is disabled; use the idempotent command endpoints');
   }
+  @RequirePermission('catalog.product.view')
   @Get('pull')
   @UseGuards(new PosProtocolGuard())
   async pull(
+    @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string,
     @Query('cursor') cursor: string | undefined,
     @Headers('x-pos-device-id') deviceId: string | undefined,
@@ -28,6 +33,6 @@ export class SyncController {
     // Owners may call this endpoint for support/performance diagnostics. Every
     // branch-bound POS user must also prove that the physical till is enrolled.
     if (req.user.role !== 'owner') await this.terminals.authenticate(deviceId, deviceToken, req.user);
-    return this.svc.pull(effectiveBranch, cursor);
+    return this.svc.pull(ctx, effectiveBranch, cursor);
   }
 }

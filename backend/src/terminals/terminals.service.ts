@@ -17,30 +17,39 @@ import {
   UpdateTerminalDto,
 } from './dto/terminal.dto';
 import { assertBranchAccess } from '../auth/branch-access';
+import { TerminalsRepository } from './terminals.repository';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class TerminalsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly repository: TerminalsRepository,
+  ) {}
 
-  async createEnrollment(dto: CreateTerminalEnrollmentDto, actor: AuthenticatedUser) {
+  async createEnrollment(
+    context: TenantContext,
+    dto: CreateTerminalEnrollmentDto,
+    actor: AuthenticatedUser,
+  ) {
     const branchId = actor.role === 'owner' ? dto.branch_id || actor.branch_id : actor.branch_id;
     if (!branchId) throw new BadRequestException('branch_id is required for terminal enrollment');
     if (actor.role !== 'owner' && dto.branch_id && dto.branch_id !== actor.branch_id) {
       throw new ForbiddenException('You cannot enroll a terminal for another branch');
     }
-    const branch = await this.prisma.branch.findFirst({ where: { id: branchId, is_active: true } });
+    // Previously any active branch id was accepted, so an operator could mint
+    // an enrollment code against another tenant's branch just by passing its id.
+    const branch = await this.repository.findBranch(context, branchId);
     if (!branch) throw new NotFoundException('Active branch not found');
 
     const code = randomBytes(9).toString('base64url').toUpperCase();
     const expiresAt = new Date(Date.now() + Number(process.env.POS_ENROLLMENT_TTL_MS || 10 * 60 * 1000));
-    await this.prisma.posTerminalEnrollment.create({
-      data: {
-        code_hash: this.hash(code),
-        branch_id: branchId,
-        terminal_name: dto.name?.trim() || null,
-        created_by: actor.sub,
-        expires_at: expiresAt,
-      },
+    await this.repository.saveEnrollment(context, {
+      code_hash: this.hash(code),
+      branch_id: branchId,
+      terminal_name: dto.name?.trim() || null,
+      created_by: actor.sub,
+      expires_at: expiresAt,
     });
     return {
       enrollment_code: code,
@@ -51,14 +60,11 @@ export class TerminalsService {
 
   async enroll(dto: EnrollTerminalDto) {
     const codeHash = this.hash(dto.enrollment_code.trim().toUpperCase());
-    const enrollment = await this.prisma.posTerminalEnrollment.findUnique({
-      where: { code_hash: codeHash },
-      include: { branch: true },
-    });
+    const enrollment = await this.repository.findEnrollmentByCodeHash(codeHash);
     if (!enrollment || enrollment.used_at || enrollment.expires_at <= new Date()) {
       throw new UnauthorizedException('Enrollment code is invalid or expired');
     }
-    const existing = await this.prisma.posTerminal.findUnique({ where: { device_id: dto.device_id } });
+    const existing = await this.repository.findByDeviceIdForAuthentication(dto.device_id);
     if (existing?.is_revoked) throw new ForbiddenException('This POS terminal has been revoked');
     if (existing && existing.branch_id !== enrollment.branch_id) {
       throw new ConflictException('This POS terminal is registered to another branch');
@@ -79,6 +85,10 @@ export class TerminalsService {
           terminal_code: `POS-${dto.device_id.slice(0, 8).toUpperCase()}`,
           name: dto.name?.trim() || enrollment.terminal_name || `POS ${dto.device_id.slice(0, 8)}`,
           branch_id: enrollment.branch_id,
+          // The terminal inherits its Tenant from the branch it enrolls into.
+          // Without this a newly enrolled terminal would carry no tenant_id and
+          // deviceTenantContext() would fail closed, so it could not sell.
+          tenant_id: enrollment.tenant_id ?? enrollment.branch.tenant_id,
           app_version: dto.app_version,
           device_token_hash: this.hash(deviceToken),
           enrolled_by: enrollment.created_by,
@@ -109,9 +119,11 @@ export class TerminalsService {
   async heartbeat(dto: TerminalHeartbeatDto, deviceToken: string | undefined, actor: AuthenticatedUser) {
     const existing = await this.authenticate(dto.device_id, deviceToken, actor);
     const now = new Date();
-    const terminal = await this.prisma.posTerminal.update({
-      where: { id: existing.id },
-      data: {
+    // The terminal row is already proven by authenticate(); its own tenant is
+    // authoritative here, so this is scoped by identity rather than by predicate.
+    const terminal = await this.repository.updateAuthenticated(
+      existing.id,
+      {
         ...(dto.name?.trim() ? { name: dto.name.trim() } : {}),
         app_version: dto.app_version,
         last_seen_at: now,
@@ -120,12 +132,13 @@ export class TerminalsService {
         last_error: dto.last_error || null,
         ...(dto.pending_count !== undefined ? { pending_count: dto.pending_count } : {}),
       },
-      include: { branch: { select: { code: true, name_ar: true, name_en: true } } },
-    });
+      { branch: { select: { code: true, name_ar: true, name_en: true } } },
+    );
     return { terminal, online: true, server_time: now.toISOString() };
   }
 
   async selfDecommission(
+    context: TenantContext,
     dto: DecommissionTerminalDto,
     deviceToken: string | undefined,
     actor: AuthenticatedUser,
@@ -135,9 +148,7 @@ export class TerminalsService {
     }
 
     if (!actor.branch_id) throw new ForbiddenException('POS manager must be linked to a branch');
-    const existing = await this.prisma.posTerminal.findUnique({
-      where: { device_id: dto.device_id },
-    });
+    const existing = await this.repository.findByDeviceId(context, dto.device_id);
     if (!existing) throw new UnauthorizedException('This POS terminal must be enrolled before use');
     if (existing.branch_id !== actor.branch_id) {
       throw new ConflictException('This POS terminal is registered to another branch');
@@ -176,16 +187,13 @@ export class TerminalsService {
       throw new UnauthorizedException('Invalid POS terminal credential');
     }
 
-    const terminal = await this.prisma.posTerminal.update({
-      where: { id: existing.id },
-      data: {
-        is_revoked: true,
-        device_token_hash: null,
-        pending_count: 0,
-        last_sync_status: 'decommissioned',
-        last_error: null,
-        last_seen_at: new Date(),
-      },
+    const terminal = await this.repository.update(context, existing.id, {
+      is_revoked: true,
+      device_token_hash: null,
+      pending_count: 0,
+      last_sync_status: 'decommissioned',
+      last_error: null,
+      last_seen_at: new Date(),
     });
 
     return {
@@ -204,6 +212,12 @@ export class TerminalsService {
   async authenticate(deviceId: string | undefined, deviceToken: string | undefined, actor: AuthenticatedUser) {
     if (!actor.branch_id) throw new ForbiddenException('POS user must be linked to a branch');
     const existing = await this.authenticateDevice(deviceId, deviceToken);
+    // Tenant first, then branch. The branch check alone was the only barrier
+    // between an operator and a terminal enrolled in a different tenant, and
+    // it compares opaque ids that carry no ownership meaning on their own.
+    if (actor.tenant_id && existing.tenant_id && existing.tenant_id !== actor.tenant_id) {
+      throw new ConflictException('This POS terminal is registered to another branch');
+    }
     if (existing.branch_id !== actor.branch_id) {
       throw new ConflictException('This POS terminal is registered to another branch');
     }
@@ -212,7 +226,7 @@ export class TerminalsService {
 
   async authenticateDevice(deviceId: string | undefined, deviceToken: string | undefined) {
     if (!deviceId) throw new UnauthorizedException('This POS terminal must be enrolled before use');
-    const existing = await this.prisma.posTerminal.findUnique({ where: { device_id: deviceId } });
+    const existing = await this.repository.findByDeviceIdForAuthentication(deviceId);
     if (!existing || !existing.device_token_hash) {
       throw new UnauthorizedException('This POS terminal must be enrolled before use');
     }
@@ -223,12 +237,11 @@ export class TerminalsService {
     return existing;
   }
 
-  async list(actor: AuthenticatedUser) {
-    const terminals = await this.prisma.posTerminal.findMany({
-      where: actor.role === 'owner' ? {} : { branch_id: actor.branch_id || undefined },
-      include: { branch: { select: { code: true, name_ar: true, name_en: true } } },
-      orderBy: [{ last_seen_at: 'desc' }, { created_at: 'desc' }],
-    });
+  async list(context: TenantContext, actor: AuthenticatedUser) {
+    const terminals = await this.repository.list(
+      context,
+      actor.role === 'owner' ? undefined : actor.branch_id || undefined,
+    );
     const now = Date.now();
     const onlineThreshold = Number(process.env.POS_ONLINE_THRESHOLD_MS || 90000);
     return {
@@ -243,19 +256,21 @@ export class TerminalsService {
     };
   }
 
-  async update(id: string, dto: UpdateTerminalDto, actor: AuthenticatedUser) {
-    const terminal = await this.prisma.posTerminal.findUnique({ where: { id } });
+  async update(
+    context: TenantContext,
+    id: string,
+    dto: UpdateTerminalDto,
+    actor: AuthenticatedUser,
+  ) {
+    const terminal = await this.repository.findById(context, id);
     if (!terminal) throw new NotFoundException('POS terminal not found');
     assertBranchAccess(actor, terminal.branch_id, ['owner']);
-    return this.prisma.posTerminal.update({
-      where: { id },
-      data: {
+    return this.repository.update(context, id, {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
         ...(dto.revoked !== undefined ? { is_revoked: dto.revoked } : {}),
         // Revocation also invalidates the device credential. Re-enabling a
         // terminal therefore requires a new manager-issued enrollment code.
         ...(dto.revoked === true ? { device_token_hash: null } : {}),
-      },
     });
   }
 

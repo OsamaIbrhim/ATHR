@@ -25,6 +25,8 @@ import { HealthModule } from './health/health.module';
 import { SellersModule } from './sellers/sellers.module';
 import { UpdatesModule } from './updates/updates.module';
 import { IdentityModule } from './identity/identity.module';
+import { TenantContextGuard } from './identity/tenant-context.guard';
+import { PermissionGuard } from './identity/permission.guard';
 
 @Module({
   imports: [
@@ -51,9 +53,15 @@ import { IdentityModule } from './identity/identity.module';
     UpdatesModule,
     IdentityModule,
   ],
+  // Guard order is significant and matches the Permission Matrix §74 denial
+  // precedence: authenticate (JwtAuthGuard) → resolve tenant context
+  // (TenantContextGuard, which needs `req.user`) → legacy role/capability
+  // check (RolesGuard) → Matrix permission check (PermissionGuard).
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: TenantContextGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: PerformanceInterceptor },
   ],
 })

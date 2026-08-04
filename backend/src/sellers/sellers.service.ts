@@ -3,7 +3,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
 import { money, moneyNumber } from '../common/money';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { businessDateRange } from '../common/business-time';
@@ -11,10 +10,12 @@ import {
   UpdateCommissionSettingsDto,
   UpdateSellerCommissionDto,
 } from './dto/commission-settings.dto';
+import { SellersRepository } from './sellers.repository';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class SellersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly repository: SellersRepository) {}
 
   private dateRange(from: string, to: string) {
     return businessDateRange(from, to);
@@ -26,53 +27,18 @@ export class SellersService {
   }
 
   async report(
+    context: TenantContext,
     from: string,
     to: string,
     branchId?: string,
     sellerId?: string,
   ) {
     const range = this.dateRange(from, to);
-    const sellerWhere = {
-      role: 'seller' as const,
-      ...(branchId ? { branch_id: branchId } : {}),
-      ...(sellerId ? { id: sellerId } : {}),
-    };
     const [sellers, sales, returns, settings] = await Promise.all([
-      this.prisma.user.findMany({
-        where: sellerWhere,
-        select: {
-          id: true, name: true, branch_id: true, is_active: true,
-          branch: { select: { id: true, code: true, name_ar: true } },
-          seller_commission_override: true,
-        },
-        orderBy: [{ name: 'asc' }, { id: 'asc' }],
-      }),
-      this.prisma.salesInvoice.findMany({
-        where: {
-          status: 'completed',
-          occurred_at: range,
-          seller_id: { not: null },
-          ...(branchId ? { branch_id: branchId } : {}),
-          ...(sellerId ? { seller_id: sellerId } : {}),
-        },
-        select: { seller_id: true, subtotal: true },
-      }),
-      this.prisma.return.findMany({
-        where: {
-          status: 'completed',
-          created_at: range,
-          original_invoice: {
-            seller_id: { not: null },
-            ...(sellerId ? { seller_id: sellerId } : {}),
-          },
-          ...(branchId ? { branch_id: branchId } : {}),
-        },
-        select: {
-          refund_subtotal: true,
-          original_invoice: { select: { seller_id: true } },
-        },
-      }),
-      this.getSettings(),
+      this.repository.listSellers(context, branchId, sellerId),
+      this.repository.listAttributedSales(context, range, branchId, sellerId),
+      this.repository.listAttributedReturns(context, range, branchId, sellerId),
+      this.repository.getSettings(context),
     ]);
 
     const rows = new Map<string, {
@@ -138,80 +104,48 @@ export class SellersService {
     };
   }
 
-  async settings(actor: AuthenticatedUser) {
-    const settings = await this.getSettings();
-    const overrides = await this.prisma.sellerCommissionOverride.findMany({
-      where: actor.role === 'owner'
-        ? {}
-        : { seller: { branch_id: actor.branch_id || undefined } },
-      include: { seller: { select: { id: true, name: true, branch_id: true } } },
-      orderBy: { seller: { name: 'asc' } },
-    });
+  async settings(context: TenantContext, actor: AuthenticatedUser) {
+    const settings = await this.repository.getSettings(context);
+    const overrides = await this.repository.listOverrides(
+      context,
+      actor.role === 'owner' ? undefined : actor.branch_id || undefined,
+    );
     return { settings, overrides };
   }
 
-  updateSettings(dto: UpdateCommissionSettingsDto, actor: AuthenticatedUser) {
+  updateSettings(
+    context: TenantContext,
+    dto: UpdateCommissionSettingsDto,
+    actor: AuthenticatedUser,
+  ) {
     if (actor.role !== 'owner') throw new ForbiddenException('Only the owner can change commission defaults');
-    return this.prisma.sellerCommissionSettings.upsert({
-      where: { id: 1 },
-      create: {
-        id: 1,
-        ...dto,
-        period_anchor: new Date(dto.period_anchor),
-      },
-      update: {
-        ...dto,
-        period_anchor: new Date(dto.period_anchor),
-      },
+    return this.repository.updateSettings(context, {
+      ...dto,
+      period_anchor: new Date(dto.period_anchor),
     });
   }
 
   async updateSellerSettings(
+    context: TenantContext,
     sellerId: string,
     dto: UpdateSellerCommissionDto,
     actor: AuthenticatedUser,
   ) {
     if (actor.role !== 'owner') throw new ForbiddenException('Only the owner can change seller commissions');
-    const seller = await this.prisma.user.findFirst({
-      where: { id: sellerId, role: 'seller' },
-      select: { id: true },
-    });
+    const seller = await this.repository.findSeller(context, sellerId);
     if (!seller) throw new NotFoundException('Seller not found');
-    return this.prisma.sellerCommissionOverride.upsert({
-      where: { seller_id: sellerId },
-      create: { seller_id: sellerId, ...dto },
-      update: dto,
-    });
+    return this.repository.saveOverride(context, sellerId, dto as any);
   }
 
-  private getSettings() {
-    return this.prisma.sellerCommissionSettings.upsert({
-      where: { id: 1 },
-      create: { id: 1 },
-      update: {},
-    });
-  }
-
-  periods(actor: AuthenticatedUser) {
-    return this.prisma.sellerCommissionPeriod.findMany({
-      where: actor.role === 'owner'
-        ? {}
-        : { rows: { some: { branch_id: actor.branch_id || undefined } } },
-      include: {
-        closer: { select: { id: true, name: true } },
-        rows: {
-          where: actor.role === 'owner'
-            ? {}
-            : { branch_id: actor.branch_id || undefined },
-          orderBy: [{ seller_name: 'asc' }, { seller_id: 'asc' }],
-        },
-      },
-      orderBy: { closed_at: 'desc' },
-      take: 24,
-    });
+  periods(context: TenantContext, actor: AuthenticatedUser) {
+    return this.repository.listPeriods(
+      context,
+      actor.role === 'owner' ? undefined : actor.branch_id || undefined,
+    );
   }
 
   async closePeriod(
+    context: TenantContext,
     from: string,
     to: string,
     actor: AuthenticatedUser,
@@ -223,52 +157,44 @@ export class SellersService {
     if (endExclusive > new Date()) {
       throw new BadRequestException('Only a completed period can be closed');
     }
-    const existing = await this.prisma.sellerCommissionPeriod.findUnique({
-      where: {
-        period_start_period_end_exclusive: {
-          period_start: start,
-          period_end_exclusive: endExclusive,
-        },
-      },
-      select: { id: true },
-    });
+    const existing = await this.repository.findPeriod(context, start, endExclusive);
     if (existing) throw new ConflictException('This seller period is already closed');
 
     const [settings, report] = await Promise.all([
-      this.getSettings(),
-      this.report(from, to),
+      this.repository.getSettings(context),
+      this.report(context, from, to),
     ]);
-    const period = await this.prisma.sellerCommissionPeriod.create({
-      data: {
-        period_start: start,
-        period_end_exclusive: endExclusive,
-        period_length_days: settings.period_length_days,
-        default_rate: settings.default_rate,
-        default_target: settings.default_target,
-        default_bonus: settings.default_bonus,
-        closed_by: actor.sub,
-        rows: {
-          create: report.rows.map((row) => ({
-            seller_id: row.seller.id,
-            seller_name: row.seller.name,
-            branch_id: row.seller.branch_id,
-            branch_name: row.seller.branch?.name_ar || null,
-            invoice_count: row.invoice_count,
-            gross_sales_before_tax: row.gross_sales_before_tax,
-            return_count: row.return_count,
-            returns_before_tax: row.returns_before_tax,
-            net_sales_before_tax: row.net_sales_before_tax,
-            commission_rate: row.commission_rate,
-            percentage_commission: row.percentage_commission,
-            target: row.target,
-            target_achieved: row.target_achieved,
-            target_bonus: row.target_bonus,
-            estimated_total: row.estimated_total,
-          })),
-        },
+    return this.repository.savePeriod(context, {
+      period_start: start,
+      period_end_exclusive: endExclusive,
+      period_length_days: settings.period_length_days,
+      default_rate: settings.default_rate,
+      default_target: settings.default_target,
+      default_bonus: settings.default_bonus,
+      closed_by: actor.sub,
+      rows: {
+        create: report.rows.map((row) => ({
+          // Snapshot rows carry the tenant explicitly: Prisma nested creates
+          // do not inherit the parent's scalars, and there is no composite
+          // foreign key to enforce it until Phase B.
+          tenant_id: context.tenantId,
+          seller_id: row.seller.id,
+          seller_name: row.seller.name,
+          branch_id: row.seller.branch_id,
+          branch_name: row.seller.branch?.name_ar || null,
+          invoice_count: row.invoice_count,
+          gross_sales_before_tax: row.gross_sales_before_tax,
+          return_count: row.return_count,
+          returns_before_tax: row.returns_before_tax,
+          net_sales_before_tax: row.net_sales_before_tax,
+          commission_rate: row.commission_rate,
+          percentage_commission: row.percentage_commission,
+          target: row.target,
+          target_achieved: row.target_achieved,
+          target_bonus: row.target_bonus,
+          estimated_total: row.estimated_total,
+        })),
       },
-      include: { rows: true },
-    });
-    return period;
+    } as any);
   }
 }

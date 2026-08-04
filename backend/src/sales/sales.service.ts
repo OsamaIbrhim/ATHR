@@ -9,6 +9,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { deviceTenantContext } from '../identity/tenant-context.decorator';
+import type { TenantContext } from '../identity/tenant-context.type';
 import { PosTerminal, Prisma } from '@prisma/client';
 import { PricingService } from '../pricing/pricing.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
@@ -44,9 +46,10 @@ export class SalesService {
     private pricing: PricingService,
   ) {}
 
-  async listSales(dto: ListSalesDto, branchId?: string) {
+  async listSales(context: TenantContext, dto: ListSalesDto, branchId?: string) {
     const q = dto.q.trim();
     const where: Prisma.SalesInvoiceWhereInput = {
+      tenant_id: context.tenantId,
       ...(branchId ? { branch_id: branchId } : {}),
       ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
       ...(dto.status ? { status: dto.status } : {}),
@@ -58,7 +61,10 @@ export class SalesService {
         { customer: { name: { contains: q, mode: 'insensitive' } } },
       ] } : {}),
     };
+    // The tenant is part of the cache key: keyed on the filters alone,
+    // one tenant's result count would be served to another (Blueprint §125).
     const countKey = JSON.stringify({
+      tenantId: context.tenantId,
       branchId,
       q,
       payment: dto.payment_method,
@@ -111,9 +117,9 @@ export class SalesService {
     return value;
   }
 
-  async getInvoice(id: string, actor: AuthenticatedUser) {
-    const invoice = await this.prisma.salesInvoice.findUnique({
-      where: { id },
+  async getInvoice(context: TenantContext, id: string, actor: AuthenticatedUser) {
+    const invoice = await this.prisma.salesInvoice.findFirst({
+      where: { id, tenant_id: context.tenantId },
       include: {
         items: { include: { variant: { include: { product: true } }, return_items: { where: { return_record: { status: 'completed' } } } } },
         branch: true, customer: true,
@@ -265,11 +271,18 @@ export class SalesService {
 
   async createSale(
     dto: CreateSaleDto,
-    terminal: Pick<PosTerminal, 'id' | 'branch_id'>,
+    terminal: Pick<PosTerminal, 'id' | 'branch_id' | 'tenant_id'>,
   ) {
     if (!terminal || terminal.branch_id !== dto.branch_id) {
       throw new ForbiddenException('The terminal is not assigned to the sale branch');
     }
+
+    // WP-007 Phase A: this route is device-authenticated (@Public + PosProtocolGuard),
+    // so there is no session for TenantContextGuard to work from. The tenant
+    // comes from the enrolled terminal's own tenant_id, backfilled for every
+    // existing terminal by WP-005 Phase B, and fails closed if absent. Reading
+    // that existing column is not an enrollment change (Phase C, §A.4).
+    const context = deviceTenantContext(terminal);
 
     const receivedAt = new Date();
     const occurredAt = new Date(dto.occurred_at);
@@ -300,8 +313,8 @@ export class SalesService {
         throw new ForbiddenException('The terminal is not assigned to the sale branch');
       }
 
-      const existing = await tx.salesInvoice.findUnique({
-        where: { sync_id: dto.sync_id },
+      const existing = await tx.salesInvoice.findFirst({
+        where: { tenant_id: context.tenantId, sync_id: dto.sync_id },
         include: { items: true },
       });
       if (existing) {
@@ -323,18 +336,26 @@ export class SalesService {
 
       const warningCodes = new Set<string>();
       const [branch, shift, originCashier, seller, sequenceOwner] = await Promise.all([
-        tx.branch.findUnique({ where: { id: dto.branch_id } }),
-        tx.shift.findUnique({ where: { id: dto.shift_id } }),
-        tx.user.findUnique({
-          where: { id: dto.origin_cashier_id },
+        tx.branch.findFirst({ where: { id: dto.branch_id, tenant_id: context.tenantId } }),
+        tx.shift.findFirst({ where: { id: dto.shift_id, tenant_id: context.tenantId } }),
+        // Identities are scoped through Membership — `User` has no tenant_id.
+        tx.user.findFirst({
+          where: {
+            id: dto.origin_cashier_id,
+            memberships: { some: { tenantId: context.tenantId } },
+          },
           select: { id: true, branch_id: true, name: true },
         }),
-        tx.user.findUnique({
-          where: { id: dto.seller_id },
+        tx.user.findFirst({
+          where: {
+            id: dto.seller_id,
+            memberships: { some: { tenantId: context.tenantId } },
+          },
           select: { id: true, branch_id: true, role: true, name: true },
         }),
         tx.salesInvoice.findFirst({
           where: {
+            tenant_id: context.tenantId,
             terminal_id: terminal.id,
             terminal_sequence: terminalSequence,
           },
@@ -380,7 +401,11 @@ export class SalesService {
 
       const variantIds = normalized.lines.map((item) => item.variant_id);
       const variants = await tx.productVariant.findMany({
-        where: { id: { in: variantIds } },
+        where: {
+          id: { in: variantIds },
+          tenant_id: context.tenantId,
+          product: { tenant_id: context.tenantId },
+        },
         include: { product: true },
       });
       if (variants.length !== variantIds.length) {
@@ -391,7 +416,7 @@ export class SalesService {
       const variantsById = new Map<string, any>(
         variants.map((variant: any) => [variant.id, variant]),
       );
-      const currentQuotes = await this.pricing.calculateMany(variants, tx);
+      const currentQuotes = await this.pricing.calculateMany(context, variants, tx);
 
       const saleItems = normalized.lines.map((line) => {
         const variant = variantsById.get(line.variant_id)!;
@@ -452,6 +477,7 @@ export class SalesService {
             last_sold_at: receivedAt,
           },
           create: {
+            tenant_id: context.tenantId,
             branch_id: dto.branch_id,
             variant_id: item.variant_id,
             qty_on_hand: -item.qty,
@@ -466,14 +492,21 @@ export class SalesService {
 
       let customerId: string | undefined;
       if (dto.customer_phone) {
-        const customer = await tx.customer.upsert({
-          where: { phone: dto.customer_phone },
-          update: {},
-          create: {
+        // `Customer.phone` is still globally unique until Phase B, so an
+        // upsert keyed on phone alone would attach another tenant's customer
+        // to this sale. Resolve within the tenant first, then create.
+        const existingCustomer = await tx.customer.findFirst({
+          where: { phone: dto.customer_phone, tenant_id: context.tenantId },
+          select: { id: true },
+        });
+        const customer = existingCustomer ?? (await tx.customer.create({
+          data: {
+            tenant_id: context.tenantId,
             phone: dto.customer_phone,
             whatsapp: dto.customer_phone,
           },
-        });
+          select: { id: true },
+        }));
         customerId = customer.id;
       }
 
@@ -481,6 +514,7 @@ export class SalesService {
         `B-${branch.code}-${receivedAt.getTime()}-${randomUUID().slice(0, 8)}`;
       const invoice = await tx.salesInvoice.create({
         data: {
+          tenant_id: context.tenantId,
           invoice_number: invoiceNumber,
           event_version: dto.event_version,
           warning_codes: [...warningCodes].sort(),
@@ -640,7 +674,7 @@ export class SalesService {
     return result;
   }
 
-  async createReturn(dto: CreateReturnDto, actor: AuthenticatedUser) {
+  async createReturn(context: TenantContext, dto: CreateReturnDto, actor: AuthenticatedUser) {
     const requested = new Map<string, number>();
     for (const item of dto.items) {
       requested.set(
@@ -650,8 +684,8 @@ export class SalesService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const original = await tx.salesInvoice.findUnique({
-        where: { id: dto.original_invoice_id },
+      const original = await tx.salesInvoice.findFirst({
+        where: { tenant_id: context.tenantId, id: dto.original_invoice_id },
         include: { items: true },
       });
       if (!original) throw new NotFoundException('Original invoice not found');
@@ -662,7 +696,8 @@ export class SalesService {
       let shiftId: string | null = null;
       if (actor.role !== 'owner') {
         const currentShift = await tx.shift.findFirst({
-          where: { branch_id: original.branch_id, status: 'open' },
+          where: {
+            tenant_id: context.tenantId, branch_id: original.branch_id, status: 'open' },
           select: { id: true },
         });
         if (!currentShift) {
@@ -703,6 +738,7 @@ export class SalesService {
 
         const alreadyReturned = await tx.returnItem.aggregate({
           where: {
+            tenant_id: context.tenantId,
             sales_invoice_item_id: saleItemId,
             return_record: { status: 'completed' },
           },
@@ -752,6 +788,7 @@ export class SalesService {
 
       const returnRecord = await tx.return.create({
         data: {
+          tenant_id: context.tenantId,
           original_invoice_id: original.id,
           branch_id: original.branch_id,
           shift_id: shiftId,
@@ -798,8 +835,8 @@ export class SalesService {
       });
 
       if (original.customer_id) {
-        const customer = await tx.customer.findUnique({
-          where: { id: original.customer_id },
+        const customer = await tx.customer.findFirst({
+          where: { tenant_id: context.tenantId, id: original.customer_id },
         });
         if (customer) {
           await tx.customer.update({
@@ -824,13 +861,16 @@ export class SalesService {
     return result;
   }
 
-  async findReturnableInvoice(reference: string, actor: AuthenticatedUser) {
+  async findReturnableInvoice(context: TenantContext, reference: string, actor: AuthenticatedUser) {
     const byId =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
         reference,
       );
-    const invoice = await this.prisma.salesInvoice.findUnique({
-      where: byId ? { id: reference } : { invoice_number: reference },
+    const invoice = await this.prisma.salesInvoice.findFirst({
+      where: {
+        tenant_id: context.tenantId,
+        ...(byId ? { id: reference } : { invoice_number: reference }),
+      },
       select: {
         id: true,
         invoice_number: true,
@@ -878,9 +918,10 @@ export class SalesService {
     };
   }
 
-  async listReturns(dto: ListReturnsDto, branchId?: string) {
+  async listReturns(context: TenantContext, dto: ListReturnsDto, branchId?: string) {
     const q = dto.q.trim();
     const where: Prisma.ReturnWhereInput = {
+      tenant_id: context.tenantId,
       ...(branchId ? { branch_id: branchId } : {}),
       ...(q
         ? {

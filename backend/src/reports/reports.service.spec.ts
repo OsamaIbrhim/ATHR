@@ -1,5 +1,9 @@
 import { Prisma } from '@prisma/client';
 import { ReportsService } from './reports.service';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: every report method now takes a TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 describe('ReportsService financial precision', () => {
   it('aggregates sales, refunds, tax, and cost without floating drift', async () => {
@@ -49,6 +53,7 @@ describe('ReportsService financial precision', () => {
     const service = new ReportsService(prisma as any);
 
     const report = await service.sales(
+      ctx,
       '2026-07-01',
       '2026-07-01',
     );

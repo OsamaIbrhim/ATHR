@@ -1,4 +1,8 @@
 import { TransfersController } from './transfers.controller';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: every transfer entry point takes the resolved TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 describe('TransfersController command forwarding', () => {
   const actor = {
@@ -23,12 +27,14 @@ describe('TransfersController command forwarding', () => {
     const { controller, service } = setup();
 
     await controller.ship(
+      ctx,
       'transfer-1',
       undefined as any,
       request,
     );
 
     expect(service.ship).toHaveBeenCalledWith(
+      ctx,
       'transfer-1',
       {},
       actor,
@@ -39,12 +45,14 @@ describe('TransfersController command forwarding', () => {
     const { controller, service } = setup();
 
     await controller.receive(
+      ctx,
       'transfer-1',
       undefined as any,
       request,
     );
 
     expect(service.receive).toHaveBeenCalledWith(
+      ctx,
       'transfer-1',
       {},
       actor,

@@ -32,15 +32,26 @@ async function main() {
   await prisma.auditLog.deleteMany();
   await prisma.pricingRule.deleteMany();
   await prisma.supplier.deleteMany();
+  await prisma.accessScopeAssignment.deleteMany();
+  await prisma.membership.deleteMany();
   await prisma.user.deleteMany();
   await prisma.category.deleteMany();
   await prisma.branch.deleteMany();
 
+  // WP-007 Phase A: every seeded row belongs to a Tenant, and every seeded
+  // user gets a Membership. Without this the global TenantContextGuard denies
+  // every request from a seeded account — the API boots but nobody can log in
+  // and do anything.
+  const tenant =
+    (await prisma.tenant.findFirst({ where: { name: 'Initial ATHR Demo Tenant' } })) ??
+    (await prisma.tenant.create({ data: { name: 'Initial ATHR Demo Tenant' } }));
+  const tenant_id = tenant.id;
+
   const password_hash = await bcryptjs.hash('Bold1234', 10);
 
   // Branches
-  const b1 = await prisma.branch.create({ data: { code: 'BOLD-01', name_ar: 'بولد – الفرع الرئيسي', name_en: 'Bold Main', address: 'طنطا', phone: '0400000000', cash_drawer_enabled: false }});
-  const b2 = await prisma.branch.create({ data: { code: 'BOLD-02', name_ar: 'بولد – القاهرة الجديدة', name_en: 'Bold New Cairo', cash_drawer_enabled: true }});
+  const b1 = await prisma.branch.create({ data: { tenant_id, code: 'BOLD-01', name_ar: 'بولد – الفرع الرئيسي', name_en: 'Bold Main', address: 'طنطا', phone: '0400000000', cash_drawer_enabled: false }});
+  const b2 = await prisma.branch.create({ data: { tenant_id, code: 'BOLD-02', name_ar: 'بولد – القاهرة الجديدة', name_en: 'Bold New Cairo', cash_drawer_enabled: true }});
 
   // Users
   const owner = await prisma.user.create({ data: { name: 'Owner – أسامة', phone: '+200100000000', email: 'owner@bold.eg', password_hash, role: 'owner', branch_id: b1.id }});
@@ -49,15 +60,35 @@ async function main() {
   const warehouse = await prisma.user.create({ data: { name: 'أمين مخزن', phone: '+200100000003', email: 'warehouse@bold.eg', password_hash, role: 'warehouse_manager', branch_id: b1.id }});
   const seller = await prisma.user.create({ data: { name: 'بائع', phone: '+200100000004', email: 'seller@bold.eg', password_hash, role: 'seller', branch_id: b1.id }});
 
+  // WP-007 Phase A: one Membership per seeded identity, mapping the legacy
+  // Role enum exactly as migration 202608020003 does.
+  const membershipRoleFor = {
+    owner: 'tenant_owner',
+    branch_manager: 'location_manager',
+    cashier: 'cashier',
+    warehouse_manager: 'warehouse_manager',
+    seller: 'seller',
+  } as const;
+  for (const identity of [owner, manager, cashier, warehouse, seller]) {
+    await prisma.membership.create({
+      data: {
+        tenantId: tenant_id,
+        identityId: identity.id,
+        role: membershipRoleFor[identity.role],
+        status: 'active',
+      },
+    });
+  }
+
   // Suppliers
-  const s1 = await prisma.supplier.create({ data: { name: 'محمد', company_name: 'Mohamed Fabrics Co.', phone: '01222222222', alias_names: ['Mohamed Fabrics Co.', 'Mohamed Trading'] }});
-  const s2 = await prisma.supplier.create({ data: { name: 'النصر', company_name: 'El-Nasr Trading', phone: '01233333333', alias_names: [] }});
-  const s3 = await prisma.supplier.create({ data: { name: 'Classic Wear', company_name: 'Classic Wear Co.', phone: '01244444444', alias_names: ['Classic'] }});
+  const s1 = await prisma.supplier.create({ data: { tenant_id, name: 'محمد', company_name: 'Mohamed Fabrics Co.', phone: '01222222222', alias_names: ['Mohamed Fabrics Co.', 'Mohamed Trading'] }});
+  const s2 = await prisma.supplier.create({ data: { tenant_id, name: 'النصر', company_name: 'El-Nasr Trading', phone: '01233333333', alias_names: [] }});
+  const s3 = await prisma.supplier.create({ data: { tenant_id, name: 'Classic Wear', company_name: 'Classic Wear Co.', phone: '01244444444', alias_names: ['Classic'] }});
 
   // Categories
-  const cat_t = await prisma.category.create({ data: { name_ar: 'تيشيرتات', name_en: 'T-Shirts' }});
-  const cat_s = await prisma.category.create({ data: { name_ar: 'قمصان', name_en: 'Shirts' }});
-  const cat_j = await prisma.category.create({ data: { name_ar: 'جينز', name_en: 'Jeans' }});
+  const cat_t = await prisma.category.create({ data: { tenant_id, name_ar: 'تيشيرتات', name_en: 'T-Shirts' }});
+  const cat_s = await prisma.category.create({ data: { tenant_id, name_ar: 'قمصان', name_en: 'Shirts' }});
+  const cat_j = await prisma.category.create({ data: { tenant_id, name_ar: 'جينز', name_en: 'Jeans' }});
 
   // Products + Variants – 12 products, 28 variants
   const productsData = [
@@ -122,12 +153,14 @@ async function main() {
   for (const p of productsData) {
     const prod = await prisma.product.create({
       data: {
+        tenant_id,
         name_en: p.name_en,
         brand: p.brand,
         category_id: p.category_id,
         has_variants: true,
         variants: {
           create: p.variants.map(v => ({
+            tenant_id,
             sku: v.sku,
             barcode_ean13: v.ean,
             barcode_internal: v.sku,
@@ -147,8 +180,8 @@ async function main() {
   for (const [variantIndex, v] of allVariants.entries()) {
     const primaryQuantity =
       variantIndex === 0 ? 250 : Math.floor(deterministicRandom()*20)+2;
-    await prisma.inventoryStock.create({ data: { branch_id: b1.id, variant_id: v.id, qty_on_hand: primaryQuantity, last_sold_at: deterministicRandom() > 0.3 ? new Date(Date.now() - deterministicRandom()*60*86400000) : null }});
-    await prisma.inventoryStock.create({ data: { branch_id: b2.id, variant_id: v.id, qty_on_hand: Math.floor(deterministicRandom()*12), last_sold_at: deterministicRandom() > 0.5 ? new Date(Date.now() - deterministicRandom()*90*86400000) : null }});
+    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b1.id, variant_id: v.id, qty_on_hand: primaryQuantity, last_sold_at: deterministicRandom() > 0.3 ? new Date(Date.now() - deterministicRandom()*60*86400000) : null }});
+    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b2.id, variant_id: v.id, qty_on_hand: Math.floor(deterministicRandom()*12), last_sold_at: deterministicRandom() > 0.5 ? new Date(Date.now() - deterministicRandom()*90*86400000) : null }});
   }
 
   // Pricing rules
@@ -169,7 +202,7 @@ async function main() {
   ];
   const customers = [];
   for (const c of custData) {
-    customers.push(await prisma.customer.create({ data: { name: c.name, phone: c.phone, whatsapp: c.phone, is_vip: c.is_vip, total_invoices: c.total_invoices, total_spent: c.total_spent }}));
+    customers.push(await prisma.customer.create({ data: { tenant_id, name: c.name, phone: c.phone, whatsapp: c.phone, is_vip: c.is_vip, total_invoices: c.total_invoices, total_spent: c.total_spent }}));
   }
 
   // Sales Invoices – 15 with items
@@ -193,6 +226,7 @@ async function main() {
     const total = subtotal + tax_amount;
     const inv = await prisma.salesInvoice.create({
       data: {
+        tenant_id,
         invoice_number: `BOLD-2026${String(1001+i).padStart(4,'0')}`,
         branch_id: branch.id,
         customer_id: deterministicRandom() > 0.3 ? customer.id : null,
@@ -204,7 +238,7 @@ async function main() {
         payment_method: paymentMethods[i % paymentMethods.length],
         language: 'ar',
         created_at: new Date(Date.now() - deterministicRandom()*30*86400000),
-        items: { create: items }
+        items: { create: items.map((item) => ({ ...item, tenant_id })) }
       }
     });
     salesInvoices.push(inv);
@@ -214,6 +248,7 @@ async function main() {
   for (let i=0; i<2 && i < salesInvoices.length; i++) {
     const s = salesInvoices[i];
     await prisma.return.create({ data: {
+    tenant_id,
       original_invoice_id: s.id,
       branch_id: s.branch_id,
       return_invoice_number: `R-${s.invoice_number}`,
@@ -225,48 +260,53 @@ async function main() {
 
   // Purchase Invoices – 3 with line items
   const pi1 = await prisma.purchaseInvoice.create({ data: {
+    tenant_id,
     supplier_id: s1.id, branch_id: b1.id, invoice_number: 'SUP-2026-001',
     subtotal: 4200, discount_amount: 200, discount_percent: 0, total: 4000,
     created_by: warehouse.id,
     items: { create: [
-      { variant_id: allVariants[0].id, qty: 50, unit_cost: 80 },
-      { variant_id: allVariants[1].id, qty: 30, unit_cost: 80 },
-      { variant_id: allVariants[4].id, qty: 20, unit_cost: 130 },
+      { tenant_id, variant_id: allVariants[0].id, qty: 50, unit_cost: 80 },
+      { tenant_id, variant_id: allVariants[1].id, qty: 30, unit_cost: 80 },
+      { tenant_id, variant_id: allVariants[4].id, qty: 20, unit_cost: 130 },
     ]}
   }});
   await prisma.purchaseInvoice.create({ data: {
+    tenant_id,
     supplier_id: s2.id, branch_id: b1.id, invoice_number: 'SUP-2026-002',
     subtotal: 3100, discount_amount: 155, discount_percent: 5, total: 2945,
     created_by: warehouse.id,
     items: { create: [
-      { variant_id: allVariants[5].id, qty: 15, unit_cost: 160 },
-      { variant_id: allVariants[6].id, qty: 10, unit_cost: 90 },
+      { tenant_id, variant_id: allVariants[5].id, qty: 15, unit_cost: 160 },
+      { tenant_id, variant_id: allVariants[6].id, qty: 10, unit_cost: 90 },
     ]}
   }});
   await prisma.purchaseInvoice.create({ data: {
+    tenant_id,
     supplier_id: s3.id, branch_id: b2.id, invoice_number: 'SUP-2026-003',
     subtotal: 5600, discount_amount: 300, discount_percent: 0, total: 5300,
     created_by: warehouse.id,
     items: { create: [
-      { variant_id: allVariants[10].id, qty: 25, unit_cost: 175 },
-      { variant_id: allVariants[15].id, qty: 20, unit_cost: 140 },
+      { tenant_id, variant_id: allVariants[10].id, qty: 25, unit_cost: 175 },
+      { tenant_id, variant_id: allVariants[15].id, qty: 20, unit_cost: 140 },
     ]}
   }});
 
   // Transfers – 2 with items
   const tr1 = await prisma.transfer.create({ data: {
+    tenant_id,
     from_branch_id: b1.id, to_branch_id: b2.id,
     transfer_number: 'TR-2026001', status: 'received', created_by: manager.id,
     items: { create: [
-      { variant_id: allVariants[0].id, qty: 5 },
-      { variant_id: allVariants[2].id, qty: 3 },
+      { tenant_id, variant_id: allVariants[0].id, qty: 5 },
+      { tenant_id, variant_id: allVariants[2].id, qty: 3 },
     ]}
   }});
   await prisma.transfer.create({ data: {
+    tenant_id,
     from_branch_id: b2.id, to_branch_id: b1.id,
     transfer_number: 'TR-2026002', status: 'pending', created_by: manager.id,
     items: { create: [
-      { variant_id: allVariants[5].id, qty: 2 },
+      { tenant_id, variant_id: allVariants[5].id, qty: 2 },
     ]}
   }});
 
@@ -276,6 +316,7 @@ async function main() {
     const current = Math.round(cost * 1.2 * 1.35 * 1.14);
     const min_allowed = Math.round(cost * 1.2 * 1.14);
     await prisma.offerSuggestion.create({ data: {
+      tenant_id,
       variant_id: v.id, branch_id: b1.id, days_unsold: 95,
       current_price: current,
       suggested_price: Math.round((current + min_allowed)/2),

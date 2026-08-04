@@ -1,58 +1,38 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
+import { ProductsRepository } from './products.repository';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class ProductsService {
   private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
 
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly repository: ProductsRepository) {}
 
-  async list(q: string, page: number, pageSize: number, branchId?: string, includeCost = false) {
+  async list(
+    context: TenantContext,
+    q: string,
+    page: number,
+    pageSize: number,
+    branchId?: string,
+    includeCost = false,
+  ) {
     const query = q.trim();
-    const where = query ? {
-      is_active: true,
-      product: { is_active: true },
-      OR: [
-        { sku: { contains: query, mode: 'insensitive' as const } },
-        { barcode_ean13: query },
-        { barcode_internal: query },
-        { product: { name_en: { contains: query, mode: 'insensitive' as const } } },
-        { product: { name_ar: { contains: query, mode: 'insensitive' as const } } },
-      ],
-    } : { is_active: true, product: { is_active: true } };
+    const where = this.repository.variantWhere(context, query);
 
     // Keep list and count independent, then hydrate both relations in one
     // additional parallel database wave. Prisma's nested include strategy used
     // sequential relation queries and paid the remote DB round-trip repeatedly.
     const [total, baseVariants] = await Promise.all([
-      this.cachedCount(query, where),
-      this.prisma.productVariant.findMany({
-        where,
-        orderBy: [{ created_at: 'desc' }, { id: 'asc' }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
+      this.cachedCount(context, query, where),
+      this.repository.listVariants(context, where, page, pageSize),
     ]);
-    const variants = await this.hydrateVariants(baseVariants, branchId);
+    const variants = await this.hydrateVariants(context, baseVariants, branchId);
     const items = variants.map((variant) => this.present(variant, branchId, includeCost));
 
     let suggestions: { value: string; label: string }[] = [];
     if (query.length >= 2 && total === 0) {
-      const similar = await this.prisma.$queryRaw<Array<{ name_en: string; name_ar: string | null; sku: string; score: number }>>`
-        SELECT p."name_en", p."name_ar", v."sku",
-          GREATEST(
-            similarity(COALESCE(p."name_en", ''), ${query}),
-            similarity(COALESCE(p."name_ar", ''), ${query}),
-            similarity(v."sku", ${query})
-          ) AS score
-        FROM "ProductVariant" v
-        JOIN "Product" p ON p."id" = v."product_id"
-        WHERE p."is_active" = true
-          AND v."is_active" = true
-        ORDER BY score DESC
-        LIMIT 8
-      `;
+      const similar = await this.repository.similarNames(context, query);
       const seen = new Set<string>();
       suggestions = similar
         .filter((item) => item.score >= 0.15)
@@ -71,21 +51,14 @@ export class ProductsService {
     };
   }
 
-  private async hydrateVariants(variants: any[], branchId?: string) {
+  private async hydrateVariants(context: TenantContext, variants: any[], branchId?: string) {
     if (!variants.length) return [];
 
     const variantIds = variants.map((variant) => variant.id);
     const productIds = [...new Set(variants.map((variant) => variant.product_id))];
     const [products, inventory] = await Promise.all([
-      this.prisma.product.findMany({
-        where: { id: { in: productIds } },
-      }),
-      this.prisma.inventoryStock.findMany({
-        where: {
-          variant_id: { in: variantIds },
-          ...(branchId ? { branch_id: branchId } : {}),
-        },
-      }),
+      this.repository.findProductsByIds(context, productIds),
+      this.repository.findStockForVariants(context, variantIds, branchId),
     ]);
 
     const productById = new Map(products.map((product) => [product.id, product]));
@@ -103,14 +76,20 @@ export class ProductsService {
     }));
   }
 
-  private cachedCount(query: string, where: any) {
-    const key = query.toLocaleLowerCase('en-US');
+  /**
+   * Blueprint §125 "Cache Tests — keys contain Tenant": this cache was keyed
+   * on the search string alone, so with more than one tenant the first
+   * tenant's result count would be served to the second. The tenant id is now
+   * part of the key.
+   */
+  private cachedCount(context: TenantContext, query: string, where: any) {
+    const key = `${context.tenantId}:${query.toLocaleLowerCase('en-US')}`;
     const now = Date.now();
     const cached = this.countCache.get(key);
     if (cached && cached.expiresAt > now) return cached.value;
     const ttl = Math.min(30_000, Math.max(0, Number(process.env.LIST_COUNT_CACHE_MS || 5_000)));
     let value: Promise<number>;
-    value = this.prisma.productVariant.count({ where }).then((total) => {
+    value = this.repository.countVariants(context, where).then((total) => {
       if (this.countCache.get(key)?.value === value) {
         this.countCache.set(key, { expiresAt: Date.now() + ttl, value: Promise.resolve(total) });
       }
@@ -128,20 +107,9 @@ export class ProductsService {
     this.countCache.clear();
   }
 
-  async search(q: string, branchId?: string, includeCost = false) {
-    const baseVariants = await this.prisma.productVariant.findMany({
-      where: {
-        is_active: true,
-        OR: [
-          { sku: { contains: q, mode: 'insensitive' } },
-          { barcode_ean13: q },
-          { barcode_internal: q },
-          { product: { name_en: { contains: q, mode: 'insensitive' } } }
-        ]
-      },
-      take: 20,
-    });
-    const variants = await this.hydrateVariants(baseVariants, branchId);
+  async search(context: TenantContext, q: string, branchId?: string, includeCost = false) {
+    const baseVariants = await this.repository.searchVariants(context, q);
+    const variants = await this.hydrateVariants(context, baseVariants, branchId);
     return variants.map((variant) => this.present(variant, branchId, includeCost));
   }
 
@@ -158,55 +126,50 @@ export class ProductsService {
     return safe;
   }
 
-  async createProduct(dto: CreateProductDto) {
-    const product = await this.prisma.product.create({
-      data: {
-        name_en: dto.name_en,
-        name_ar: dto.name_ar,
-        brand: dto.brand,
-        category_id: dto.category_id,
-        has_variants: !!(dto.size || dto.color || dto.style),
-        variants: {
-          create: [{
-            sku: dto.sku,
-            barcode_ean13: dto.barcode_ean13 || null,
-            barcode_internal: dto.barcode_internal || dto.sku,
-            size: dto.size || null,
-            color: dto.color || null,
-            style: dto.style || null,
-            cost_price: dto.cost_price,
-          }]
-        }
+  async createProduct(context: TenantContext, dto: CreateProductDto) {
+    const product = await this.repository.saveProduct(context, {
+      name_en: dto.name_en,
+      name_ar: dto.name_ar,
+      brand: dto.brand,
+      category_id: dto.category_id,
+      has_variants: !!(dto.size || dto.color || dto.style),
+      variants: {
+        create: [{
+          // Child rows carry the same tenant explicitly. Prisma nested
+          // creates do not inherit the parent's scalar columns, and there is
+          // no composite foreign key to enforce it until Phase B.
+          tenant_id: context.tenantId,
+          sku: dto.sku,
+          barcode_ean13: dto.barcode_ean13 || null,
+          barcode_internal: dto.barcode_internal || dto.sku,
+          size: dto.size || null,
+          color: dto.color || null,
+          style: dto.style || null,
+          cost_price: dto.cost_price,
+        }],
       },
-      include: { variants: true }
-    });
+    } as any);
     this.invalidateCounts();
     return product;
   }
 
-  async updateVariant(id: string, dto: UpdateVariantDto) {
-    const exists = await this.prisma.productVariant.findUnique({ where: { id }});
+  async updateVariant(context: TenantContext, id: string, dto: UpdateVariantDto) {
+    const exists = await this.repository.findVariantById(context, id);
     if (!exists) throw new NotFoundException('Variant not found');
-    return this.prisma.productVariant.update({
-      where: { id },
-      data: {
-        sku: dto.sku ?? undefined,
-        barcode_ean13: dto.barcode_ean13,
-        barcode_internal: dto.barcode_internal,
-        size: dto.size,
-        color: dto.color,
-        style: dto.style,
-      }
+    return this.repository.updateVariant(context, id, {
+      sku: dto.sku ?? undefined,
+      barcode_ean13: dto.barcode_ean13,
+      barcode_internal: dto.barcode_internal,
+      size: dto.size,
+      color: dto.color,
+      style: dto.style,
     });
   }
 
-  async removeVariant(id: string) {
-    const exists = await this.prisma.productVariant.findUnique({ where: { id }});
+  async removeVariant(context: TenantContext, id: string) {
+    const exists = await this.repository.findVariantById(context, id);
     if (!exists) throw new NotFoundException('Variant not found');
-    const removed = await this.prisma.productVariant.update({
-      where: { id },
-      data: { is_active: false },
-    });
+    const removed = await this.repository.updateVariant(context, id, { is_active: false });
     this.invalidateCounts();
     return removed;
   }

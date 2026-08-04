@@ -10,36 +10,44 @@ import { AuthenticatedUser } from '../auth/authenticated-user';
 import { assertBranchAccess } from '../auth/branch-access';
 import { randomUUID } from 'crypto';
 import { requireResourceId } from '../common/resource-id';
+import { ShiftsRepository } from './shifts.repository';
+import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class ShiftsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly repository: ShiftsRepository,
+  ) {}
 
-  async open(branch_id: string, actor: AuthenticatedUser, opening_cash = 0) {
+  async open(
+    context: TenantContext,
+    branch_id: string,
+    actor: AuthenticatedUser,
+    opening_cash = 0,
+  ) {
     assertBranchAccess(actor, branch_id);
     return this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${branch_id}))`;
-      const branch = await tx.branch.findFirst({
-        where: { id: branch_id, is_active: true },
-        select: { id: true },
-      });
+      const branch = await this.repository.findActiveBranch(context, branch_id, tx);
       if (!branch) throw new NotFoundException('Active branch not found');
-      const existing = await tx.shift.findFirst({
-        where: { branch_id, status: 'open' },
-      });
+      const existing = await this.repository.findOpenForBranch(context, branch_id, tx);
       if (existing) return existing;
-      return tx.shift.create({
-        data: {
+      return this.repository.save(
+        context,
+        {
           branch_id,
           opened_by: actor.sub,
           opening_cash,
           status: 'open',
         },
-      });
+        tx,
+      );
     });
   }
 
   async issueOfflineContext(
+    context: TenantContext,
     id: string,
     actor: AuthenticatedUser,
     terminal: Pick<PosTerminal, 'id' | 'branch_id' | 'last_sale_sequence'>,
@@ -48,9 +56,7 @@ export class ShiftsService {
     if (actor.role !== 'cashier' && actor.role !== 'branch_manager') {
       throw new ForbiddenException('Only POS cashiers and branch managers can receive an offline accounting context');
     }
-    const shift = await this.prisma.shift.findUnique({
-      where: { id: shiftId },
-    });
+    const shift = await this.repository.findById(context, shiftId);
     if (!shift) throw new NotFoundException('Shift not found');
     if (shift.status !== 'open' || shift.closed_at) {
       throw new ConflictException('Offline accounting context requires an open shift');
@@ -85,14 +91,13 @@ export class ShiftsService {
   }
 
   async close(
+    context: TenantContext,
     id: string,
     actor: AuthenticatedUser,
     closing_cash: number,
   ) {
     const shiftId = requireResourceId(id, 'shift_id');
-    const shift = await this.prisma.shift.findUnique({
-      where: { id: shiftId },
-    });
+    const shift = await this.repository.findById(context, shiftId);
     if (!shift) throw new NotFoundException('Shift not found');
 
     assertBranchAccess(actor, shift.branch_id);
@@ -101,23 +106,12 @@ export class ShiftsService {
     }
 
     const closedAt = new Date();
+    // Both cash aggregates are tenant-scoped: an unscoped sum would fold
+    // another tenant's cash sales into this shift's expected drawer total and
+    // report the difference as a till discrepancy.
     const [cashSales, cashReturns] = await Promise.all([
-      this.prisma.salesInvoice.aggregate({
-        where: {
-          shift_id: shift.id,
-          status: 'completed',
-          payment_method: 'cash',
-        },
-        _sum: { total: true },
-      }),
-      this.prisma.return.aggregate({
-        where: {
-          shift_id: shift.id,
-          status: 'completed',
-          original_invoice: { payment_method: 'cash' },
-        },
-        _sum: { refund_total: true },
-      }),
+      this.repository.sumCashSales(context, shift.id),
+      this.repository.sumCashReturns(context, shift.id),
     ]);
 
     const expectedCash = new Prisma.Decimal(shift.opening_cash)
@@ -128,34 +122,25 @@ export class ShiftsService {
       .minus(expectedCash)
       .toDecimalPlaces(2);
 
-    const changed = await this.prisma.shift.updateMany({
-      where: { id: shiftId, status: 'open' },
-      data: {
-        closed_by: actor.sub,
-        closing_cash,
-        expected_cash: expectedCash,
-        difference,
-        closed_at: closedAt,
-        status: 'closed',
-      },
+    const changed = await this.repository.closeIfOpen(context, shiftId, {
+      closed_by: actor.sub,
+      closing_cash,
+      expected_cash: expectedCash,
+      difference,
+      closed_at: closedAt,
+      status: 'closed',
     });
-    if (changed.count !== 1) {
+    if (changed !== 1) {
       throw new ConflictException('Shift was already closed');
     }
-    return this.prisma.shift.findUnique({ where: { id: shiftId } });
+    return this.repository.findById(context, shiftId);
   }
 
-  list(branch_id?: string) {
-    return this.prisma.shift.findMany({
-      where: branch_id ? { branch_id } : {},
-      orderBy: { opened_at: 'desc' },
-      take: 50,
-    });
+  list(context: TenantContext, branch_id?: string) {
+    return this.repository.list(context, branch_id);
   }
 
-  current(branch_id: string) {
-    return this.prisma.shift.findFirst({
-      where: { branch_id, status: 'open' },
-    });
+  current(context: TenantContext, branch_id: string) {
+    return this.repository.findOpenForBranch(context, branch_id);
   }
 }

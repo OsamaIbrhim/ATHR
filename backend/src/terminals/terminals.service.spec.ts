@@ -1,6 +1,14 @@
 import { ConflictException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { TerminalsService } from './terminals.service';
+import { TerminalsRepository } from './terminals.repository';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: TerminalsService delegates to a tenant-scoped repository,
+// and the operator-driven methods take a TenantContext. Device-credential
+// paths (authenticateDevice/heartbeat) are unchanged: a device proves itself
+// before any tenant is known.
+const ctx = contextFor(TENANT_A);
 
 describe('TerminalsService', () => {
   const actor = { sub: 'user-1', role: 'cashier' as const, branch_id: 'branch-1' };
@@ -13,7 +21,7 @@ describe('TerminalsService', () => {
       branch: { findFirst: jest.fn().mockResolvedValue({ id: 'branch-1', code: 'MAIN', name_ar: 'الرئيسي', name_en: 'Main' }) },
       posTerminalEnrollment: { create: jest.fn().mockResolvedValue({}) },
     };
-    const result = await new TerminalsService(prisma as any).createEnrollment({ name: 'Till 1' }, manager);
+    const result = await new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).createEnrollment(ctx, { name: 'Till 1' }, manager);
     expect(result.enrollment_code).toHaveLength(12);
     expect(prisma.posTerminalEnrollment.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ branch_id: 'branch-1', created_by: manager.sub, terminal_name: 'Till 1' }),
@@ -35,7 +43,7 @@ describe('TerminalsService', () => {
       posTerminal: { findUnique: jest.fn().mockResolvedValue(null) },
       $transaction: jest.fn((callback) => callback(tx)),
     };
-    const service = new TerminalsService(prisma as any);
+    const service = new TerminalsService(prisma as any, new TerminalsRepository(prisma as any));
     // The code hash is looked up by the database mock, so any correctly-sized code is sufficient here.
     const result = await service.enroll({ enrollment_code: 'ABCDEF123456', device_id: dto.device_id });
     expect(result.device_token.length).toBeGreaterThan(40);
@@ -49,11 +57,14 @@ describe('TerminalsService', () => {
     const existing = { id: 'terminal-1', branch_id: 'branch-1', is_revoked: false, device_token_hash: hash(token) };
     const prisma = {
       posTerminal: {
+        // Heartbeat authenticates the device first (global `findUnique`, since
+        // a device proves itself before any tenant is known), then updates the
+        // row it just proved.
         findUnique: jest.fn().mockResolvedValue(existing),
         update: jest.fn().mockImplementation(({ data }) => Promise.resolve({ ...existing, ...data })),
       },
     };
-    const result = await new TerminalsService(prisma as any).heartbeat(dto, token, actor);
+    const result = await new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).heartbeat(dto, token, actor);
     expect(prisma.posTerminal.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: existing.id },
       data: expect.objectContaining({ last_sync_status: 'success' }),
@@ -76,7 +87,7 @@ describe('TerminalsService', () => {
     };
 
     await expect(
-      new TerminalsService(prisma as any).authenticateDevice(
+      new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).authenticateDevice(
         dto.device_id,
         token,
       ),
@@ -85,7 +96,7 @@ describe('TerminalsService', () => {
 
   it('rejects an unknown or incorrectly credentialed device', async () => {
     const prisma = { posTerminal: { findUnique: jest.fn().mockResolvedValue(null) } };
-    await expect(new TerminalsService(prisma as any).heartbeat(dto, 'wrong', actor)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).heartbeat(dto, 'wrong', actor)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('rejects a device already registered to another branch', async () => {
@@ -93,7 +104,7 @@ describe('TerminalsService', () => {
     const prisma = { posTerminal: { findUnique: jest.fn().mockResolvedValue({
       id: 'terminal-1', branch_id: 'branch-2', is_revoked: false, device_token_hash: hash(token),
     }) } };
-    await expect(new TerminalsService(prisma as any).heartbeat(dto, token, actor)).rejects.toBeInstanceOf(ConflictException);
+    await expect(new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).heartbeat(dto, token, actor)).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('does not allow a revoked device to come online', async () => {
@@ -101,7 +112,7 @@ describe('TerminalsService', () => {
     const prisma = { posTerminal: { findUnique: jest.fn().mockResolvedValue({
       id: 'terminal-1', branch_id: 'branch-1', is_revoked: true, device_token_hash: hash(token),
     }) } };
-    await expect(new TerminalsService(prisma as any).heartbeat(dto, token, actor)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).heartbeat(dto, token, actor)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('revokes the current terminal only after manager confirmation and empty local queues', async () => {
@@ -116,12 +127,12 @@ describe('TerminalsService', () => {
     };
     const prisma = {
       posTerminal: {
-        findUnique: jest.fn().mockResolvedValue(existing),
+        findFirst: jest.fn().mockResolvedValue(existing),
         update: jest.fn().mockImplementation(({ data }) => Promise.resolve({ ...existing, ...data })),
       },
     };
 
-    const result = await new TerminalsService(prisma as any).selfDecommission({
+    const result = await new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).selfDecommission(ctx, {
       device_id: dto.device_id,
       terminal_code: existing.terminal_code,
       pending_count: 0,
@@ -152,12 +163,12 @@ describe('TerminalsService', () => {
     };
     const prisma = {
       posTerminal: {
-        findUnique: jest.fn().mockResolvedValue(existing),
+        findFirst: jest.fn().mockResolvedValue(existing),
         update: jest.fn(),
       },
     };
 
-    await expect(new TerminalsService(prisma as any).selfDecommission({
+    await expect(new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).selfDecommission(ctx, {
       device_id: dto.device_id,
       terminal_code: existing.terminal_code,
       pending_count: 1,
@@ -171,7 +182,7 @@ describe('TerminalsService', () => {
       { id: 'online', is_revoked: false, last_seen_at: new Date(Date.now() - 1000) },
       { id: 'offline', is_revoked: false, last_seen_at: new Date(Date.now() - 120000) },
     ]) } };
-    const result = await new TerminalsService(prisma as any).list({ ...actor, role: 'owner' });
+    const result = await new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).list(ctx, { ...actor, role: 'owner' });
     expect(result.items.map((item:any) => [item.id, item.online])).toEqual([['online', true], ['offline', false]]);
   });
 });

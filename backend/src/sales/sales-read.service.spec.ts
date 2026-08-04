@@ -1,4 +1,8 @@
 import { SalesReadService } from './sales-read.service'
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: sales entry points take the resolved TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 function setup() {
   const prisma = {
@@ -67,13 +71,14 @@ describe('SalesReadService', () => {
   it('loads the page first and hydrates all relations in one parallel wave', async () => {
     const { prisma, service } = setup()
     const result = await service.listSales(
+      ctx,
       { q: '', page: 1, page_size: 20 } as any,
       'branch-1',
     )
 
     expect(prisma.salesInvoice.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { branch_id: 'branch-1' },
+        where: { branch_id: 'branch-1', tenant_id: ctx.tenantId },
         skip: 0,
         take: 20,
       }),
@@ -98,19 +103,20 @@ describe('SalesReadService', () => {
   it('coalesces repeated count queries and supports explicit invalidation', async () => {
     const { prisma, service } = setup()
     await Promise.all([
-      service.listSales({ q: '', page: 1, page_size: 20 } as any),
-      service.listSales({ q: '', page: 2, page_size: 20 } as any),
+      service.listSales(ctx, { q: '', page: 1, page_size: 20 } as any),
+      service.listSales(ctx, { q: '', page: 2, page_size: 20 } as any),
     ])
     expect(prisma.salesInvoice.count).toHaveBeenCalledTimes(1)
 
     service.invalidateCounts()
-    await service.listSales({ q: '', page: 1, page_size: 20 } as any)
+    await service.listSales(ctx, { q: '', page: 1, page_size: 20 } as any)
     expect(prisma.salesInvoice.count).toHaveBeenCalledTimes(2)
   })
 
   it('filters reconciliation views to invoices that carry warnings', async () => {
     const { prisma, service } = setup()
     await service.listSales(
+      ctx,
       {
         q: '',
         page: 1,
@@ -124,6 +130,7 @@ describe('SalesReadService', () => {
       expect.objectContaining({
         where: {
           branch_id: 'branch-1',
+          tenant_id: ctx.tenantId,
           warning_codes: { isEmpty: false },
         },
       }),

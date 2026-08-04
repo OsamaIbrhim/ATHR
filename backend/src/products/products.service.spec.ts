@@ -1,4 +1,17 @@
 import { ProductsService } from './products.service';
+import { ProductsRepository } from './products.repository';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: `ProductsService` now depends on `ProductsRepository`
+// rather than `PrismaService` directly, and every method takes a
+// `TenantContext`. These tests keep their original intent and assertions;
+// they build the repository over the same prisma mocks and additionally
+// assert the tenant predicate is present on the queries.
+const ctx = contextFor(TENANT_A);
+
+function serviceOver(prisma: any) {
+  return new ProductsService(new ProductsRepository(prisma as any));
+}
 
 function productReadPrisma(variants: any[], total = variants.length) {
   return {
@@ -22,15 +35,13 @@ function productReadPrisma(variants: any[], total = variants.length) {
 describe('ProductsService pagination', () => {
   it('preserves an explicitly confirmed zero initial cost', async () => {
     const create = jest.fn().mockResolvedValue({ id: 'p1', variants: [] });
-    const service = new ProductsService({
-      product: { create },
-    } as any);
+    const service = serviceOver({ product: { create } });
 
-    await service.createProduct({
+    await service.createProduct(ctx, {
       name_en: 'Free sample',
       sku: 'SAMPLE-0',
       cost_price: 0,
-    });
+    } as any);
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -44,10 +55,14 @@ describe('ProductsService pagination', () => {
   it('hydrates the first page in one parallel relation wave', async () => {
     const variants = [{ id: 'v1', product_id: 'p1', cost_price: 100 }];
     const prisma = productReadPrisma(variants, 41);
-    const result = await new ProductsService(prisma as any).list('', 1, 20, 'b1', true);
+    const result = await serviceOver(prisma).list(ctx, '', 1, 20, 'b1', true);
 
     expect(prisma.productVariant.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { is_active: true, product: { is_active: true } },
+      where: {
+        tenant_id: ctx.tenantId,
+        is_active: true,
+        product: { is_active: true, tenant_id: ctx.tenantId },
+      },
       skip: 0,
       take: 20,
     }));
@@ -73,14 +88,14 @@ describe('ProductsService pagination', () => {
         { name_en: 'T-Shirt', name_ar: 'تي شيرت', sku: 'TSHIRT-1', score: 0.72 },
       ]),
     };
-    const result = await new ProductsService(prisma as any).list('T-Shert', 1, 20);
+    const result = await serviceOver(prisma).list(ctx, 'T-Shert', 1, 20);
     expect(result.suggestions).toEqual([{ value: 'T-Shirt', label: 'تي شيرت' }]);
   });
 
   it('coalesces repeated identical count queries during a request burst', async () => {
     const prisma = productReadPrisma([], 0);
-    const service = new ProductsService(prisma as any);
-    await Promise.all([service.list('', 1, 20), service.list('', 2, 20)]);
+    const service = serviceOver(prisma);
+    await Promise.all([service.list(ctx, '', 1, 20), service.list(ctx, '', 2, 20)]);
     expect(prisma.productVariant.count).toHaveBeenCalledTimes(1);
     expect(prisma.productVariant.findMany).toHaveBeenCalledTimes(2);
   });
@@ -89,15 +104,15 @@ describe('ProductsService pagination', () => {
   it('does not expose moving-average cost as an editable variant field', async () => {
     const prisma = {
       productVariant: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'v1' }),
+        findFirst: jest.fn().mockResolvedValue({ id: 'v1' }),
         update: jest.fn().mockResolvedValue({ id: 'v1' }),
       },
     };
-    const service = new ProductsService(prisma as any);
+    const service = serviceOver(prisma);
 
-    await service.updateVariant('v1', {
+    await service.updateVariant(ctx, 'v1', {
       sku: 'UPDATED-SKU',
-    });
+    } as any);
 
     expect(prisma.productVariant.update).toHaveBeenCalledWith({
       where: { id: 'v1' },
@@ -110,11 +125,11 @@ describe('ProductsService pagination', () => {
   it('soft-deactivates a variant so delayed offline sales can still reference it', async () => {
     const prisma = {
       productVariant: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'v1', is_active: true }),
+        findFirst: jest.fn().mockResolvedValue({ id: 'v1', is_active: true }),
         update: jest.fn().mockResolvedValue({ id: 'v1', is_active: false }),
       },
     };
-    const result = await new ProductsService(prisma as any).removeVariant('v1');
+    const result = await serviceOver(prisma).removeVariant(ctx, 'v1');
 
     expect(prisma.productVariant.update).toHaveBeenCalledWith({
       where: { id: 'v1' },

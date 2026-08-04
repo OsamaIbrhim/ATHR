@@ -1,11 +1,11 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import type { MembershipRole, PermissionPolicySnapshot } from '@prisma/client';
+import { Prisma, type MembershipRole, type PermissionPolicySnapshot } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
-  IdentityPermission,
-  PERMISSION_POLICY_INITIAL_VERSION,
-  SYSTEM_ROLE_PERMISSIONS,
-} from './system-roles';
+  ALL_ROLE_PERMISSIONS,
+  PERMISSION_POLICY_CURRENT_VERSION,
+  type AthrPermission,
+} from './permission-catalog';
 
 const UNIQUE_CONSTRAINT_VIOLATION = 'P2002';
 
@@ -24,22 +24,36 @@ export class PermissionPolicyService implements OnModuleInit {
     await this.ensureSeeded();
   }
 
-  /** Idempotent: creates the version-1 snapshot only if none exists yet. */
+  /**
+   * Idempotent: ensures an active snapshot at `PERMISSION_POLICY_CURRENT_VERSION`
+   * exists. WP-007 Phase A raises that to 2 (identity-admin grants plus the
+   * business-domain grants in `permission-catalog.ts`). An environment still
+   * on WP-006's version 1 is upgraded in place on boot; without this, every
+   * business permission would default-deny after deploy because the v1 row
+   * already exists and the old code returned it unconditionally.
+   */
   async ensureSeeded(): Promise<PermissionPolicySnapshot> {
     const existing = await this.prisma.permissionPolicySnapshot.findFirst({
       where: { is_active: true },
       orderBy: { version: 'desc' },
     });
-    if (existing) return existing;
+    if (existing && existing.version >= PERMISSION_POLICY_CURRENT_VERSION) return existing;
 
     try {
-      return await this.prisma.permissionPolicySnapshot.create({
+      const created = await this.prisma.permissionPolicySnapshot.create({
         data: {
-          version: PERMISSION_POLICY_INITIAL_VERSION,
-          grants: SYSTEM_ROLE_PERMISSIONS,
+          version: PERMISSION_POLICY_CURRENT_VERSION,
+          grants: ALL_ROLE_PERMISSIONS as unknown as Prisma.InputJsonValue,
           is_active: true,
         },
       });
+      if (existing) {
+        await this.prisma.permissionPolicySnapshot.update({
+          where: { id: existing.id },
+          data: { is_active: false },
+        });
+      }
+      return created;
     } catch (error: unknown) {
       // Two concurrent instances/requests racing the first-ever seed: the
       // unique constraint on `version` lets exactly one create win; the
@@ -60,13 +74,14 @@ export class PermissionPolicyService implements OnModuleInit {
     return snapshot.version;
   }
 
-  async getGrants(role: MembershipRole): Promise<readonly IdentityPermission[]> {
+  async getGrants(role: MembershipRole): Promise<readonly AthrPermission[]> {
     const snapshot = await this.ensureSeeded();
-    const grants = snapshot.grants as Record<string, readonly IdentityPermission[]>;
+    const grants = snapshot.grants as Record<string, readonly AthrPermission[]>;
     return grants[role] ?? [];
   }
 
-  async hasPermission(role: MembershipRole, permission: IdentityPermission): Promise<boolean> {
+  /** Allow-only (ADR-0005 / Matrix §3 rule 1): absent means denied. */
+  async hasPermission(role: MembershipRole, permission: AthrPermission): Promise<boolean> {
     const grants = await this.getGrants(role);
     return grants.includes(permission);
   }

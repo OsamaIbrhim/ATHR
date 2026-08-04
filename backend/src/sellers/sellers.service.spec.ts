@@ -1,4 +1,12 @@
 import { SellersService } from './sellers.service';
+import { SellersRepository } from './sellers.repository';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: the service delegates to a tenant-scoped repository and
+// takes a TenantContext. Commission settings moved off the shared `id = 1`
+// singleton to a per-tenant row, so the double exposes `findFirst` rather
+// than `upsert`. Assertions are otherwise unchanged.
+const ctx = contextFor(TENANT_A);
 
 describe('SellersService', () => {
   it('subtracts in-period returns from pre-tax seller sales', async () => {
@@ -13,8 +21,9 @@ describe('SellersService', () => {
       return: { findMany: jest.fn().mockResolvedValue([
         { refund_subtotal: 200, original_invoice: { seller_id: 'seller-1' } },
       ]) },
-      sellerCommissionSettings: { upsert: jest.fn().mockResolvedValue({
+      sellerCommissionSettings: { findFirst: jest.fn().mockResolvedValue({
         id: 1,
+        tenant_id: ctx.tenantId,
         default_rate: 2,
         default_target: 1000,
         default_bonus: 100,
@@ -22,7 +31,8 @@ describe('SellersService', () => {
         period_anchor: new Date('2026-07-01'),
       }) },
     };
-    const result = await new SellersService(prisma as any).report(
+    const result = await new SellersService(new SellersRepository(prisma as any)).report(
+      ctx,
       '2026-07-01',
       '2026-07-31',
       'branch-1',
@@ -45,17 +55,19 @@ describe('SellersService', () => {
     const create = jest.fn().mockImplementation(({ data }) => ({ id: 'period-1', ...data }));
     const prisma = {
       sellerCommissionPeriod: {
-        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn().mockResolvedValue(null),
         create,
       },
+      sellerCommissionSettings: { findFirst: jest.fn().mockResolvedValue({
+        id: 1,
+        tenant_id: ctx.tenantId,
+        default_rate: 3,
+        default_target: 1000,
+        default_bonus: 200,
+        period_length_days: 30,
+      }) },
     };
-    const service = new SellersService(prisma as any);
-    jest.spyOn(service as any, 'getSettings').mockResolvedValue({
-      default_rate: 3,
-      default_target: 1000,
-      default_bonus: 200,
-      period_length_days: 30,
-    });
+    const service = new SellersService(new SellersRepository(prisma as any));
     jest.spyOn(service, 'report').mockResolvedValue({
       from: '2026-06-01',
       to: '2026-06-30',
@@ -83,6 +95,7 @@ describe('SellersService', () => {
     } as any);
 
     await service.closePeriod(
+      ctx,
       '2026-06-01',
       '2026-06-30',
       { sub: 'owner-1', role: 'owner', branch_id: null } as any,
@@ -92,12 +105,14 @@ describe('SellersService', () => {
       data: expect.objectContaining({
         default_rate: 3,
         period_length_days: 30,
+        tenant_id: ctx.tenantId,
         rows: {
           create: [expect.objectContaining({
             seller_name: 'Historical name',
             net_sales_before_tax: 1000,
             commission_rate: 3,
             estimated_total: 230,
+            tenant_id: ctx.tenantId,
           })],
         },
       }),

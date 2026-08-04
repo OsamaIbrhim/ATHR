@@ -1,4 +1,8 @@
 import { SalesController } from './sales.controller';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: sales entry points take the resolved TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 describe('SalesController POS terminal enforcement', () => {
   const cashier = {
@@ -68,12 +72,14 @@ describe('SalesController POS terminal enforcement', () => {
   it('authenticates the enrolled terminal before a return or invoice lookup', async () => {
     const { controller, sales, terminals } = subject();
     await controller.lookupInvoice(
+      ctx,
       ' B-100 ',
       'device-1',
       'secret-1',
       request(cashier),
     );
     await controller.ret(
+      ctx,
       returnDto,
       'device-1',
       'secret-1',
@@ -81,15 +87,17 @@ describe('SalesController POS terminal enforcement', () => {
     );
     expect(terminals.authenticate).toHaveBeenCalledTimes(2);
     expect(sales.findReturnableInvoice).toHaveBeenCalledWith(
+      ctx,
       'B-100',
       cashier,
     );
-    expect(sales.createReturn).toHaveBeenCalledWith(returnDto, cashier);
+    expect(sales.createReturn).toHaveBeenCalledWith(ctx, returnDto, cashier);
   });
 
   it('allows an owner support lookup without impersonating a physical terminal', async () => {
     const { controller, terminals } = subject();
     await controller.lookupInvoice(
+      ctx,
       'B-100',
       undefined,
       undefined,

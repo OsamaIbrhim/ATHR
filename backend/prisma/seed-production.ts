@@ -71,6 +71,10 @@ async function main() {
         expectedOwnerExists: !!expectedOwner,
       });
 
+      const tenant =
+        (await tx.tenant.findFirst({ where: { name: 'Initial ATHR Demo Tenant' } })) ??
+        (await tx.tenant.create({ data: { name: 'Initial ATHR Demo Tenant' } }));
+
       const branch = await tx.branch.upsert({
         where: { code: configuration.branch.code },
         update: {
@@ -81,6 +85,7 @@ async function main() {
           is_active: true,
         },
         create: {
+          tenant_id: tenant.id,
           code: configuration.branch.code,
           name_ar: configuration.branch.nameAr,
           name_en: configuration.branch.nameEn,
@@ -91,6 +96,9 @@ async function main() {
         },
       });
 
+      // WP-007 Phase A: the bootstrapped owner needs a Membership, otherwise
+      // the global TenantContextGuard denies every request it makes — the
+      // account would be created successfully and be unable to do anything.
       const owner = await tx.user.upsert({
         where: { phone: configuration.owner.phone },
         update: {
@@ -112,7 +120,18 @@ async function main() {
         },
       });
 
-      return { branch, owner };
+      await tx.membership.upsert({
+        where: { identityId_tenantId: { identityId: owner.id, tenantId: tenant.id } },
+        update: { role: 'tenant_owner', status: 'active' },
+        create: {
+          tenantId: tenant.id,
+          identityId: owner.id,
+          role: 'tenant_owner',
+          status: 'active',
+        },
+      });
+
+      return { branch, owner, tenant };
     },
     {
       maxWait: 10_000,

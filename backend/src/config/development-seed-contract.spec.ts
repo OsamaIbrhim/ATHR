@@ -14,6 +14,41 @@ describe('development and CI seed contract', () => {
     readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'),
   );
 
+  // WP-007 Phase A: the global TenantContextGuard resolves a tenant from the
+  // caller's Membership and fails closed. A seeded account without one can
+  // authenticate and then be denied every request — the API boots and nobody
+  // can do anything. This is exactly what admin-e2e-smoke caught.
+  it('gives every seeded identity a Membership in a real Tenant', () => {
+    expect(seed).toContain('Initial ATHR Demo Tenant');
+    expect(seed).toContain('prisma.membership.create');
+    expect(seed).toContain('tenantId: tenant_id');
+    // Membership has a Restrict FK to User, so it must be cleared first.
+    expect(seed).toContain('prisma.membership.deleteMany()');
+  });
+
+  it('stamps every seeded tenant-owned row with the tenant', () => {
+    for (const create of [
+      'prisma.branch.create({ data: { tenant_id,',
+      'prisma.supplier.create({ data: { tenant_id,',
+      'prisma.category.create({ data: { tenant_id,',
+      'prisma.customer.create({ data: { tenant_id,',
+      'prisma.inventoryStock.create({ data: { tenant_id,',
+    ]) {
+      expect(seed).toContain(create);
+    }
+    // Prisma nested creates do not inherit the parent row's scalars.
+    expect(seed).toContain('items: { create: items.map((item) => ({ ...item, tenant_id })) }');
+  });
+
+  it('bootstraps the production owner with a Membership too', () => {
+    const productionSeed = readFileSync(
+      resolve(process.cwd(), 'prisma/seed-production.ts'),
+      'utf8',
+    );
+    expect(productionSeed).toContain('tx.membership.upsert');
+    expect(productionSeed).toContain('Initial ATHR Demo Tenant');
+  });
+
   it('creates every operational role deterministically', () => {
     for (const role of [
       'owner',
