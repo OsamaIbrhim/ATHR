@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
+import type { TenantContext, TenantScope } from '../identity/tenant-context.type'
 import { ListSalesDto } from './dto/list-sales.dto'
 
 @Injectable()
@@ -12,9 +13,10 @@ export class SalesReadService {
 
   constructor(private prisma: PrismaService) {}
 
-  async listSales(dto: ListSalesDto, branchId?: string) {
+  async listSales(context: TenantContext, dto: ListSalesDto, branchId?: string) {
     const q = dto.q.trim()
     const where: Prisma.SalesInvoiceWhereInput = {
+      tenant_id: context.tenantId,
       ...(branchId ? { branch_id: branchId } : {}),
       ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
       ...(dto.status ? { status: dto.status } : {}),
@@ -39,7 +41,10 @@ export class SalesReadService {
           }
         : {}),
     }
+    // Tenant is part of the key: keyed on filters alone, one tenant's
+    // result count would be served to another (Blueprint §125).
     const countKey = JSON.stringify({
+      tenantId: context.tenantId,
       branchId,
       q,
       payment: dto.payment_method,
@@ -86,7 +91,7 @@ export class SalesReadService {
       }),
     ])
 
-    const items = await this.hydrateInvoices(invoices)
+    const items = await this.hydrateInvoices(context, invoices)
 
     return {
       items,
@@ -102,7 +107,7 @@ export class SalesReadService {
     this.countCache.clear()
   }
 
-  private async hydrateInvoices(invoices: any[]) {
+  private async hydrateInvoices(context: TenantScope, invoices: any[]) {
     if (!invoices.length) return []
 
     const invoiceIds = invoices.map((invoice) => invoice.id)
@@ -134,35 +139,38 @@ export class SalesReadService {
     const [branches, customers, terminals, sellers, itemCounts, returnCounts] =
       await Promise.all([
         this.prisma.branch.findMany({
-          where: { id: { in: branchIds } },
+          where: { id: { in: branchIds }, tenant_id: context.tenantId },
           select: { id: true, code: true, name_ar: true, name_en: true },
         }),
         customerIds.length
           ? this.prisma.customer.findMany({
-              where: { id: { in: customerIds } },
+              where: { id: { in: customerIds }, tenant_id: context.tenantId },
               select: { id: true, name: true, phone: true },
             })
           : Promise.resolve([]),
         terminalIds.length
           ? this.prisma.posTerminal.findMany({
-              where: { id: { in: terminalIds } },
+              where: { id: { in: terminalIds }, tenant_id: context.tenantId },
               select: { id: true, terminal_code: true, name: true },
             })
           : Promise.resolve([]),
         sellerIds.length
           ? this.prisma.user.findMany({
-              where: { id: { in: sellerIds } },
+              where: {
+                id: { in: sellerIds },
+                memberships: { some: { tenantId: context.tenantId } },
+              },
               select: { id: true, name: true, role: true },
             })
           : Promise.resolve([]),
         this.prisma.salesInvoiceItem.groupBy({
           by: ['sales_invoice_id'],
-          where: { sales_invoice_id: { in: invoiceIds } },
+          where: { sales_invoice_id: { in: invoiceIds }, tenant_id: context.tenantId },
           _count: { _all: true },
         }),
         this.prisma.return.groupBy({
           by: ['original_invoice_id'],
-          where: { original_invoice_id: { in: invoiceIds } },
+          where: { original_invoice_id: { in: invoiceIds }, tenant_id: context.tenantId },
           _count: { _all: true },
         }),
       ])

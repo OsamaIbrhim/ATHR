@@ -934,8 +934,8 @@ export class PurchasingService {
           invoice.reversal_idempotency_key === idempotencyKey &&
           invoice.reversal_command_fingerprint === fingerprint
         ) {
-          return tx.purchaseInvoice.findUniqueOrThrow({
-            where: { id: invoiceId },
+          return tx.purchaseInvoice.findFirstOrThrow({
+            where: { id: invoiceId, tenant_id: context.tenantId },
             include: purchaseInclude,
           })
         }
@@ -958,13 +958,15 @@ export class PurchasingService {
       for (const item of invoice.items) {
         const [receiptCostMovement, receiptStockMovement] =
           await Promise.all([
-            tx.inventoryCostMovement.findUnique({
+            tx.inventoryCostMovement.findFirst({
               where: {
+                tenant_id: context.tenantId,
                 idempotency_key: `purchase-cost:${item.id}`,
               },
             }),
-            tx.inventoryMovement.findUnique({
+            tx.inventoryMovement.findFirst({
               where: {
+                tenant_id: context.tenantId,
                 idempotency_key: `purchase-receipt:${item.id}`,
               },
             }),
@@ -1016,8 +1018,8 @@ export class PurchasingService {
               ), 0)
             )::bigint AS quantity
           `,
-          tx.productVariant.findUnique({
-            where: { id: item.variant_id },
+          tx.productVariant.findFirst({
+            where: { id: item.variant_id, tenant_id: context.tenantId },
             select: { cost_price: true },
           }),
         ])
@@ -1143,8 +1145,8 @@ export class PurchasingService {
         },
       })
 
-      return tx.purchaseInvoice.findUniqueOrThrow({
-        where: { id: reversed.id },
+      return tx.purchaseInvoice.findFirstOrThrow({
+        where: { id: reversed.id, tenant_id: context.tenantId },
         include: purchaseInclude,
       })
     })

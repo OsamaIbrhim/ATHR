@@ -25,6 +25,9 @@ import { resolveBranchScope } from '../auth/branch-access'
 import { TerminalsService } from '../terminals/terminals.service'
 import { ListReturnsDto } from './dto/list-returns.dto'
 import { PosProtocolGuard } from '../updates/pos-protocol.guard'
+import { RequirePermission } from '../identity/permission.guard'
+import { TenantCtx } from '../identity/tenant-context.decorator'
+import type { TenantContext } from '../identity/tenant-context.type'
 import { Public } from '../auth/public.decorator'
 
 @Controller()
@@ -38,8 +41,10 @@ export class SalesController {
 
   @Roles('owner', 'branch_manager', 'cashier')
   @RequireCapabilities('sales.read')
+  @RequirePermission('sales.sale.view')
   @Get('sales')
   listSales(
+    @TenantCtx() ctx: TenantContext,
     @Query() dto: ListSalesDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
@@ -49,17 +54,19 @@ export class SalesController {
       ['owner'],
     )
 
-    return this.reads.listSales(dto, branchId)
+    return this.reads.listSales(ctx, dto, branchId)
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
   @RequireCapabilities('sales.read')
+  @RequirePermission('sales.sale.view')
   @Get('sales/:id')
   getSale(
+    @TenantCtx() ctx: TenantContext,
     @Param('id') id: string,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.getInvoice(id, req.user)
+    return this.svc.getInvoice(ctx, id, req.user)
   }
 
   @Public()
@@ -83,8 +90,10 @@ export class SalesController {
   @Roles('owner', 'branch_manager', 'cashier')
   @RequireCapabilities('returns.create')
   @UseGuards(new PosProtocolGuard())
+  @RequirePermission('returns.return.request')
   @Post('pos/return')
   async ret(
+    @TenantCtx() ctx: TenantContext,
     @Body() dto: CreateReturnDto,
     @Headers('x-pos-device-id') deviceId: string | undefined,
     @Headers('x-pos-device-token') deviceToken: string | undefined,
@@ -98,14 +107,16 @@ export class SalesController {
       )
     }
 
-    return this.svc.createReturn(dto, req.user)
+    return this.svc.createReturn(ctx, dto, req.user)
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
   @RequireCapabilities('returns.create')
   @UseGuards(new PosProtocolGuard())
+  @RequirePermission('returns.return.view')
   @Get('pos/invoices/lookup')
   async lookupInvoice(
+    @TenantCtx() ctx: TenantContext,
     @Query('reference') reference: string,
     @Headers('x-pos-device-id') deviceId: string | undefined,
     @Headers('x-pos-device-token') deviceToken: string | undefined,
@@ -124,6 +135,7 @@ export class SalesController {
     }
 
     return this.svc.findReturnableInvoice(
+      ctx,
       reference.trim(),
       req.user,
     )
@@ -134,12 +146,13 @@ export class SalesController {
   @RequireCapabilities('sales.read')
   @Header('Content-Type', 'application/pdf')
   async getPdf(
+    @TenantCtx() ctx: TenantContext,
     @Param('id') id: string,
     @Query('lang') lang: 'ar' | 'en' = 'ar',
     @Req() req: Request & { user: AuthenticatedUser },
     @Res() res: Response,
   ) {
-    const invoice = await this.svc.getInvoice(id, req.user)
+    const invoice = await this.svc.getInvoice(ctx, id, req.user)
     const buf = await this.pdfService.render(
       { ...invoice, created_at: invoice.occurred_at },
       lang,
@@ -155,8 +168,10 @@ export class SalesController {
 
   @Roles('owner', 'branch_manager', 'cashier')
   @RequireCapabilities('sales.read')
+  @RequirePermission('returns.return.view')
   @Get('returns')
   listReturns(
+    @TenantCtx() ctx: TenantContext,
     @Query() dto: ListReturnsDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
@@ -166,6 +181,6 @@ export class SalesController {
       ['owner'],
     )
 
-    return this.svc.listReturns(dto, branchId)
+    return this.svc.listReturns(ctx, dto, branchId)
   }
 }

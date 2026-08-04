@@ -5,6 +5,10 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { SalesService } from './sales.service';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: sales entry points take the resolved TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 
 const branchId = '11111111-1111-4111-8111-111111111111';
@@ -90,30 +94,38 @@ function setupSale(options: {
       return Promise.resolve([]);
     }),
     branch: {
-      findUnique: jest.fn().mockResolvedValue({
+      findFirst: jest.fn().mockResolvedValue({
         id: branchId,
         code: 'BOLD-01',
       }),
     },
     shift: {
-      findUnique: jest.fn().mockResolvedValue({
-        id: shiftId,
-        branch_id: branchId,
-        status: options.closedShift ? 'closed' : 'open',
-        opening_cash: 50,
-        closing_cash: options.closedShift ? 400 : null,
-        expected_cash: options.closedShift ? 400 : null,
-        difference: options.closedShift ? 0 : null,
-        opened_at: new Date('2026-07-22T08:00:00.000Z'),
-        closed_at: options.closedShift
-          ? new Date('2026-07-22T12:00:00.000Z')
-          : null,
-      }),
-      findFirst: jest.fn().mockResolvedValue({ id: shiftId }),
+      // Both the by-id lookup (sale) and the open-shift lookup (return) are
+      // now tenant-scoped `findFirst` calls, so one double serves both and
+      // discriminates on the filter it was given.
+      findFirst: jest.fn().mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.status === 'open'
+            ? { id: shiftId }
+            : {
+                id: shiftId,
+                branch_id: branchId,
+                status: options.closedShift ? 'closed' : 'open',
+                opening_cash: 50,
+                closing_cash: options.closedShift ? 400 : null,
+                expected_cash: options.closedShift ? 400 : null,
+                difference: options.closedShift ? 0 : null,
+                opened_at: new Date('2026-07-22T08:00:00.000Z'),
+                closed_at: options.closedShift
+                  ? new Date('2026-07-22T12:00:00.000Z')
+                  : null,
+              },
+        ),
+      ),
       update: jest.fn().mockResolvedValue({}),
     },
     user: {
-      findUnique: jest.fn().mockImplementation(({ where }) => {
+      findFirst: jest.fn().mockImplementation(({ where }) => {
         if (where.id === sellerId) {
           return Promise.resolve(
             options.missingSeller
@@ -142,8 +154,11 @@ function setupSale(options: {
       update: jest.fn().mockResolvedValue({}),
     },
     salesInvoice: {
-      findUnique: jest.fn().mockResolvedValue(options.existing ?? null),
-      findFirst: jest.fn().mockResolvedValue(null),
+      // Both the sync-id replay lookup and the terminal-sequence owner check
+      // are tenant-scoped findFirst calls now; discriminate on the filter.
+      findFirst: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(where?.sync_id ? (options.existing ?? null) : null),
+      ),
       create: jest.fn().mockImplementation(({ data }) =>
         Promise.resolve({
           id: 'sale-1',
@@ -229,7 +244,7 @@ function setupReturn(alreadyReturned = 0) {
     $queryRaw: jest.fn().mockResolvedValue([]),
     shift: { findFirst: jest.fn().mockResolvedValue({ id: shiftId }) },
     salesInvoice: {
-      findUnique: jest.fn().mockResolvedValue({
+      findFirst: jest.fn().mockResolvedValue({
         id: 'sale-1',
         branch_id: branchId,
         customer_id: null,
@@ -368,7 +383,9 @@ describe('SalesService acceptance-first sale synchronization', () => {
       warning_codes: [],
       items: [],
     };
-    tx.salesInvoice.findUnique.mockResolvedValue(existing);
+    tx.salesInvoice.findFirst.mockImplementation(({ where }: any) =>
+      Promise.resolve(where?.sync_id ? existing : null),
+    );
 
     await expect(service.createSale(dto, terminal)).resolves.toBe(existing);
     expect(tx.inventoryStock.upsert).not.toHaveBeenCalled();
@@ -378,16 +395,22 @@ describe('SalesService acceptance-first sale synchronization', () => {
   it('quarantines a reused sync id carrying different financial content', async () => {
     const { service, tx } = setupSale();
     const original = saleDto();
-    tx.salesInvoice.findUnique.mockResolvedValue({
-      id: 'sale-1',
-      branch_id: branchId,
-      terminal_id: terminal.id,
-      shift_id: shiftId,
-      offline_session_id: sessionId,
-      terminal_sequence: 1n,
-      command_fingerprint: fingerprint(service, original),
-      items: [],
-    });
+    tx.salesInvoice.findFirst.mockImplementation(({ where }: any) =>
+      Promise.resolve(
+        where?.sync_id
+          ? {
+              id: 'sale-1',
+              branch_id: branchId,
+              terminal_id: terminal.id,
+              shift_id: shiftId,
+              offline_session_id: sessionId,
+              terminal_sequence: 1n,
+              command_fingerprint: fingerprint(service, original),
+              items: [],
+            }
+          : null,
+      ),
+    );
 
     await expect(
       service.createSale(saleDto({ payment_method: 'card' }), terminal),
@@ -440,6 +463,7 @@ describe('SalesService returns', () => {
     const { service } = setupReturn();
     await expect(
       service.createReturn(
+      ctx,
         {
           original_invoice_id: 'sale-1',
           items: [{ sales_invoice_item_id: 'not-on-sale', qty: 1 }],
@@ -453,6 +477,7 @@ describe('SalesService returns', () => {
     const { service } = setupReturn(2);
     await expect(
       service.createReturn(
+      ctx,
         {
           original_invoice_id: 'sale-1',
           items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
@@ -465,6 +490,7 @@ describe('SalesService returns', () => {
   it('links a POS return to the currently open shift', async () => {
     const { service, tx } = setupReturn();
     const result = await service.createReturn(
+      ctx,
       {
         original_invoice_id: 'sale-1',
         items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
