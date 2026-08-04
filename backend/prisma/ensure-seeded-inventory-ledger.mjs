@@ -26,7 +26,8 @@ export async function ensureSeededInventoryLedger(
       "reference_id",
       "idempotency_key",
       "occurred_at",
-      "metadata"
+      "metadata",
+      "tenant_id"
     )
     SELECT
       stock."branch_id",
@@ -43,7 +44,8 @@ export async function ensureSeededInventoryLedger(
       jsonb_build_object(
         'source', '${source.replaceAll("'", "''")}',
         'reason', 'seeded materialized inventory opening balance'
-      )
+      ),
+      stock."tenant_id"
     FROM "InventoryStock" stock
     WHERE (stock."qty_on_hand" <> 0 OR stock."qty_reserved" <> 0)
       AND NOT EXISTS (
