@@ -195,6 +195,31 @@ export class FakeTable {
     return { count: items.length };
   };
 
+  upsert = async ({ where, create, update, include }: any) => {
+    const existing = this.rows.find((row) => this.match(row, where));
+    if (existing) {
+      Object.assign(existing, update);
+      return this.hydrate(existing, include);
+    }
+    const created = await this.create({ data: { ...where, ...create } });
+    return this.hydrate(created, include);
+  };
+
+  /** Resolves declared to-one relations for an `include`, so callers see them. */
+  private hydrate(row: Row, include?: Row) {
+    if (!include) return row;
+    const hydrated: Row = { ...row };
+    for (const key of Object.keys(include)) {
+      if (hydrated[key] !== undefined) continue;
+      const relation = this.relations[key];
+      if (!relation) continue;
+      hydrated[key] = this.prisma[relation.table]?.rows.find(
+        (candidate: Row) => candidate[relation.foreignKey ?? 'id'] === row[relation.localKey],
+      ) ?? null;
+    }
+    return hydrated;
+  }
+
   update = async ({ where, data }: any) => {
     const row = this.rows.find((candidate) => this.match(candidate, where));
     if (!row) throw new Error(`FakeTable.update: no row matching ${JSON.stringify(where)}`);
@@ -221,13 +246,26 @@ export class FakeTable {
     return { count: removed };
   };
 
-  aggregate = async ({ where, _sum, _count }: any = {}) => {
+  aggregate = async ({ where, _sum, _count, _max, _min }: any = {}) => {
     const rows = this.rows.filter((row) => this.match(row, where));
     const sum: Row = {};
     for (const field of Object.keys(_sum ?? {})) {
       sum[field] = rows.reduce((total, row) => total + Number(row[field] ?? 0), 0);
     }
-    return { _sum: sum, _count: _count ? rows.length : undefined };
+    const pick = (fields: Row | undefined, reducer: (a: any, b: any) => any) => {
+      const result: Row = {};
+      for (const field of Object.keys(fields ?? {})) {
+        const values = rows.map((row) => row[field]).filter((value) => value !== null && value !== undefined);
+        result[field] = values.length ? values.reduce(reducer) : null;
+      }
+      return result;
+    };
+    return {
+      _sum: sum,
+      _count: _count ? rows.length : undefined,
+      _max: pick(_max, (a, b) => (b > a ? b : a)),
+      _min: pick(_min, (a, b) => (b < a ? b : a)),
+    };
   };
 
   groupBy = async ({ by, where }: any) => {
