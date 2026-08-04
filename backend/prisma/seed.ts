@@ -160,7 +160,6 @@ async function main() {
         has_variants: true,
         variants: {
           create: p.variants.map(v => ({
-            tenant_id,
             sku: v.sku,
             barcode_ean13: v.ean,
             barcode_internal: v.sku,

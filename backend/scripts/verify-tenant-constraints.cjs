@@ -66,6 +66,12 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
   const branch = await prisma.branch.create({
     data: { tenant_id: tenantId, code: `${label}-BR`, name_ar: 'فرع اختبار' },
   });
+  // Transfer has a pre-existing "Transfer_distinct_branches" CHECK
+  // (from_branch_id <> to_branch_id) -- a second branch is needed so this
+  // chain's own Transfer fixture satisfies it.
+  const secondBranch = await prisma.branch.create({
+    data: { tenant_id: tenantId, code: `${label}-BR2`, name_ar: 'فرع اختبار ٢' },
+  });
   const category = await prisma.category.create({
     data: { tenant_id: tenantId, name_ar: 'تصنيف اختبار' },
   });
@@ -188,7 +194,7 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
     },
   });
   const transfer = await prisma.transfer.create({
-    data: { tenant_id: tenantId, from_branch_id: branch.id, to_branch_id: branch.id, transfer_number: `${label}-TR` },
+    data: { tenant_id: tenantId, from_branch_id: branch.id, to_branch_id: secondBranch.id, transfer_number: `${label}-TR` },
   });
   const transferItem = await prisma.transferItem.create({
     data: { tenant_id: tenantId, transfer_id: transfer.id, variant_id: variant.id, qty: 1 },
@@ -301,7 +307,7 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
   });
 
   return {
-    branch, category, product, variant, customer, supplier, posTerminal, shift, inventoryStock,
+    branch, secondBranch, category, product, variant, customer, supplier, posTerminal, shift, inventoryStock,
     salesInvoice, salesInvoiceItem, returnRecord, returnItem, purchaseInvoice, purchaseInvoiceItem,
     supplierReturn, supplierReturnItem, transfer, transferItem, transferTransitMovement,
     sellerCommissionPeriod, inventoryMovement, inventoryCostMovement, offerSuggestion,
@@ -326,7 +332,12 @@ function foreignKeyCases(chainA, chainB) {
     { table: 'salesInvoice', name: 'SalesInvoice.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-branch`, branch_id: chainB.branch.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
     { table: 'salesInvoice', name: 'SalesInvoice.customer_id -> Customer', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-customer`, branch_id: chainA.branch.id, customer_id: chainB.customer.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
     { table: 'salesInvoice', name: 'SalesInvoice.terminal_id -> PosTerminal', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-terminal`, branch_id: chainA.branch.id, terminal_id: chainB.posTerminal.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
-    { table: 'salesInvoice', name: 'SalesInvoice.shift_id -> Shift', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-shift`, branch_id: chainA.branch.id, shift_id: chainB.shift.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
+    // SalesInvoice's "offline_accounting_context_complete" CHECK requires
+    // terminal_id/terminal_sequence/shift_id/offline_session_id/cashier_id/
+    // received_by/command_fingerprint to be all-null or all-set together --
+    // setting shift_id alone would trip that CHECK before the FK is ever
+    // evaluated, so every other field is filled in to isolate the FK test.
+    { table: 'salesInvoice', name: 'SalesInvoice.shift_id -> Shift', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-shift`, branch_id: chainA.branch.id, terminal_id: chainA.posTerminal.id, terminal_sequence: 1, shift_id: chainB.shift.id, offline_session_id: crypto.randomUUID(), cashier_id: chainA.sharedUserId, received_by: chainA.sharedUserId, command_fingerprint: '0'.repeat(64), subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
     { table: 'posTerminal', name: 'PosTerminal.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, device_id: crypto.randomUUID(), terminal_code: `${chainA.label}-fk-pt`, name: 'x', branch_id: chainB.branch.id }) },
     { table: 'posTerminalEnrollment', name: 'PosTerminalEnrollment.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, code_hash: `${chainA.label}-fk-pte`, branch_id: chainB.branch.id, created_by: chainA.sharedUserId, expires_at: new Date(Date.now() + 3600_000) }) },
     { table: 'return', name: 'Return.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, original_invoice_id: chainA.salesInvoice.id, branch_id: chainB.branch.id, return_invoice_number: `${chainA.label}-fk-ret-branch`, status: 'voided' }) },
@@ -376,7 +387,7 @@ function uniquenessCases(chainA, chainB) {
     { table: 'salesInvoice', name: 'SalesInvoice (tenant_id, invoice_number)', valueA: () => ({ invoice_number: `${chainA.label}-dup-inv` }), rowA: () => ({ tenant_id: chainA.tenant, branch_id: chainA.branch.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }), rowB: () => ({ tenant_id: chainB.tenant, branch_id: chainB.branch.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
     { table: 'return', name: 'Return (tenant_id, return_invoice_number)', valueA: () => ({ return_invoice_number: `${chainA.label}-dup-ret` }), rowA: () => ({ tenant_id: chainA.tenant, original_invoice_id: chainA.salesInvoice.id, branch_id: chainA.branch.id, status: 'voided' }), rowB: () => ({ tenant_id: chainB.tenant, original_invoice_id: chainB.salesInvoice.id, branch_id: chainB.branch.id, status: 'voided' }) },
     { table: 'supplierReturn', name: 'SupplierReturn (tenant_id, return_number)', valueA: () => ({ return_number: `${chainA.label}-dup-sr` }), rowA: () => ({ tenant_id: chainA.tenant, purchase_invoice_id: chainA.purchaseInvoice.id, supplier_id: chainA.supplier.id, branch_id: chainA.branch.id, idempotency_key: `${chainA.label}-dup-sr-idem-a`, command_fingerprint: chainA.label.padEnd(64, '0'), reason: 'x', credit_total: 1, inventory_value_removed: 1, purchase_price_variance: 0, occurred_at: new Date() }), rowB: () => ({ tenant_id: chainB.tenant, purchase_invoice_id: chainB.purchaseInvoice.id, supplier_id: chainB.supplier.id, branch_id: chainB.branch.id, idempotency_key: `${chainA.label}-dup-sr-idem-b`, command_fingerprint: chainA.label.padEnd(64, '0'), reason: 'x', credit_total: 1, inventory_value_removed: 1, purchase_price_variance: 0, occurred_at: new Date() }) },
-    { table: 'transfer', name: 'Transfer (tenant_id, transfer_number)', valueA: () => ({ transfer_number: `${chainA.label}-dup-tr` }), rowA: () => ({ tenant_id: chainA.tenant, from_branch_id: chainA.branch.id, to_branch_id: chainA.branch.id }), rowB: () => ({ tenant_id: chainB.tenant, from_branch_id: chainB.branch.id, to_branch_id: chainB.branch.id }) },
+    { table: 'transfer', name: 'Transfer (tenant_id, transfer_number)', valueA: () => ({ transfer_number: `${chainA.label}-dup-tr` }), rowA: () => ({ tenant_id: chainA.tenant, from_branch_id: chainA.branch.id, to_branch_id: chainA.secondBranch.id }), rowB: () => ({ tenant_id: chainB.tenant, from_branch_id: chainB.branch.id, to_branch_id: chainB.secondBranch.id }) },
     // Uses dates distinct from either chain's buildChain() period so this
     // case's own two inserts are the only source of truth for the assertion
     // (chainA/chainB already used different period windows from each other,
