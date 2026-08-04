@@ -10,11 +10,11 @@ const {
 } = require('./prisma-migrate-deploy.cjs');
 
 test('reports the repository migration history used by deployment', () => {
-  assert.equal(countMigrationFolders(), 146);
+  assert.equal(countMigrationFolders(), 147);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608040109_tenant_scoped_unique_supplierreturn_return_number',
-    '202608040110_tenant_scoped_unique_transfer_transfer_number',
-    '202608040111_fix_ledger_triggers_tenant_id',
+    '202608040110_tenant_scoped_unique_supplierreturn_return_number',
+    '202608040111_tenant_scoped_unique_transfer_transfer_number',
+    '202608040112_fix_ledger_triggers_tenant_id',
   ]);
 });
 
