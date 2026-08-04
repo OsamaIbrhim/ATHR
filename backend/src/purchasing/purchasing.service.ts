@@ -8,6 +8,7 @@ import {
 import { Prisma } from '@prisma/client'
 import { createHash, randomUUID } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
+import type { TenantContext, TenantScope } from '../identity/tenant-context.type'
 import {
   CreateSupplierReturnDto,
   ReceivePurchaseDto,
@@ -56,10 +57,13 @@ const purchaseInclude = {
 export class PurchasingService {
   constructor(private prisma: PrismaService) {}
 
-  list(branch_id?: string, take = 50) {
+  list(context: TenantContext, branch_id?: string, take = 50) {
     const safeTake = Math.min(200, Math.max(1, Number(take) || 50))
     return this.prisma.purchaseInvoice.findMany({
-      where: branch_id ? { branch_id } : {},
+      where: {
+        tenant_id: context.tenantId,
+        ...(branch_id ? { branch_id } : {}),
+      },
       include: {
         branch: true,
         supplier: true,
@@ -71,14 +75,14 @@ export class PurchasingService {
     })
   }
 
-  get(id: string) {
-    return this.prisma.purchaseInvoice.findUnique({
-      where: { id },
+  get(context: TenantContext, id: string) {
+    return this.prisma.purchaseInvoice.findFirst({
+      where: { id, tenant_id: context.tenantId },
       include: purchaseInclude,
     })
   }
 
-  async receive(dto: ReceivePurchaseDto, actor: AuthenticatedUser) {
+  async receive(context: TenantContext, dto: ReceivePurchaseDto, actor: AuthenticatedUser) {
     if (
       dto.discount_amount !== undefined &&
       dto.discount_percent !== undefined
@@ -123,18 +127,22 @@ export class PurchasingService {
       return await this.serializable(async (tx) => {
         const replay = await this.findReplay(
           tx,
+          context,
           prepared,
           dto.supplier_id,
         )
         if (replay) return replay
 
         const [branch, supplier] = await Promise.all([
+          // Both the receiving branch and the supplier must belong to the
+          // caller's tenant; an unscoped supplier lookup would let a purchase
+          // be booked against another tenant's supplier account.
           tx.branch.findFirst({
-            where: { id: dto.branch_id, is_active: true },
+            where: { id: dto.branch_id, tenant_id: context.tenantId, is_active: true },
             select: { id: true },
           }),
-          tx.supplier.findUnique({
-            where: { id: dto.supplier_id },
+          tx.supplier.findFirst({
+            where: { id: dto.supplier_id, tenant_id: context.tenantId },
             select: { id: true },
           }),
         ])
@@ -144,10 +152,10 @@ export class PurchasingService {
         const variantIds = prepared.lines
           .map((line) => line.variant_id)
           .sort()
-        await this.lockVariants(tx, variantIds)
+        await this.lockVariants(tx, context, variantIds)
 
         const variants = await tx.productVariant.findMany({
-          where: { id: { in: variantIds } },
+          where: { id: { in: variantIds }, tenant_id: context.tenantId },
           select: { id: true },
         })
         if (variants.length !== variantIds.length) {
@@ -158,6 +166,7 @@ export class PurchasingService {
 
         const invoice = await tx.purchaseInvoice.create({
           data: {
+            tenant_id: context.tenantId,
             supplier_id: dto.supplier_id,
             branch_id: dto.branch_id,
             invoice_number: dto.invoice_number?.trim() || null,
@@ -179,6 +188,7 @@ export class PurchasingService {
             created_by: actor.sub,
             items: {
               create: prepared.lines.map((line) => ({
+                tenant_id: context.tenantId,
                 variant_id: line.variant_id,
                 qty: line.qty,
                 unit_cost: line.unit_cost,
@@ -219,6 +229,7 @@ export class PurchasingService {
             },
             update: { qty_on_hand: { increment: line.qty } },
             create: {
+              tenant_id: context.tenantId,
               branch_id: dto.branch_id,
               variant_id: line.variant_id,
               qty_on_hand: line.qty,
@@ -279,6 +290,7 @@ export class PurchasingService {
 
         await tx.auditLog.create({
           data: {
+            tenant_id: context.tenantId,
             user_id: actor.sub,
             action: 'purchase.receipt.posted',
             entity: 'PurchaseInvoice',
@@ -300,8 +312,8 @@ export class PurchasingService {
           },
         })
 
-        return tx.purchaseInvoice.findUniqueOrThrow({
-          where: { id: invoice.id },
+        return tx.purchaseInvoice.findFirstOrThrow({
+          where: { id: invoice.id, tenant_id: context.tenantId },
           include: purchaseInclude,
         })
       })
@@ -309,6 +321,7 @@ export class PurchasingService {
       if (this.isUniqueConflict(error)) {
         const replay = await this.findReplay(
           this.prisma,
+          context,
           prepared,
           dto.supplier_id,
         )
@@ -323,6 +336,7 @@ export class PurchasingService {
 
 
   async returnToSupplier(
+    context: TenantContext,
     invoiceId: string,
     dto: CreateSupplierReturnDto,
     actor: AuthenticatedUser,
@@ -398,8 +412,8 @@ export class PurchasingService {
           FOR UPDATE
         `
 
-        const replay = await tx.supplierReturn.findUnique({
-          where: { idempotency_key: idempotencyKey },
+        const replay = await tx.supplierReturn.findFirst({
+          where: { tenant_id: context.tenantId, idempotency_key: idempotencyKey },
           include: {
             purchase_invoice: true,
             supplier: true,
@@ -426,8 +440,8 @@ export class PurchasingService {
           return replay
         }
 
-        const invoice = await tx.purchaseInvoice.findUnique({
-          where: { id: invoiceId },
+        const invoice = await tx.purchaseInvoice.findFirst({
+          where: { id: invoiceId, tenant_id: context.tenantId },
           include: { items: true },
         })
         if (!invoice) {
@@ -495,11 +509,11 @@ export class PurchasingService {
             ),
           ),
         ].sort()
-        await this.lockVariants(tx, variantIds)
+        await this.lockVariants(tx, context, variantIds)
 
         const [variants, returned] = await Promise.all([
           tx.productVariant.findMany({
-            where: { id: { in: variantIds } },
+            where: { tenant_id: context.tenantId, id: { in: variantIds } },
             select: { id: true, cost_price: true },
           }),
           tx.supplierReturnItem.groupBy({
@@ -638,6 +652,7 @@ export class PurchasingService {
 
         const returnRecord = await tx.supplierReturn.create({
           data: {
+            tenant_id: context.tenantId,
             purchase_invoice_id: invoice.id,
             supplier_id: invoice.supplier_id,
             branch_id: invoice.branch_id,
@@ -763,6 +778,7 @@ export class PurchasingService {
 
         await tx.auditLog.create({
           data: {
+            tenant_id: context.tenantId,
             user_id: actor.sub,
             action: 'purchase.supplier_return.posted',
             entity: 'SupplierReturn',
@@ -779,8 +795,8 @@ export class PurchasingService {
           },
         })
 
-        return tx.supplierReturn.findUniqueOrThrow({
-          where: { id: returnRecord.id },
+        return tx.supplierReturn.findFirstOrThrow({
+          where: { id: returnRecord.id, tenant_id: context.tenantId },
           include: {
             purchase_invoice: true,
             supplier: true,
@@ -802,8 +818,8 @@ export class PurchasingService {
     } catch (error) {
       if (this.isUniqueConflict(error)) {
         const existing =
-          await this.prisma.supplierReturn.findUnique({
-            where: { idempotency_key: idempotencyKey },
+          await this.prisma.supplierReturn.findFirst({
+            where: { tenant_id: context.tenantId, idempotency_key: idempotencyKey },
             include: {
               purchase_invoice: true,
               supplier: true,
@@ -834,10 +850,13 @@ export class PurchasingService {
     }
   }
 
-  listSupplierReturns(branchId?: string, take = 100) {
+  listSupplierReturns(context: TenantContext, branchId?: string, take = 100) {
     const safeTake = Math.min(500, Math.max(1, Number(take) || 100))
     return this.prisma.supplierReturn.findMany({
-      where: branchId ? { branch_id: branchId } : {},
+      where: {
+        tenant_id: context.tenantId,
+        ...(branchId ? { branch_id: branchId } : {}),
+      },
       include: {
         purchase_invoice: true,
         supplier: true,
@@ -860,6 +879,7 @@ export class PurchasingService {
   }
 
   async reverse(
+    context: TenantContext,
     invoiceId: string,
     dto: ReversePurchaseDto,
     actor: AuthenticatedUser,
@@ -887,11 +907,12 @@ export class PurchasingService {
         SELECT "id"
         FROM "PurchaseInvoice"
         WHERE "id" = ${invoiceId}::uuid
+          AND "tenant_id" = ${context.tenantId}::uuid
         FOR UPDATE
       `
 
-      const invoice = await tx.purchaseInvoice.findUnique({
-        where: { id: invoiceId },
+      const invoice = await tx.purchaseInvoice.findFirst({
+        where: { id: invoiceId, tenant_id: context.tenantId },
         include: { items: true },
       })
       if (!invoice) {
@@ -931,7 +952,7 @@ export class PurchasingService {
       const variantIds = invoice.items
         .map((item) => item.variant_id)
         .sort()
-      await this.lockVariants(tx, variantIds)
+      await this.lockVariants(tx, context, variantIds)
 
       const reversedAt = new Date()
       for (const item of invoice.items) {
@@ -1108,6 +1129,7 @@ export class PurchasingService {
 
       await tx.auditLog.create({
         data: {
+          tenant_id: context.tenantId,
           user_id: actor.sub,
           action: 'purchase.receipt.reversed',
           entity: 'PurchaseInvoice',
@@ -1129,6 +1151,7 @@ export class PurchasingService {
   }
 
   listCostMovements(
+    context: TenantContext,
     branchId?: string,
     variantId?: string,
     take = 100,
@@ -1136,6 +1159,7 @@ export class PurchasingService {
     const safeTake = Math.min(500, Math.max(1, Number(take) || 100))
     return this.prisma.inventoryCostMovement.findMany({
       where: {
+        tenant_id: context.tenantId,
         ...(branchId ? { branch_id: branchId } : {}),
         ...(variantId ? { variant_id: variantId } : {}),
       },
@@ -1154,7 +1178,7 @@ export class PurchasingService {
     })
   }
 
-  async costReconciliation(variantId?: string) {
+  async costReconciliation(context: TenantContext, variantId?: string) {
     return this.prisma.$queryRaw<
       Array<{
         variant_id: string
@@ -1171,6 +1195,7 @@ export class PurchasingService {
           movement."variant_id",
           movement."cost_after"
         FROM "InventoryCostMovement" movement
+        WHERE movement."tenant_id" = ${context.tenantId}::uuid
         ORDER BY
           movement."variant_id",
           movement."sequence" DESC
@@ -1180,6 +1205,7 @@ export class PurchasingService {
           record."variant_id",
           COALESCE(SUM(record."qty_on_hand"), 0)::bigint AS "qty"
         FROM "InventoryStock" record
+        WHERE record."tenant_id" = ${context.tenantId}::uuid
         GROUP BY record."variant_id"
       ),
       in_transit AS (
@@ -1190,6 +1216,7 @@ export class PurchasingService {
             item."damaged_qty" - item."missing_qty"
           ), 0)::bigint AS "qty"
         FROM "TransferItem" item
+        WHERE item."tenant_id" = ${context.tenantId}::uuid
         GROUP BY item."variant_id"
       ),
       stock AS (
@@ -1224,8 +1251,10 @@ export class PurchasingService {
         ON latest."variant_id" = variant."id"
       LEFT JOIN stock
         ON stock."variant_id" = variant."id"
-      WHERE (${variantId || null}::uuid IS NULL
-        OR variant."id" = ${variantId || null}::uuid)
+      WHERE variant."tenant_id" = ${context.tenantId}::uuid
+        AND product."tenant_id" = ${context.tenantId}::uuid
+        AND (${variantId || null}::uuid IS NULL
+          OR variant."id" = ${variantId || null}::uuid)
       ORDER BY "reconciled" ASC, variant."sku" ASC
     `
   }
@@ -1242,11 +1271,13 @@ export class PurchasingService {
 
   private async findReplay(
     db: Pick<Prisma.TransactionClient, 'purchaseInvoice'>,
+    context: TenantScope,
     prepared: PreparedPurchaseReceipt,
     supplierId: string,
   ) {
     const existing = await db.purchaseInvoice.findFirst({
       where: {
+        tenant_id: context.tenantId,
         OR: [
           { idempotency_key: prepared.idempotencyKey },
           ...(prepared.normalizedInvoiceNumber
@@ -1277,6 +1308,7 @@ export class PurchasingService {
 
   private async lockVariants(
     tx: Prisma.TransactionClient,
+    context: TenantScope,
     variantIds: string[],
   ) {
     if (!variantIds.length) return
@@ -1284,7 +1316,8 @@ export class PurchasingService {
       Prisma.sql`
         SELECT variant."id"
         FROM "ProductVariant" variant
-        WHERE variant."id" IN (
+        WHERE variant."tenant_id" = ${context.tenantId}::uuid
+          AND variant."id" IN (
           ${Prisma.join(
             variantIds.map(
               (id) => Prisma.sql`${id}::uuid`,

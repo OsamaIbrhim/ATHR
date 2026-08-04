@@ -4,6 +4,10 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PurchasingService } from './purchasing.service';
+import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+// WP-007 Phase A: purchasing entry points take the resolved TenantContext first.
+const ctx = contextFor(TENANT_A);
 
 describe('PurchasingService accounting transaction', () => {
   const actor = {
@@ -42,7 +46,7 @@ describe('PurchasingService accounting transaction', () => {
             qty: 2,
           }],
         }),
-        findUniqueOrThrow: jest.fn().mockResolvedValue({
+        findFirstOrThrow: jest.fn().mockResolvedValue({
           id: invoiceId,
           items: [],
           cost_movements: [],
@@ -52,7 +56,7 @@ describe('PurchasingService accounting transaction', () => {
         findFirst: jest.fn().mockResolvedValue({ id: dto.branch_id }),
       },
       supplier: {
-        findUnique: jest.fn().mockResolvedValue({ id: dto.supplier_id }),
+        findFirst: jest.fn().mockResolvedValue({ id: dto.supplier_id }),
       },
       productVariant: {
         findMany: jest.fn().mockResolvedValue([
@@ -90,7 +94,7 @@ describe('PurchasingService accounting transaction', () => {
 
   it('posts stock, quantity ledger, cost ledger and line snapshots atomically', async () => {
     const { service, prisma, tx } = setup();
-    await service.receive(dto, actor);
+    await service.receive(ctx, dto, actor);
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(tx.inventoryStock.upsert).toHaveBeenCalledTimes(1);
@@ -100,7 +104,7 @@ describe('PurchasingService accounting transaction', () => {
 
   it('returns an identical replay without mutating stock', async () => {
     const first = setup();
-    const prepared = await first.service.receive(dto, actor);
+    const prepared = await first.service.receive(ctx, dto, actor);
     const fingerprint =
       first.tx.purchaseInvoice.create.mock.calls[0][0].data
         .command_fingerprint;
@@ -111,7 +115,7 @@ describe('PurchasingService accounting transaction', () => {
       cost_movements: [],
     };
     const second = setup(replay);
-    const result = await second.service.receive(dto, actor);
+    const result = await second.service.receive(ctx, dto, actor);
 
     expect(result).toBe(replay);
     expect(second.tx.purchaseInvoice.create).not.toHaveBeenCalled();
@@ -127,7 +131,7 @@ describe('PurchasingService accounting transaction', () => {
       cost_movements: [],
     });
 
-    await expect(service.receive(dto, actor)).rejects.toBeInstanceOf(
+    await expect(service.receive(ctx, dto, actor)).rejects.toBeInstanceOf(
       ConflictException,
     );
     expect(tx.inventoryStock.upsert).not.toHaveBeenCalled();
@@ -138,6 +142,7 @@ describe('PurchasingService accounting transaction', () => {
 
     await expect(
       service.receive(
+        ctx,
         {
           ...dto,
           discount_percent: 5,
@@ -158,7 +163,7 @@ describe('PurchasingService accounting transaction', () => {
       $queryRaw: jest.fn().mockResolvedValue([]),
       $executeRaw: jest.fn().mockResolvedValue(1),
       supplierReturn: {
-        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockImplementation(({ data }) =>
           Promise.resolve({
             id: supplierReturnId,
@@ -171,14 +176,14 @@ describe('PurchasingService accounting transaction', () => {
             }],
           }),
         ),
-        findUniqueOrThrow: jest.fn().mockResolvedValue({
+        findFirstOrThrow: jest.fn().mockResolvedValue({
           id: supplierReturnId,
           items: [],
           cost_movements: [],
         }),
       },
       purchaseInvoice: {
-        findUnique: jest.fn().mockResolvedValue({
+        findFirst: jest.fn().mockResolvedValue({
           id: 'purchase-1',
           supplier_id: dto.supplier_id,
           branch_id: dto.branch_id,
@@ -211,12 +216,13 @@ describe('PurchasingService accounting transaction', () => {
     const prisma = {
       $transaction: jest.fn((callback) => callback(tx)),
       supplierReturn: {
-        findUnique: jest.fn(),
+        findFirst: jest.fn(),
       },
     };
     const service = new PurchasingService(prisma as any);
 
     await service.returnToSupplier(
+      ctx,
       'purchase-1',
       {
         command_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
