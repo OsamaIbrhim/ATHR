@@ -94,6 +94,36 @@ describe('TerminalsService', () => {
     ).resolves.toBe(existing);
   });
 
+  /**
+   * WP-007 Phase C: the POS client self-heals a pre-Phase-C local device
+   * record's missing `tenant_id` from the next heartbeat response it already
+   * sends periodically (`reconcileDeviceTenantId` in pos-electron). That only
+   * works if the heartbeat response actually carries the terminal's
+   * tenant_id — this proves the server side of that contract.
+   */
+  it('includes the terminal\'s tenant_id in the heartbeat response', async () => {
+    const token = 'device-secret';
+    const existing = {
+      id: 'terminal-1',
+      branch_id: 'branch-1',
+      tenant_id: 'tenant-a',
+      is_revoked: false,
+      device_token_hash: hash(token),
+    };
+    const prisma = {
+      posTerminal: {
+        findUnique: jest.fn().mockResolvedValue(existing),
+        update: jest.fn().mockImplementation(({ data }) => Promise.resolve({ ...existing, ...data })),
+      },
+    };
+    const result = await new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).heartbeat(
+      dto,
+      token,
+      { ...actor, tenant_id: 'tenant-a' } as any,
+    );
+    expect(result.terminal.tenant_id).toBe('tenant-a');
+  });
+
   it('rejects an unknown or incorrectly credentialed device', async () => {
     const prisma = { posTerminal: { findUnique: jest.fn().mockResolvedValue(null) } };
     await expect(new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).heartbeat(dto, 'wrong', actor)).rejects.toBeInstanceOf(UnauthorizedException);

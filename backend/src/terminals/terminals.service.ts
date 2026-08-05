@@ -111,6 +111,10 @@ export class TerminalsService {
         terminal_code: terminal.terminal_code,
         name: terminal.name,
         branch: terminal.branch,
+        // WP-007 Phase C (BR-TRM-101/BR-ENR-102): the enrollment contract now
+        // states the tenant explicitly rather than leaving the POS client to
+        // infer it. The column itself has been NOT NULL since Phase B.
+        tenant_id: terminal.tenant_id,
       },
       device_token: deviceToken,
     };
@@ -212,10 +216,14 @@ export class TerminalsService {
   async authenticate(deviceId: string | undefined, deviceToken: string | undefined, actor: AuthenticatedUser) {
     if (!actor.branch_id) throw new ForbiddenException('POS user must be linked to a branch');
     const existing = await this.authenticateDevice(deviceId, deviceToken);
-    // Tenant first, then branch. The branch check alone was the only barrier
-    // between an operator and a terminal enrolled in a different tenant, and
-    // it compares opaque ids that carry no ownership meaning on their own.
-    if (actor.tenant_id && existing.tenant_id && existing.tenant_id !== actor.tenant_id) {
+    // WP-007 Phase C (§C.3.3): every sync/offline handshake through this
+    // method (pull, heartbeat, return, invoice lookup, offline-context issue,
+    // self-decommission) must evaluate against the terminal's enrolled
+    // tenant. Phase A's check only fired when both sides happened to carry a
+    // tenant_id, which silently passed a mismatch if either were ever falsy.
+    // Tenant is now asserted unconditionally, before the branch check that
+    // used to be the only real barrier here.
+    if (existing.tenant_id !== actor.tenant_id) {
       throw new ConflictException('This POS terminal is registered to another branch');
     }
     if (existing.branch_id !== actor.branch_id) {

@@ -122,11 +122,15 @@ describe('terminals — cross-tenant isolation', () => {
     });
 
     const newDevice = randomUUID();
-    await service.enroll({ enrollment_code: code, device_id: newDevice, app_version: '1.4.0' } as any);
+    const result = await service.enroll({ enrollment_code: code, device_id: newDevice, app_version: '1.4.0' } as any);
 
     const created = prisma.posTerminal.rows.find((t: any) => t.device_id === newDevice);
     expect(created).toBeDefined();
     expect(created.tenant_id).toBe(TENANT_B);
+    // WP-007 Phase C §C.3.2: the enrollment response now states the tenant
+    // explicitly, so the POS client can record it in local device state
+    // instead of only ever inferring it server-side.
+    expect(result.terminal.tenant_id).toBe(TENANT_B);
   });
 
   it('does not resolve another tenant\'s terminal for an operator', async () => {
@@ -180,5 +184,37 @@ describe('terminals — cross-tenant isolation', () => {
     const terminal = await service.authenticate(DEVICE_A, 'token-a', ownerOf(BRANCH_A, TENANT_A));
     expect(terminal.id).toBe(TERMINAL_A);
     expect(terminal.tenant_id).toBe(TENANT_A);
+  });
+
+  /**
+   * WP-007 Phase C §C.3.3/§C.5: the sync/offline handshake (pull, heartbeat,
+   * pos/return, invoice lookup, offline-context issue, self-decommission all
+   * route through this one method) must evaluate every request against the
+   * terminal's enrolled tenant. A terminal enrolled under Tenant A must never
+   * be usable to reach Tenant B's data — this is the dedicated proof of that,
+   * independent of the branch-id check that happens to also differ here.
+   */
+  it('never lets a terminal enrolled under one tenant sync another tenant\'s data', async () => {
+    const { service } = setup();
+    await expect(
+      service.authenticate(DEVICE_A, 'token-a', ownerOf(BRANCH_B, TENANT_B)),
+    ).rejects.toThrow('registered to another branch');
+    await expect(
+      service.authenticate(DEVICE_B, 'token-b', ownerOf(BRANCH_A, TENANT_A)),
+    ).rejects.toThrow('registered to another branch');
+  });
+
+  /**
+   * Phase A's check only fired when both `actor.tenant_id` and
+   * `existing.tenant_id` happened to be truthy (`if (a && b && a !== b)`), so
+   * an actor whose session carried no tenant_id at all would silently pass
+   * against a terminal that has one. That gap is now closed unconditionally.
+   */
+  it('fails closed when the calling actor carries no tenant_id at all', async () => {
+    const { service } = setup();
+    const actorWithoutTenant = { sub: randomUUID(), role: 'owner', branch_id: BRANCH_A } as any;
+    await expect(
+      service.authenticate(DEVICE_A, 'token-a', actorWithoutTenant),
+    ).rejects.toThrow('registered to another branch');
   });
 });

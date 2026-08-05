@@ -150,6 +150,7 @@ function snapshot(
           terminal_id: device.terminal_id || null,
           terminal_code: device.terminal_code || null,
           branch_id: device.branch_id || null,
+          tenant_id: device.tenant_id || null,
         }
       : { enrolled: false },
     session: user
