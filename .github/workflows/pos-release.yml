@@ -58,7 +58,13 @@ jobs:
           # installer generation use the same supported toolchain every run.
           node-version: '22.12.0'
           cache: npm
-          cache-dependency-path: pos-electron/package-lock.json
+          # WP-007 Phase C: the standalone pos-electron/package-lock.json was
+          # removed by the npm-workspaces migration (PR #45); there is now
+          # only the single root lockfile. Pointing this at the old path
+          # silently failed the "Set up Node.js" step on every release
+          # attempt since (run 30505336169, 2026-07-30), which is why the
+          # last successful release is still 1.4.0.
+          cache-dependency-path: package-lock.json
 
       - name: Validate release version and immutability
         env:
@@ -67,7 +73,7 @@ jobs:
           node scripts/pos-release.mjs validate \
             --version "$RELEASE_VERSION" \
             --package pos-electron/package.json \
-            --lock pos-electron/package-lock.json \
+            --lock package-lock.json \
             --tag "$RELEASE_TAG"
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

@@ -56,11 +56,17 @@ export function validateReleaseVersion({ version, packageFile, lockFile, tag }) 
   }
   const packageJson = readJson(packageFile)
   const lockJson = readJson(lockFile)
-  const versions = [
-    packageJson.version,
-    lockJson.version,
-    lockJson.packages?.['']?.version,
-  ].map((value) => String(value || ''))
+  // `pos-electron` is an npm workspace member, not a standalone package: its
+  // lockfile entry lives at `packages['<relative-path-to-package.json-dir>']`
+  // in the single root lockfile, not at the lockfile's own top level or its
+  // `packages['']` (root workspace) entry — that entry describes the
+  // workspace root, which carries no version at all.
+  const workspaceKey = path
+    .relative(path.dirname(lockFile), path.dirname(packageFile))
+    .split(path.sep)
+    .join('/')
+  const lockedVersion = lockJson.packages?.[workspaceKey]?.version
+  const versions = [packageJson.version, lockedVersion].map((value) => String(value || ''))
   if (versions.some((value) => value !== version)) {
     fail(`Release ${version} does not match package.json and package-lock.json: ${versions.join(', ')}`)
   }
