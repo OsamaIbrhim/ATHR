@@ -10,6 +10,7 @@ import {
   resolveApiBase,
 } from './api-base'
 import { migrateLegacyLocalState } from './local-state-migration'
+import { reconcileDeviceTenantId } from './device-tenant-migration'
 import { POS_PROTOCOL_VERSION } from './pos-protocol'
 import { registerDiagnosticsIpc } from './diagnostics-runtime'
 import {
@@ -185,6 +186,10 @@ type SecureState = {
     branch_id: string
     terminal_id: string
     terminal_code: string
+    // WP-007 Phase C: optional so a terminal enrolled before this release
+    // (local state predating this field) keeps working without
+    // re-enrollment — see `reconcileDeviceTenantId`.
+    tenant_id?: string
   }
   accounting?: OfflineAccountingContext
   offline_login?: OfflineLoginVerifier
@@ -1182,12 +1187,16 @@ ipcMain.handle(
         terminal_code: String(
           result?.terminal?.terminal_code || '',
         ),
+        // WP-007 Phase C (BR-TRM-101/BR-ENR-102): a fresh enrollment always
+        // gets an explicit tenant back from the server now.
+        tenant_id: String(result?.terminal?.tenant_id || ''),
       }
       if (
         !enrolled.device_token ||
         !enrolled.branch_id ||
         !enrolled.terminal_id ||
-        !enrolled.terminal_code
+        !enrolled.terminal_code ||
+        !enrolled.tenant_id
       ) {
         throw {
           message:
@@ -1364,6 +1373,21 @@ ipcMain.handle(
               ...result,
             },
           })
+        }
+      }
+      if (request.pathname === '/terminals/heartbeat') {
+        // WP-007 Phase C: a terminal enrolled before this release has no
+        // tenant_id in its local state. The heartbeat this terminal already
+        // sends periodically carries one, so it self-heals here — no
+        // re-enrollment required.
+        const state = readSecureState()
+        const migratedDevice = reconcileDeviceTenantId(
+          state.device ?? null,
+          result?.terminal,
+        )
+        if (migratedDevice && migratedDevice !== state.device) {
+          state.device = migratedDevice
+          writeSecureState(state)
         }
       }
       return result
