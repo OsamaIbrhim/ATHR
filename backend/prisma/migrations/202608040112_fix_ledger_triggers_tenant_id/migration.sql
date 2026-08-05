@@ -541,15 +541,54 @@ BEGIN
           (current_cost * previous_quantity) + p_movement_value
         ) / current_quantity;
     END IF;
-
+    IF calculated_cost < 0 OR calculated_cost > 9999999999.99 THEN
+      RAISE EXCEPTION
+        'Calculated moving-average cost is outside DECIMAL(12,2) range for variant %',
+        p_variant_id;
+    END IF;
     next_cost := ROUND(calculated_cost, 2);
   ELSIF p_movement_type = 'purchase_reversal' THEN
+    IF p_quantity_delta >= 0 OR p_movement_value > 0 OR p_restore_cost IS NULL THEN
+      RAISE EXCEPTION 'Invalid purchase reversal cost movement';
+    END IF;
+
     next_cost := p_restore_cost;
-  ELSE
+  ELSIF p_movement_type = 'supplier_return' THEN
+    IF p_quantity_delta >= 0
+       OR p_movement_value > 0
+       OR p_restore_cost IS NOT NULL
+       OR p_movement_value <> ROUND(p_quantity_delta * current_cost, 2) THEN
+      RAISE EXCEPTION
+        'Supplier return must remove inventory at the current moving-average cost';
+    END IF;
+
     next_cost := current_cost;
+  ELSE
+    RAISE EXCEPTION
+      'Unsupported inventory cost movement type for posting function: %',
+      p_movement_type;
   END IF;
 
-  IF current_quantity_big * next_cost < -9999999999999999.99
+  IF p_quantity_delta < 0 AND current_quantity < 0 THEN
+    RAISE EXCEPTION
+      'Outgoing cost movement cannot deepen a negative inventory deficit';
+  END IF;
+
+  IF next_cost < 0 THEN
+    RAISE EXCEPTION 'Inventory cost cannot become negative';
+  END IF;
+
+  IF previous_quantity < 0
+     AND p_movement_type IN ('purchase_receipt', 'customer_return') THEN
+    p_metadata :=
+      COALESCE(p_metadata, '{}'::jsonb) ||
+      jsonb_build_object(
+        'negative_inventory_units_covered',
+        LEAST(p_quantity_delta::bigint, ABS(previous_quantity))
+      );
+  END IF;
+
+  IF previous_quantity * current_cost > 9999999999999999.99
      OR current_quantity_big * next_cost > 9999999999999999.99
      OR ABS(p_movement_value) > 9999999999999999.99 THEN
     RAISE EXCEPTION
