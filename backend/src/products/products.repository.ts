@@ -125,7 +125,10 @@ export class ProductsRepository {
       `;
   }
 
-  async saveProduct(context: TenantScope, data: Prisma.ProductCreateInput): Promise<Product> {
+  async saveProduct(
+    context: TenantScope,
+    data: Omit<Prisma.ProductUncheckedCreateInput, 'tenant_id'>,
+  ): Promise<Product> {
     return this.prisma.product.create({
       data: { ...data, tenant_id: context.tenantId },
       include: { variants: true },

@@ -137,6 +137,11 @@ jobs:
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \
             --shadow-database-url "$SHADOW_DATABASE_URL"
+      - name: Verify tenant database constraints (WP-007 Phase B)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/verify-tenant-constraints.cjs
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.policy.outputs.upgrade_ref }}

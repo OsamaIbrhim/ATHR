@@ -40,14 +40,14 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
   const existingBySku = new Map(existing.map((variant) => [variant.sku, variant.id]))
   const missingIndexes = indexes.filter((index) => !existingBySku.has(`PERF-${String(index).padStart(8, '0')}`))
   const products = missingIndexes.map((index) => ({
-    id: stableUuid('product', index), name_en: `Performance product ${index}`,
+    id: stableUuid('product', index), tenant_id: branch.tenant_id, name_en: `Performance product ${index}`,
     name_ar: `منتج اختبار أداء ${index}`, category_id: category.id,
     brand: 'Bold Perf', has_variants: false,
   }))
   const variants = products.map((product) => {
     const index = Number(product.name_en.slice('Performance product '.length))
     const id = stableUuid('variant', index)
-    return { id, product_id: product.id, sku: `PERF-${String(index).padStart(8, '0')}`, barcode_internal: `PERF-${index}`, cost_price: 100 + (index % 200) }
+    return { id, tenant_id: branch.tenant_id, product_id: product.id, sku: `PERF-${String(index).padStart(8, '0')}`, barcode_internal: `PERF-${index}`, cost_price: 100 + (index % 200) }
   })
   const newVariantBySku = new Map(variants.map((variant) => [variant.sku, variant.id]))
   const batchVariantIds = skus.map((sku) => existingBySku.get(sku) || newVariantBySku.get(sku))
@@ -56,7 +56,7 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
   await prisma.$transaction([
     prisma.product.createMany({ data: products, skipDuplicates: true }),
     prisma.productVariant.createMany({ data: variants, skipDuplicates: true }),
-    prisma.inventoryStock.createMany({ data: batchVariantIds.map((variantId) => ({ branch_id: branch.id, variant_id: variantId, qty_on_hand: 100_000 })), skipDuplicates: true }),
+    prisma.inventoryStock.createMany({ data: batchVariantIds.map((variantId) => ({ tenant_id: branch.tenant_id, branch_id: branch.id, variant_id: variantId, qty_on_hand: 100_000 })), skipDuplicates: true }),
   ])
   process.stdout.write(`\rproducts ${Math.min(offset + size, productCount)}/${productCount}`)
 }
@@ -76,7 +76,7 @@ for (let offset = 0; offset < invoiceCount; offset += batchSize) {
   const missingIndexes = indexes.filter((index) => !existingNumbers.has(`PERF-INV-${String(index).padStart(10, '0')}`))
   const invoices = missingIndexes.map((index) => {
     return {
-      id: stableUuid('invoice', index), invoice_number: `PERF-INV-${String(index).padStart(10, '0')}`,
+      id: stableUuid('invoice', index), tenant_id: branch.tenant_id, invoice_number: `PERF-INV-${String(index).padStart(10, '0')}`,
       branch_id: branch.id, subtotal: 100, tax_amount: 14, total: 114,
       payment_method: index % 2 ? 'cash' : 'card', status: 'completed', language: 'ar',
       created_at: new Date(Date.now() - (index % 365) * 86_400_000),
@@ -86,6 +86,7 @@ for (let offset = 0; offset < invoiceCount; offset += batchSize) {
     const index = Number(invoice.invoice_number.slice('PERF-INV-'.length))
     return {
       id: stableUuid('invoice-item', index),
+      tenant_id: branch.tenant_id,
       sales_invoice_id: invoice.id,
       variant_id: variantIds[index % variantIds.length],
       qty: 1,

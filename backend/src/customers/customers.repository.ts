@@ -15,12 +15,11 @@ export interface CustomerFilters {
  * `save(context, aggregate)` pattern WP-006's identity module established.
  * There is no bare `findById(id)` here.
  *
- * Note the `phone` lookups: `Customer.phone` is still *globally* unique in
- * the database (making it tenant-scoped-unique is Phase B, §A.4), so a
- * `findUnique({ phone })` would happily return another tenant's customer.
- * Every one of them is a `findFirst` with an explicit tenant predicate
- * instead — that is exactly the application-layer half of defense in depth
- * that has to hold until Phase B adds the constraint.
+ * Note the `phone` lookups: `Customer.phone` is now tenant-scoped-unique
+ * (WP-007 Phase B), but every lookup here still uses `findFirst` with an
+ * explicit tenant predicate rather than `findUnique({ phone })` — the
+ * application-layer predicate is defense in depth alongside the DB
+ * constraint, not a substitute for it.
  */
 @Injectable()
 export class CustomersRepository {
@@ -67,7 +66,7 @@ export class CustomersRepository {
     return this.prisma.customer.findFirst({ where: { phone, tenant_id: context.tenantId } });
   }
 
-  async save(context: TenantScope, data: Prisma.CustomerCreateInput): Promise<Customer> {
+  async save(context: TenantScope, data: Omit<Prisma.CustomerCreateInput, 'tenant_id'>): Promise<Customer> {
     return this.prisma.customer.create({ data: { ...data, tenant_id: context.tenantId } });
   }
 

@@ -13,6 +13,13 @@ async function main() {
 
   const result = await prisma.$transaction(
     async (tx) => {
+      // WP-007 Phase B: Branch.code is now tenant-scoped, not globally
+      // unique, so the tenant must be resolved before the branch lookup can
+      // use the (tenant_id, code) compound key.
+      const tenant =
+        (await tx.tenant.findFirst({ where: { name: 'Initial ATHR Demo Tenant' } })) ??
+        (await tx.tenant.create({ data: { name: 'Initial ATHR Demo Tenant' } }));
+
       const [
         branches,
         users,
@@ -28,7 +35,7 @@ async function main() {
         tx.salesInvoice.count(),
         tx.posTerminal.count(),
         tx.branch.findUnique({
-          where: { code: configuration.branch.code },
+          where: { tenant_id_code: { tenant_id: tenant.id, code: configuration.branch.code } },
           select: { id: true },
         }),
         tx.user.findUnique({
@@ -71,12 +78,8 @@ async function main() {
         expectedOwnerExists: !!expectedOwner,
       });
 
-      const tenant =
-        (await tx.tenant.findFirst({ where: { name: 'Initial ATHR Demo Tenant' } })) ??
-        (await tx.tenant.create({ data: { name: 'Initial ATHR Demo Tenant' } }));
-
       const branch = await tx.branch.upsert({
-        where: { code: configuration.branch.code },
+        where: { tenant_id_code: { tenant_id: tenant.id, code: configuration.branch.code } },
         update: {
           name_ar: configuration.branch.nameAr,
           name_en: configuration.branch.nameEn,

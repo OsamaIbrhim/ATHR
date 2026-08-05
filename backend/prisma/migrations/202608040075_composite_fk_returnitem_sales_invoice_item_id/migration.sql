@@ -1,0 +1,18 @@
+-- WP-007 Phase B (MT-MIG-006): same-tenant composite FK -- "ReturnItem"."sales_invoice_item_id" -> "SalesInvoiceItem" now also enforces tenant_id equality.
+-- Pre-migration validation: zero existing rows where "ReturnItem".tenant_id
+-- differs from the referenced "SalesInvoiceItem" row's tenant_id.
+DO $$
+DECLARE
+  violating INT;
+BEGIN
+  SELECT count(*) INTO violating
+  FROM "ReturnItem" c
+  JOIN "SalesInvoiceItem" p ON p."id" = c."sales_invoice_item_id"
+  WHERE c."tenant_id" IS DISTINCT FROM p."tenant_id";
+  IF violating <> 0 THEN
+    RAISE EXCEPTION 'MT-MIG-006 precondition failed: % row(s) in "ReturnItem" reference a "SalesInvoiceItem" row in a different tenant.', violating;
+  END IF;
+END $$;
+
+ALTER TABLE "ReturnItem" DROP CONSTRAINT "ReturnItem_sales_invoice_item_id_fkey";
+ALTER TABLE "ReturnItem" ADD CONSTRAINT "ReturnItem_tenant_id_sales_invoice_item_id_fkey" FOREIGN KEY ("tenant_id", "sales_invoice_item_id") REFERENCES "SalesInvoiceItem"("tenant_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;

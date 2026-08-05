@@ -23,15 +23,20 @@ const summary = {
 try {
   await prisma.$transaction(
     async (tx) => {
+      const tenant =
+        (await tx.tenant.findFirst({ where: { name: 'Initial ATHR Demo Tenant' } })) ??
+        (await tx.tenant.create({ data: { name: 'Initial ATHR Demo Tenant' } }))
       const branch =
         (await tx.branch.findFirst({ where: { is_active: true } })) ||
         (await tx.branch.create({
           data: {
+            tenant_id: tenant.id,
             code: `COST-${randomUUID().slice(0, 8)}`,
             name_ar: 'فرع اختبار تكلفة المشتريات',
             name_en: 'Purchasing cost smoke',
           },
         }))
+      const tenantId = branch.tenant_id
       const actor =
         (await tx.user.findFirst()) ||
         (await tx.user.create({
@@ -43,21 +48,24 @@ try {
           },
         }))
       const supplier =
-        (await tx.supplier.findFirst()) ||
+        (await tx.supplier.findFirst({ where: { tenant_id: tenantId } })) ||
         (await tx.supplier.create({
           data: {
+            tenant_id: tenantId,
             name: 'Purchasing cost smoke supplier',
             alias_names: [],
           },
         }))
       const product = await tx.product.create({
         data: {
+          tenant_id: tenantId,
           name_en: `Cost smoke ${randomUUID().slice(0, 8)}`,
           has_variants: false,
         },
       })
       const variant = await tx.productVariant.create({
         data: {
+          tenant_id: tenantId,
           product_id: product.id,
           sku: `COST-${randomUUID()}`,
           barcode_internal: `COST-${randomUUID()}`,
@@ -66,6 +74,7 @@ try {
       })
       await tx.inventoryStock.create({
         data: {
+          tenant_id: tenantId,
           branch_id: branch.id,
           variant_id: variant.id,
           qty_on_hand: 0,
@@ -74,6 +83,7 @@ try {
 
       const invoice = await tx.purchaseInvoice.create({
         data: {
+          tenant_id: tenantId,
           supplier_id: supplier.id,
           branch_id: branch.id,
           invoice_number: `COST-${randomUUID()}`,
@@ -188,6 +198,7 @@ try {
 
       const supplierReturn = await tx.supplierReturn.create({
         data: {
+          tenant_id: tenantId,
           purchase_invoice_id: invoice.id,
           supplier_id: supplier.id,
           branch_id: branch.id,
@@ -330,6 +341,7 @@ try {
 
       const historicalSale = await tx.salesInvoice.create({
         data: {
+          tenant_id: tenantId,
           invoice_number: `COST-SALE-${randomUUID()}`,
           branch_id: branch.id,
           cashier_id: actor.id,
@@ -353,6 +365,7 @@ try {
       })
       const customerReturn = await tx.return.create({
         data: {
+          tenant_id: tenantId,
           original_invoice_id: historicalSale.id,
           branch_id: branch.id,
           return_invoice_number: `COST-CUSTOMER-RETURN-${randomUUID()}`,

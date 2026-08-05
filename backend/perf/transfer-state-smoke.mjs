@@ -51,6 +51,7 @@ try {
           branch_id: destination.id,
           variant_id: stock.variant_id,
           qty_on_hand: 0,
+          tenant_id: source.tenant_id,
         },
       })
 
@@ -60,21 +61,21 @@ try {
         INSERT INTO "Transfer" (
           "id", "from_branch_id", "to_branch_id", "status",
           "transfer_number", "created_by", "idempotency_key",
-          "command_fingerprint", "created_at", "updated_at"
+          "command_fingerprint", "created_at", "updated_at", "tenant_id"
         ) VALUES (
           ${transferId}::uuid, ${source.id}::uuid, ${destination.id}::uuid,
           'pending'::"TransferStatus", ${`SMOKE-${randomUUID()}`},
           ${actor.id}::uuid, ${randomUUID()}, ${'0'.repeat(64)},
-          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ${source.tenant_id}::uuid
         )
       `
       await tx.$executeRaw`
         INSERT INTO "TransferItem" (
           "id", "transfer_id", "variant_id", "qty",
-          "shipped_qty", "received_qty", "damaged_qty", "missing_qty"
+          "shipped_qty", "received_qty", "damaged_qty", "missing_qty", "tenant_id"
         ) VALUES (
           ${itemId}::uuid, ${transferId}::uuid, ${stock.variant_id}::uuid,
-          3, 0, 0, 0, 0
+          3, 0, 0, 0, 0, ${source.tenant_id}::uuid
         )
       `
 

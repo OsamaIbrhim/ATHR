@@ -87,6 +87,10 @@ try {
     async (tx) => {
       await enableTransferCommandContext(tx)
 
+      const tenant =
+        (await tx.tenant.findFirst({ where: { name: 'Initial ATHR Demo Tenant' } })) ??
+        (await tx.tenant.create({ data: { name: 'Initial ATHR Demo Tenant' } }))
+
       let sourceStock = await tx.inventoryStock.findFirst({
         where: {
           branch: { is_active: true },
@@ -107,6 +111,7 @@ try {
           (await tx.branch.findFirst({ where: { is_active: true } })) ||
           (await tx.branch.create({
             data: {
+              tenant_id: tenant.id,
               code: `LEDGER-${randomUUID().slice(0, 8)}`,
               name_ar: 'اختبار دفتر المخزون',
               name_en: 'Inventory ledger smoke',
@@ -114,6 +119,7 @@ try {
           }))
         const product = await tx.product.create({
           data: {
+            tenant_id: sourceBranch.tenant_id,
             name_en: `Ledger smoke product ${randomUUID().slice(0, 8)}`,
             name_ar: 'منتج اختبار دفتر المخزون',
             has_variants: false,
@@ -121,6 +127,7 @@ try {
         })
         variant = await tx.productVariant.create({
           data: {
+            tenant_id: sourceBranch.tenant_id,
             product_id: product.id,
             sku: `LEDGER-${randomUUID()}`,
             barcode_internal: `LEDGER-${randomUUID()}`,
@@ -129,6 +136,7 @@ try {
         })
         sourceStock = await tx.inventoryStock.create({
           data: {
+            tenant_id: sourceBranch.tenant_id,
             branch_id: sourceBranch.id,
             variant_id: variant.id,
             qty_on_hand: 20,
@@ -137,13 +145,15 @@ try {
       }
 
       invariant(sourceBranch && variant && sourceStock, 'Unable to prepare source inventory')
+      const tenantId = sourceBranch.tenant_id
 
       const destinationBranch =
         (await tx.branch.findFirst({
-          where: { id: { not: sourceBranch.id }, is_active: true },
+          where: { id: { not: sourceBranch.id }, tenant_id: tenantId, is_active: true },
         })) ||
         (await tx.branch.create({
           data: {
+            tenant_id: tenantId,
             code: `LEDGER-DEST-${randomUUID().slice(0, 8)}`,
             name_ar: 'فرع اختبار دفتر المخزون',
             name_en: 'Inventory ledger destination',
@@ -161,9 +171,10 @@ try {
           },
         }))
       const supplier =
-        (await tx.supplier.findFirst()) ||
+        (await tx.supplier.findFirst({ where: { tenant_id: tenantId } })) ||
         (await tx.supplier.create({
           data: {
+            tenant_id: tenantId,
             name: 'Inventory ledger smoke supplier',
             alias_names: [],
           },
@@ -178,6 +189,7 @@ try {
         },
         update: {},
         create: {
+          tenant_id: tenantId,
           branch_id: destinationBranch.id,
           variant_id: variant.id,
           qty_on_hand: 0,
@@ -198,6 +210,7 @@ try {
 
       const sale = await tx.salesInvoice.create({
         data: {
+          tenant_id: tenantId,
           invoice_number: `LEDGER-SALE-${randomUUID()}`,
           branch_id: sourceBranch.id,
           cashier_id: actor.id,
@@ -252,6 +265,7 @@ try {
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED')
       const returnRecord = await tx.return.create({
         data: {
+          tenant_id: tenantId,
           original_invoice_id: sale.id,
           branch_id: sourceBranch.id,
           return_invoice_number: `LEDGER-RETURN-${randomUUID()}`,
@@ -294,6 +308,7 @@ try {
 
       const purchase = await tx.purchaseInvoice.create({
         data: {
+          tenant_id: tenantId,
           supplier_id: supplier.id,
           branch_id: sourceBranch.id,
           invoice_number: `LEDGER-PURCHASE-${randomUUID()}`,
@@ -345,6 +360,7 @@ try {
 
       const transfer = await tx.transfer.create({
         data: {
+          tenant_id: tenantId,
           from_branch_id: sourceBranch.id,
           to_branch_id: destinationBranch.id,
           transfer_number: `LEDGER-TRANSFER-${randomUUID()}`,

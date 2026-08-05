@@ -36,8 +36,10 @@ describe('development and CI seed contract', () => {
     ]) {
       expect(seed).toContain(create);
     }
-    // Prisma nested creates do not inherit the parent row's scalars.
-    expect(seed).toContain('items: { create: items.map((item) => ({ ...item, tenant_id })) }');
+    // WP-007 Phase B: SalesInvoiceItem's composite FK to SalesInvoice now
+    // covers tenant_id, so Prisma derives it from the parent create — an
+    // explicit tenant_id on the nested item is redundant (and rejected).
+    expect(seed).toContain('items: { create: items }');
   });
 
   it('bootstraps the production owner with a Membership too', () => {

@@ -160,7 +160,6 @@ async function main() {
         has_variants: true,
         variants: {
           create: p.variants.map(v => ({
-            tenant_id,
             sku: v.sku,
             barcode_ean13: v.ean,
             barcode_internal: v.sku,
@@ -238,7 +237,7 @@ async function main() {
         payment_method: paymentMethods[i % paymentMethods.length],
         language: 'ar',
         created_at: new Date(Date.now() - deterministicRandom()*30*86400000),
-        items: { create: items.map((item) => ({ ...item, tenant_id })) }
+        items: { create: items }
       }
     });
     salesInvoices.push(inv);
@@ -265,9 +264,9 @@ async function main() {
     subtotal: 4200, discount_amount: 200, discount_percent: 0, total: 4000,
     created_by: warehouse.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[0].id, qty: 50, unit_cost: 80 },
-      { tenant_id, variant_id: allVariants[1].id, qty: 30, unit_cost: 80 },
-      { tenant_id, variant_id: allVariants[4].id, qty: 20, unit_cost: 130 },
+      { variant_id: allVariants[0].id, qty: 50, unit_cost: 80 },
+      { variant_id: allVariants[1].id, qty: 30, unit_cost: 80 },
+      { variant_id: allVariants[4].id, qty: 20, unit_cost: 130 },
     ]}
   }});
   await prisma.purchaseInvoice.create({ data: {
@@ -276,8 +275,8 @@ async function main() {
     subtotal: 3100, discount_amount: 155, discount_percent: 5, total: 2945,
     created_by: warehouse.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[5].id, qty: 15, unit_cost: 160 },
-      { tenant_id, variant_id: allVariants[6].id, qty: 10, unit_cost: 90 },
+      { variant_id: allVariants[5].id, qty: 15, unit_cost: 160 },
+      { variant_id: allVariants[6].id, qty: 10, unit_cost: 90 },
     ]}
   }});
   await prisma.purchaseInvoice.create({ data: {
@@ -286,8 +285,8 @@ async function main() {
     subtotal: 5600, discount_amount: 300, discount_percent: 0, total: 5300,
     created_by: warehouse.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[10].id, qty: 25, unit_cost: 175 },
-      { tenant_id, variant_id: allVariants[15].id, qty: 20, unit_cost: 140 },
+      { variant_id: allVariants[10].id, qty: 25, unit_cost: 175 },
+      { variant_id: allVariants[15].id, qty: 20, unit_cost: 140 },
     ]}
   }});
 
@@ -297,8 +296,8 @@ async function main() {
     from_branch_id: b1.id, to_branch_id: b2.id,
     transfer_number: 'TR-2026001', status: 'received', created_by: manager.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[0].id, qty: 5 },
-      { tenant_id, variant_id: allVariants[2].id, qty: 3 },
+      { variant_id: allVariants[0].id, qty: 5 },
+      { variant_id: allVariants[2].id, qty: 3 },
     ]}
   }});
   await prisma.transfer.create({ data: {
@@ -306,7 +305,7 @@ async function main() {
     from_branch_id: b2.id, to_branch_id: b1.id,
     transfer_number: 'TR-2026002', status: 'pending', created_by: manager.id,
     items: { create: [
-      { tenant_id, variant_id: allVariants[5].id, qty: 2 },
+      { variant_id: allVariants[5].id, qty: 2 },
     ]}
   }});
 
