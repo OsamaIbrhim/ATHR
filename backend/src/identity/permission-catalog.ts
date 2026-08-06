@@ -352,15 +352,22 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
 }
 
 /**
- * Version 2 of the versioned snapshot (ADR-0005). WP-006 seeded version 1
+ * Version 3 of the versioned snapshot (ADR-0005). WP-006 seeded version 1
  * with the identity-admin grants only; adding business keys to the *same*
  * version would be invisible to any environment that already seeded v1 —
  * every business endpoint would default-deny after deploy. Bumping the
  * version makes the upgrade explicit and lets `permission_policy_version` in
  * a live session/`TenantContext` still identify exactly which grant set was
  * in force (Matrix §78, §80 case 20).
+ *
+ * v2 -> v3: cashier gained `terminal.view-health` (heartbeat permission
+ * fix). `PermissionPolicyService.ensureSeeded()` only re-seeds when the
+ * code's constant is *higher* than the stored snapshot's version — editing
+ * `CASHIER_GRANTS` alone is inert against a database that already has an
+ * active v2 row; every environment stays on the frozen v2 `grants` JSON
+ * until this constant moves past it.
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 2;
+export const PERMISSION_POLICY_CURRENT_VERSION = 3;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(
