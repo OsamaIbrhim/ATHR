@@ -66,6 +66,14 @@ const CATALOG_PERMISSIONS = [
   'catalog.variant.create',
   'catalog.variant.update',
   'catalog.export',
+  // WP-008 Phase A: Brand, UOM/Conversion, Assortment (Matrix §16).
+  'catalog.brand.manage',
+  'catalog.uom.view',
+  'catalog.uom.create',
+  'catalog.uom.update',
+  'catalog.uom-conversion.publish',
+  'catalog.assortment.view',
+  'catalog.assortment.manage',
   'pricing.price-book.view',
   'pricing.price-entry.manage',
   'pricing.cost.view',
@@ -248,6 +256,14 @@ const WAREHOUSE_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'catalog.product.archive',
   'catalog.variant.create',
   'catalog.variant.update',
+  // WP-008 Phase A: Brand, UOM/Conversion, Assortment management.
+  'catalog.brand.manage',
+  'catalog.uom.view',
+  'catalog.uom.create',
+  'catalog.uom.update',
+  'catalog.uom-conversion.publish',
+  'catalog.assortment.view',
+  'catalog.assortment.manage',
   'inventory.position.view',
   'inventory.position.view-cost',
   'inventory.movement.view',
@@ -366,8 +382,16 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
  * `CASHIER_GRANTS` alone is inert against a database that already has an
  * active v2 row; every environment stays on the frozen v2 `grants` JSON
  * until this constant moves past it.
+ *
+ * v3 -> v4: WP-008 Phase A adds the Brand/UOM/Assortment catalog keys
+ * (`catalog.brand.manage`, `catalog.uom.*`, `catalog.uom-conversion.publish`,
+ * `catalog.assortment.*`) and grants them to `warehouse_manager` (and, by
+ * the existing spread, `location_manager`/`tenant_owner`) — the same roles
+ * that already manage `catalog.product.*`/`catalog.variant.*`. `cashier` and
+ * `seller` are unchanged; this phase built no POS-facing consumer of these
+ * keys.
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 3;
+export const PERMISSION_POLICY_CURRENT_VERSION = 4;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(

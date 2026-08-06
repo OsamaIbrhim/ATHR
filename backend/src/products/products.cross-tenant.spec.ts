@@ -1,14 +1,17 @@
 import { randomUUID } from 'crypto';
 import { ProductsRepository } from './products.repository';
 import { ProductsService } from './products.service';
+import { BrandsRepository } from '../brands/brands.repository';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 
-/** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `products` module. */
+/** WP-007 Phase A §A.3.6 / WP-008 Phase A — cross-tenant isolation for the `products` module. */
 
 const PRODUCT_A = randomUUID();
 const PRODUCT_B = randomUUID();
 const VARIANT_A = randomUUID();
 const VARIANT_B = randomUUID();
+const BRAND_A = randomUUID();
+const BRAND_B = randomUUID();
 
 function setup() {
   const prisma = fakePrisma({
@@ -24,6 +27,7 @@ function setup() {
         sku: 'SKU-1',
         is_active: true,
         cost_price: 10,
+        item_type: 'stocked',
         created_at: new Date(),
       },
       {
@@ -33,16 +37,28 @@ function setup() {
         sku: 'SKU-1',
         is_active: true,
         cost_price: 99,
+        item_type: 'stocked',
         created_at: new Date(),
       },
     ],
     inventoryStock: [],
+    inventoryMovement: [],
+    salesInvoiceItem: [],
+    purchaseInvoiceItem: [],
+    transferItem: [],
+    returnItem: [],
+    supplierReturnItem: [],
+    brand: [
+      { id: BRAND_A, tenant_id: TENANT_A, name: 'Nike', is_active: true },
+      { id: BRAND_B, tenant_id: TENANT_B, name: 'Puma', is_active: true },
+    ],
   }, {
     // Lets the nested `product: { tenant_id }` predicate actually be evaluated.
     productVariant: { product: { table: 'product', localKey: 'product_id' } },
   });
   const repository = new ProductsRepository(prisma);
-  return { prisma, repository, service: new ProductsService(repository) };
+  const brands = new BrandsRepository(prisma);
+  return { prisma, repository, brands, service: new ProductsService(repository, brands) };
 }
 
 describe('products — cross-tenant isolation', () => {
@@ -121,5 +137,86 @@ describe('products — cross-tenant isolation', () => {
     // — Prisma derives it from the parent, and the DB-level composite FK
     // (proven in the constraint-rejection suite) is what actually guarantees
     // it can never diverge from the parent's tenant.
+  });
+
+  /** WP-008 Phase A (BR-CLS-103/BR-PROD-100): brand_id must resolve within the caller's own tenant. */
+  it('rejects a cross-tenant brand_id on product creation', async () => {
+    const { service } = setup();
+    await expect(
+      service.createProduct(contextFor(TENANT_B), {
+        name_en: 'New',
+        sku: 'SKU-NEW-2',
+        cost_price: 5,
+        brand_id: BRAND_A,
+      } as any),
+    ).rejects.toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+  });
+
+  it('accepts a same-tenant brand_id on product creation', async () => {
+    const { service } = setup();
+    const created: any = await service.createProduct(contextFor(TENANT_A), {
+      name_en: 'New',
+      sku: 'SKU-NEW-3',
+      cost_price: 5,
+      brand_id: BRAND_A,
+    } as any);
+    expect(created.brand_id).toBe(BRAND_A);
+  });
+});
+
+/** WP-008 Phase A (BR-TYP-103): item_type change restriction once transaction history exists. */
+describe('products — item_type change restriction', () => {
+  it('allows an item_type change on a variant with no transaction history', async () => {
+    const { service } = setup();
+    const updated = await service.updateVariant(contextFor(TENANT_A), VARIANT_A, {
+      item_type: 'non_stock',
+    } as any);
+    expect(updated.item_type).toBe('non_stock');
+  });
+
+  it('rejects an item_type change once the variant has inventory movement history', async () => {
+    const { service, prisma } = setup();
+    prisma.inventoryMovement.rows.push({
+      id: randomUUID(),
+      tenant_id: TENANT_A,
+      variant_id: VARIANT_A,
+      branch_id: randomUUID(),
+      movement_type: 'sale',
+    });
+
+    await expect(
+      service.updateVariant(contextFor(TENANT_A), VARIANT_A, { item_type: 'service' } as any),
+    ).rejects.toMatchObject({ code: 'CATALOG_ITEM_TYPE_CHANGE_RESTRICTED' });
+  });
+
+  it('rejects an item_type change once the variant has sales history even with no inventory movement', async () => {
+    const { service, prisma } = setup();
+    prisma.salesInvoiceItem.rows.push({
+      id: randomUUID(),
+      tenant_id: TENANT_A,
+      variant_id: VARIANT_A,
+      sales_invoice_id: randomUUID(),
+    });
+
+    await expect(
+      service.updateVariant(contextFor(TENANT_A), VARIANT_A, { item_type: 'service' } as any),
+    ).rejects.toMatchObject({ code: 'CATALOG_ITEM_TYPE_CHANGE_RESTRICTED' });
+  });
+
+  it('does not block an update that leaves item_type unchanged, even with transaction history', async () => {
+    const { service, prisma } = setup();
+    prisma.inventoryMovement.rows.push({
+      id: randomUUID(),
+      tenant_id: TENANT_A,
+      variant_id: VARIANT_A,
+      branch_id: randomUUID(),
+      movement_type: 'sale',
+    });
+
+    const updated = await service.updateVariant(contextFor(TENANT_A), VARIANT_A, {
+      item_type: 'stocked',
+      sku: 'SKU-1-RENAMED',
+    } as any);
+    expect(updated.sku).toBe('SKU-1-RENAMED');
   });
 });

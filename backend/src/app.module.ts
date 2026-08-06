@@ -4,6 +4,9 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { BranchesModule } from './branches/branches.module';
 import { ProductsModule } from './products/products.module';
+import { BrandsModule } from './brands/brands.module';
+import { UomModule } from './uom/uom.module';
+import { AssortmentModule } from './assortment/assortment.module';
 import { PricingModule } from './pricing/pricing.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
@@ -35,6 +38,9 @@ import { PermissionGuard } from './identity/permission.guard';
     UsersModule,
     BranchesModule,
     ProductsModule,
+    BrandsModule,
+    UomModule,
+    AssortmentModule,
     PricingModule,
     InventoryModule,
     SuppliersModule,

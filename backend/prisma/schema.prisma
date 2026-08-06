@@ -34,6 +34,7 @@ model Branch {
   offer_suggestions        OfferSuggestion[]
   pos_terminals            PosTerminal[]
   pos_enrollment_codes     PosTerminalEnrollment[]
+  assortments              Assortment[]
 
   @@unique([tenant_id, code])
   @@unique([tenant_id, id])
@@ -437,6 +438,25 @@ model Category {
   @@index([tenant_id])
 }
 
+// WP-008 Phase A (BR-CLS-103): Brand is an independent, archivable entity —
+// no longer a free-text field on Product. `Product.brand` (string) is kept
+// as-is (additive-only phase); `Product.brand_id` is the new FK and the two
+// are reconciled by a one-time data migration (one Brand row per distinct
+// existing string value per tenant).
+model Brand {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenant_id  String    @db.Uuid
+  name       String
+  is_active  Boolean   @default(true)
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  products   Product[]
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, name])
+  @@index([tenant_id])
+}
+
 model Product {
   id           String           @id @default(uuid()) @db.Uuid
   sku_base     String?
@@ -444,7 +464,11 @@ model Product {
   name_ar      String?
   category_id  String?          @db.Uuid
   category     Category?        @relation(fields: [tenant_id, category_id], references: [tenant_id, id], onDelete: SetNull)
+  // Legacy free-text brand — deprecated by `brand_id`/`brand_ref` (BR-CLS-103)
+  // but kept until a later phase removes it (this phase is additive-only).
   brand        String?
+  brand_id     String?          @db.Uuid
+  brand_ref    Brand?           @relation(fields: [tenant_id, brand_id], references: [tenant_id, id], onDelete: Restrict)
   image_url    String?
   is_active    Boolean          @default(true)
   has_variants Boolean          @default(true)
@@ -458,6 +482,17 @@ model Product {
   @@index([name_en(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_en_trgm_idx")
   @@index([name_ar(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_ar_trgm_idx")
   @@index([tenant_id])
+  @@index([brand_id])
+}
+
+// WP-008 Phase A (BR-TYP-100): the item-type classification a Variant is
+// sold/stocked/serviced under. `bundle_kit_placeholder` reserves the type
+// value only — the bundle evaluation engine itself is WP-008 Phase D.
+enum ItemType {
+  stocked
+  non_stock
+  service
+  bundle_kit_placeholder
 }
 
 model ProductVariant {
@@ -474,6 +509,15 @@ model ProductVariant {
   return_count               Int                       @default(0)
   qa_flag                    Boolean                   @default(false)
   is_active                  Boolean                   @default(true)
+  // BR-TYP-100/101: defaults to `stocked` — every existing Variant today is a
+  // physical, inventory-tracked item, so the default preserves current
+  // behavior with zero data migration needed for this column.
+  item_type                  ItemType                  @default(stocked)
+  // BR-TYP-101: a stocked Variant needs a Base stock UOM before inventory
+  // tracking can be enabled; nullable because non_stock/service/bundle
+  // variants have none, and existing stocked rows have none until assigned.
+  base_uom_id                String?                   @db.Uuid
+  base_uom                   UnitOfMeasure?            @relation(fields: [tenant_id, base_uom_id], references: [tenant_id, id], onDelete: Restrict)
   created_at                 DateTime                  @default(now())
   inventory                  InventoryStock[]
   inventory_movements        InventoryMovement[]
@@ -485,6 +529,7 @@ model ProductVariant {
   transfer_transit_movements TransferTransitMovement[]
   return_items               ReturnItem[]
   offer_suggestions          OfferSuggestion[]
+  assortments                Assortment[]
   tenant_id                  String                    @db.Uuid
 
   @@unique([tenant_id, sku])
@@ -495,6 +540,97 @@ model ProductVariant {
   @@index([product_id])
   @@index([sku(ops: raw("gin_trgm_ops"))], type: Gin, map: "ProductVariant_sku_trgm_idx")
   @@index([tenant_id])
+  @@index([base_uom_id])
+}
+
+// WP-008 Phase A (§9 BR-UOM-1xx): tenant-owned reference data — base units
+// (piece, kg, ...) and derived units (carton, box, ...) a Variant's stock,
+// sale, and purchase quantities are expressed in.
+enum UomKind {
+  base
+  derived
+}
+
+model UnitOfMeasure {
+  id               String           @id @default(uuid()) @db.Uuid
+  tenant_id        String           @db.Uuid
+  code             String
+  name_en          String
+  name_ar          String?
+  kind             UomKind          @default(base)
+  // BR-UOM-103: max decimal places a quantity in this unit may carry (e.g.
+  // 0 for "piece", 3 for "kg"). Enforced at the DTO/service layer.
+  precision        Int              @default(0)
+  is_active        Boolean          @default(true)
+  created_at       DateTime         @default(now())
+  updated_at       DateTime         @updatedAt
+  conversions_from UomConversion[]  @relation("UomConversionFrom")
+  conversions_to   UomConversion[]  @relation("UomConversionTo")
+  stocked_variants ProductVariant[]
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, code])
+  @@index([tenant_id])
+}
+
+enum UomConversionStatus {
+  active
+  superseded
+}
+
+// WP-008 Phase A (BR-UOM-102): versioned and immutable once created — there
+// is deliberately no update mutation on this table, only `create` (first
+// version) and `supersede` (new version + marks the previous one
+// `superseded`). Correcting a wrong factor never rewrites the row a past
+// document's snapshot was resolved against.
+model UomConversion {
+  id               String              @id @default(uuid()) @db.Uuid
+  tenant_id        String              @db.Uuid
+  from_uom_id      String              @db.Uuid
+  from_uom         UnitOfMeasure       @relation("UomConversionFrom", fields: [tenant_id, from_uom_id], references: [tenant_id, id], onDelete: Restrict)
+  to_uom_id        String              @db.Uuid
+  to_uom           UnitOfMeasure       @relation("UomConversionTo", fields: [tenant_id, to_uom_id], references: [tenant_id, id], onDelete: Restrict)
+  // to_uom quantity = from_uom quantity * factor. BR-UOM-102: always positive.
+  factor           Decimal             @db.Decimal(18, 6)
+  version          Int                 @default(1)
+  status           UomConversionStatus @default(active)
+  // Plain UUID, not a Prisma relation — a self-referencing composite FK adds
+  // real complexity for a pointer the app layer never needs to join through;
+  // resolved by id lookup when a caller walks version history.
+  superseded_by_id String?             @db.Uuid
+  superseded_at    DateTime?
+  created_at       DateTime            @default(now())
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, from_uom_id, to_uom_id, version])
+  @@index([tenant_id])
+  @@index([from_uom_id])
+  @@index([to_uom_id])
+}
+
+// WP-008 Phase A (§12 BR-AST-1xx): per-Branch sellability/purchasability,
+// distinct from `Product.is_active` (tenant-wide). Keyed on `Branch` — the
+// operational root `InventoryStock`/`InventoryMovement` already use today —
+// not the not-yet-operationally-wired `Location` model (WP-005), matching
+// the precedent `branches.repository.ts` already set for WP-007.
+model Assortment {
+  id             String         @id @default(uuid()) @db.Uuid
+  tenant_id      String         @db.Uuid
+  branch_id      String         @db.Uuid
+  branch         Branch         @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Cascade)
+  variant_id     String         @db.Uuid
+  variant        ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Cascade)
+  is_sellable    Boolean        @default(true)
+  is_purchasable Boolean        @default(true)
+  is_displayable Boolean        @default(true)
+  created_at     DateTime       @default(now())
+  updated_at     DateTime       @updatedAt
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, branch_id, variant_id])
+  @@index([tenant_id])
+  @@index([branch_id])
+  @@index([variant_id])
 }
 
 model PricingRule {

@@ -1,13 +1,18 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
 import { ProductsRepository } from './products.repository';
+import { BrandsRepository } from '../brands/brands.repository';
+import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class ProductsService {
   private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
 
-  constructor(private readonly repository: ProductsRepository) {}
+  constructor(
+    private readonly repository: ProductsRepository,
+    private readonly brands: BrandsRepository,
+  ) {}
 
   async list(
     context: TenantContext,
@@ -127,10 +132,17 @@ export class ProductsService {
   }
 
   async createProduct(context: TenantContext, dto: CreateProductDto) {
+    // BR-CLS-103 / BR-PROD-100: a cross-tenant brand_id must never be
+    // accepted -- fail loudly here rather than relying solely on the
+    // composite FK to reject it at the DB layer.
+    if (dto.brand_id) {
+      await this.brands.assertInTenant(context, dto.brand_id);
+    }
     const product = await this.repository.saveProduct(context, {
       name_en: dto.name_en,
       name_ar: dto.name_ar,
       brand: dto.brand,
+      brand_id: dto.brand_id,
       category_id: dto.category_id,
       has_variants: !!(dto.size || dto.color || dto.style),
       variants: {
@@ -142,6 +154,8 @@ export class ProductsService {
           color: dto.color || null,
           style: dto.style || null,
           cost_price: dto.cost_price,
+          item_type: dto.item_type,
+          base_uom_id: dto.base_uom_id,
         }],
       },
     });
@@ -152,6 +166,19 @@ export class ProductsService {
   async updateVariant(context: TenantContext, id: string, dto: UpdateVariantDto) {
     const exists = await this.repository.findVariantById(context, id);
     if (!exists) throw new NotFoundException('Variant not found');
+
+    // BR-TYP-103: a Variant with transaction history cannot flip item_type
+    // by direct edit — a new Variant or a documented migration path is
+    // needed instead.
+    if (dto.item_type !== undefined && dto.item_type !== exists.item_type) {
+      if (await this.repository.hasTransactionHistory(context, id)) {
+        throw new AthrDomainError(
+          'CATALOG_ITEM_TYPE_CHANGE_RESTRICTED',
+          `Variant ${id} has transaction history and cannot change item_type from "${exists.item_type}" to "${dto.item_type}" directly.`,
+        );
+      }
+    }
+
     return this.repository.updateVariant(context, id, {
       sku: dto.sku ?? undefined,
       barcode_ean13: dto.barcode_ean13,
@@ -159,6 +186,8 @@ export class ProductsService {
       size: dto.size,
       color: dto.color,
       style: dto.style,
+      item_type: dto.item_type,
+      base_uom_id: dto.base_uom_id,
     });
   }
 

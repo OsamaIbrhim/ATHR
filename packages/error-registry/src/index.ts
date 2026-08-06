@@ -11,6 +11,7 @@ export { COMMON_ERROR_CODES } from './codes/common';
 export { AUTH_ERROR_CODES } from './codes/auth';
 export { INTERNAL_ERROR_CODES } from './codes/internal';
 export { IDENTITY_ERROR_CODES } from './codes/identity';
+export { CATALOG_ERROR_CODES } from './codes/catalog';
 
 export { ERROR_SEVERITIES, ERROR_REGISTRY, getErrorMetadata } from './registry';
 export type { ErrorSeverity, ErrorMetadata, ErrorCode } from './registry';

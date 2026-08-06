@@ -138,7 +138,7 @@ export class ProductsRepository {
   async updateVariant(
     context: TenantScope,
     id: string,
-    data: Prisma.ProductVariantUpdateInput,
+    data: Prisma.ProductVariantUncheckedUpdateInput,
   ): Promise<ProductVariant> {
     await this.assertVariantInTenant(context, id);
     return this.prisma.productVariant.update({ where: { id }, data });
@@ -148,5 +148,34 @@ export class ProductsRepository {
     if (!(await this.findVariantById(context, id))) {
       throw new AthrDomainError('RESOURCE_NOT_FOUND', 'Variant not found');
     }
+  }
+
+  /**
+   * BR-TYP-103: a Variant with any transaction history cannot flip its
+   * `item_type` by direct edit. Checked across every table that can
+   * originate from a real transaction, not just the inventory ledger —
+   * a service/non_stock Variant may have `SalesInvoiceItem` rows with no
+   * `InventoryMovement` at all (BR-TYP-102).
+   */
+  async hasTransactionHistory(context: TenantScope, variantId: string): Promise<boolean> {
+    const where = { tenant_id: context.tenantId, variant_id: variantId };
+    const [
+      movements,
+      salesItems,
+      purchaseItems,
+      transferItems,
+      returnItems,
+      supplierReturnItems,
+    ] = await Promise.all([
+      this.prisma.inventoryMovement.count({ where }),
+      this.prisma.salesInvoiceItem.count({ where }),
+      this.prisma.purchaseInvoiceItem.count({ where }),
+      this.prisma.transferItem.count({ where }),
+      this.prisma.returnItem.count({ where }),
+      this.prisma.supplierReturnItem.count({ where }),
+    ]);
+    return (
+      movements + salesItems + purchaseItems + transferItems + returnItems + supplierReturnItems > 0
+    );
   }
 }
