@@ -1,4 +1,5 @@
 import {
+  IsEnum,
   IsNumber,
   IsOptional,
   IsString,
@@ -10,6 +11,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { ItemType } from '@prisma/client';
 
 class VariantIdentityFieldsDto {
   @IsOptional()
@@ -35,6 +37,19 @@ class VariantIdentityFieldsDto {
   @IsString()
   @MaxLength(100)
   style?: string;
+
+  // BR-TYP-100: stocked/non_stock/service/bundle_kit_placeholder.
+  // BR-TYP-103: ProductsService rejects a change once the Variant has
+  // transaction history — the DTO itself does not know the Variant's
+  // history, so it only validates shape here.
+  @IsOptional()
+  @IsEnum(ItemType)
+  item_type?: ItemType;
+
+  // BR-TYP-101: a stocked Variant's Base stock UOM.
+  @IsOptional()
+  @IsUUID()
+  base_uom_id?: string;
 }
 
 export class CreateProductDto extends VariantIdentityFieldsDto {
@@ -53,10 +68,17 @@ export class CreateProductDto extends VariantIdentityFieldsDto {
   @MaxLength(200)
   name_ar?: string;
 
+  // Deprecated free-text brand — kept for backward compatibility during the
+  // BR-CLS-103 migration to `brand_id`. A caller should send `brand_id`
+  // going forward; both are accepted so existing integrations don't break.
   @IsOptional()
   @IsString()
   @MaxLength(100)
   brand?: string;
+
+  @IsOptional()
+  @IsUUID()
+  brand_id?: string;
 
   @IsOptional()
   @IsUUID()

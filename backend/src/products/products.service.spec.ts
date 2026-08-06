@@ -1,5 +1,6 @@
 import { ProductsService } from './products.service';
 import { ProductsRepository } from './products.repository';
+import { BrandsRepository } from '../brands/brands.repository';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 
 // WP-007 Phase A: `ProductsService` now depends on `ProductsRepository`
@@ -10,7 +11,7 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 const ctx = contextFor(TENANT_A);
 
 function serviceOver(prisma: any) {
-  return new ProductsService(new ProductsRepository(prisma as any));
+  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any));
 }
 
 function productReadPrisma(variants: any[], total = variants.length) {
