@@ -223,6 +223,12 @@ const CASHIER_GRANTS: readonly BusinessPermission[] = [
   'shift.view',
   'shift.open-own',
   'shift.close-own',
+  // The enrolled terminal reports its own sync/health state via
+  // POST /terminals/heartbeat regardless of which role is logged in on the
+  // till. `@Roles` already allows `cashier` on that route; without this grant
+  // every cashier-operated terminal fails the permission check on every
+  // heartbeat and can never advance past it to pull catalog updates.
+  'terminal.view-health',
 ];
 
 /** No Matrix template; the legacy `seller` role is read-only today. */

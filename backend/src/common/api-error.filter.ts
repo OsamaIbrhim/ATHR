@@ -9,6 +9,8 @@ import {
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { Request, Response } from 'express';
+import { getErrorMetadata } from '@athr/error-registry';
+import { AthrDomainError } from './http/athr-exception.filter';
 
 export type FriendlyError = {
   status: number;
@@ -82,6 +84,23 @@ function structuredHttpError(
 }
 
 export function toFriendlyError(exception: unknown): FriendlyError {
+  // AthrDomainError is a plain Error, not an HttpException, so without this
+  // branch it always fell through to the generic 500 below regardless of the
+  // registered error code's real status (e.g. a 403 PERMISSION_DENIED from
+  // PermissionGuard was reported to POS/admin clients as an opaque
+  // INTERNAL_ERROR). AthrExceptionFilter already does this mapping correctly,
+  // but per main.ts it only applies per-route via @UseFilters — everything
+  // else, including every @RequirePermission-guarded route, resolves here.
+  if (exception instanceof AthrDomainError) {
+    const metadata = getErrorMetadata(exception.code);
+    return {
+      status: exception.overrides?.httpStatus ?? metadata.defaultHttpStatus,
+      code: exception.code,
+      message: exception.message,
+      message_ar: exception.message,
+      retryable: metadata.retryable,
+    };
+  }
   if (exception instanceof Prisma.PrismaClientKnownRequestError) {
     if (exception.code === 'P2002') {
       const target = Array.isArray(exception.meta?.target) ? exception.meta?.target[0] : exception.meta?.target;
