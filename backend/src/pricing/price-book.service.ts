@@ -75,7 +75,15 @@ export class PriceBookService {
    * unless it is translated. Callers get a domain error naming the conflict
    * (Error Catalog / CLAUDE.md §4) instead of a leaked ORM error code.
    */
-  private async asDefaultConflict<T>(operation: () => Promise<T>, message: string): Promise<T> {
+  private asDefaultConflict<T>(operation: () => Promise<T>, message: string): Promise<T> {
+    return this.asConflict(operation, 'PRICING_DEFAULT_PRICE_BOOK_CONFLICT', message);
+  }
+
+  private async asConflict<T>(
+    operation: () => Promise<T>,
+    code: 'PRICING_DEFAULT_PRICE_BOOK_CONFLICT' | 'PRICING_ENTRY_IMMUTABLE',
+    message: string,
+  ): Promise<T> {
     try {
       return await operation();
     } catch (error: unknown) {
@@ -85,7 +93,7 @@ export class PriceBookService {
         'code' in error &&
         (error as { code?: unknown }).code === UNIQUE_CONSTRAINT_VIOLATION
       ) {
-        throw new AthrDomainError('PRICING_DEFAULT_PRICE_BOOK_CONFLICT', message);
+        throw new AthrDomainError(code, message);
       }
       throw error;
     }
@@ -231,17 +239,26 @@ export class PriceBookService {
       );
     }
     this.assertValidPrice(dto.unit_price, dto.allow_zero_price ?? false);
-    return this.repository.createEntry(context, {
-      priceBookId: book.id,
-      scopeType: dto.scope_type,
-      scopeId: dto.scope_type === 'global' ? null : dto.scope_id!,
-      minQty: dto.min_qty ?? 1,
-      unitPrice: dto.unit_price,
-      allowZeroPrice: dto.allow_zero_price ?? false,
-      taxPercent: dto.tax_percent ?? 14,
-      floorPrice: dto.floor_price ?? null,
-      createdBy: actorId,
-    });
+    // `PriceBookEntry_one_active_per_scope_qty` (a partial unique index over
+    // book/scope/min_qty WHERE status = 'active') rejects a duplicate here.
+    // Same treatment as the default-book index: a domain error naming the
+    // conflict, never a leaked Prisma P2002 (CLAUDE.md §4).
+    return this.asConflict(
+      () =>
+        this.repository.createEntry(context, {
+          priceBookId: book.id,
+          scopeType: dto.scope_type,
+          scopeId: dto.scope_type === 'global' ? null : dto.scope_id!,
+          minQty: dto.min_qty ?? 1,
+          unitPrice: dto.unit_price,
+          allowZeroPrice: dto.allow_zero_price ?? false,
+          taxPercent: dto.tax_percent ?? 14,
+          floorPrice: dto.floor_price ?? null,
+          createdBy: actorId,
+        }),
+      'PRICING_ENTRY_IMMUTABLE',
+      `This Price Book already has an active entry for scope "${dto.scope_type}" at min_qty ${dto.min_qty ?? 1}. Supersede it instead of creating a second one (BR-PRB-103).`,
+    );
   }
 
   /**

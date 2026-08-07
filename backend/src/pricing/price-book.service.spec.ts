@@ -314,6 +314,52 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
  * (`fakePrisma` has no index to violate) — this test pins the order, and
  * `scripts/verify-price-book-behaviour.cjs` proves it against real Postgres.
  */
+describe('PriceBookService — a database uniqueness conflict never leaks as a raw Prisma error', () => {
+  function prismaRejectingWith(code: string) {
+    return {
+      tenant: { findUnique: async () => ({ id: TENANT_A, default_currency: 'EGP' }) },
+      priceBook: {
+        findFirst: async () => bookRow({ status: 'draft' }),
+        create: async () => {
+          throw Object.assign(new Error('unique constraint'), { code });
+        },
+      },
+      priceBookEntry: {
+        create: async () => {
+          throw Object.assign(new Error('unique constraint'), { code });
+        },
+      },
+    } as any;
+  }
+
+  function serviceFor(prisma: any) {
+    return new PriceBookService(new PriceBookRepository(prisma), prisma, fakePermissionPolicy());
+  }
+
+  it('maps the default-book index collision to PRICING_DEFAULT_PRICE_BOOK_CONFLICT', async () => {
+    const service = serviceFor(prismaRejectingWith('P2002'));
+    await expect(
+      service.create(ctx, MAKER, { name: 'Second default', is_default: true } as any),
+    ).rejects.toMatchObject({ code: 'PRICING_DEFAULT_PRICE_BOOK_CONFLICT' });
+  });
+
+  it('maps the one-active-entry-per-scope collision to PRICING_ENTRY_IMMUTABLE', async () => {
+    const service = serviceFor(prismaRejectingWith('P2002'));
+    await expect(
+      service.createEntry(ctx, PRICING_MANAGER, {
+        price_book_id: randomUUID(), scope_type: 'global', unit_price: 100,
+      } as any),
+    ).rejects.toMatchObject({ code: 'PRICING_ENTRY_IMMUTABLE' });
+  });
+
+  it('re-throws any error that is not a uniqueness violation', async () => {
+    const service = serviceFor(prismaRejectingWith('P1001'));
+    await expect(
+      service.create(ctx, MAKER, { name: 'x', is_default: true } as any),
+    ).rejects.toMatchObject({ code: 'P1001' });
+  });
+});
+
 describe('PriceBookRepository — supersede demotes the previous version before inserting the successor', () => {
   it('issues the demoting updateMany first, carrying the successor id', async () => {
     const calls: string[] = [];
