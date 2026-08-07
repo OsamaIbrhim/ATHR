@@ -10,16 +10,14 @@ const {
 } = require('./prisma-migrate-deploy.cjs');
 
 test('reports the repository migration history used by deployment', () => {
-  // WP-008 Phase A (2349895) added 6 migration folders, 147 -> 153, without
-  // updating this assertion. The stale count also masked a second staleness:
-  // the 202608060001-0006 catalog folders sort after the 202608040110-0112
-  // tenant-scoped ones, so the slice list below was wrong too — assert.equal
-  // threw first, so the deepEqual never got the chance to fail.
-  assert.equal(countMigrationFolders(), 153);
+  // Master corrected WP-008 Phase A's stale count to 153 (PR #67, 628defa).
+  // Phase B adds 6 more folders (202608070001-0006), so 153 -> 159, and the
+  // 202608070xxx pricing folders now sort last.
+  assert.equal(countMigrationFolders(), 159);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608060004_add_uom_conversion_table',
-    '202608060005_add_productvariant_item_type_base_uom',
-    '202608060006_add_assortment_table',
+    '202608070004_add_price_override_table',
+    '202608070005_add_discount_table',
+    '202608070006_migrate_pricing_rules_to_price_books',
   ]);
 });
 
