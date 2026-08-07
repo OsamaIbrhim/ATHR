@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
 const { runPreCheck, runPostCheck } = require('./validate-pricing-rule-migration.cjs');
 
 function noopLog() {}
@@ -76,4 +78,45 @@ test('runPostCheck fails loud (not a silent pass) when live variants and migrate
   assert.equal(result.ok, false);
   assert.equal(result.liveVariants, 10);
   assert.equal(result.migratedEntries, 7);
+});
+
+// B6: the accounting above is worthless if nothing runs it. The migration's
+// own `RAISE NOTICE` never surfaces (`prisma migrate deploy` does not print
+// PostgreSQL NOTICE messages, and nothing captured them), which made
+// CLAUDE.md §6 "fail loud on ambiguous data" fail *silently* instead. These
+// assertions pin the CI wiring so it cannot be dropped without a red test.
+// Line endings normalised: the repository checks this file out with CRLF on
+// Windows, and these assertions are about content, not about newline style.
+const workflow = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8').split('\r\n').join('\n');
+const migrationGate = workflow.slice(
+  workflow.indexOf('\n  migration-gate:'),
+  workflow.indexOf('\n  admin:'),
+);
+
+test('the migration-gate CI job runs the pre-migration ambiguous-row report', () => {
+  assert.ok(migrationGate.includes('node scripts/validate-pricing-rule-migration.cjs\n'));
+});
+
+test('the migration-gate CI job runs the post-migration 1:1 invariant check', () => {
+  assert.ok(migrationGate.includes('node scripts/validate-pricing-rule-migration.cjs --post-check'));
+});
+
+test('the pre-check runs BEFORE the migrations it is accounting for, the post-check after', () => {
+  const preCheck = migrationGate.indexOf('node scripts/validate-pricing-rule-migration.cjs\n');
+  const deploy = migrationGate.indexOf('npx prisma migrate deploy', preCheck);
+  const postCheck = migrationGate.indexOf('node scripts/validate-pricing-rule-migration.cjs --post-check');
+  assert.ok(preCheck > -1 && deploy > preCheck && postCheck > deploy);
+});
+
+test('the migration-gate CI job runs the Price Book database-behaviour proof', () => {
+  assert.ok(migrationGate.includes('node scripts/verify-price-book-behaviour.cjs'));
+});
+
+test('runPostCheck exits non-zero -- a wired check that cannot fail the build proves nothing', async () => {
+  // Mirrors what `main()` does with the result: `ok: false` => process.exitCode = 1.
+  const runQuery = async () => (call++ === 0 ? [{ count: 4 }] : [{ count: 1 }]);
+  let call = 0;
+  const result = await runPostCheck(runQuery, noopLog, noopLog);
+  assert.equal(result.ok, false);
+  assert.notEqual(result.liveVariants, result.migratedEntries);
 });

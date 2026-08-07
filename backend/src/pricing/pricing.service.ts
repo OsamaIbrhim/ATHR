@@ -31,6 +31,14 @@ export type ResolvedPriceEntry = {
   floor_price: Prisma.Decimal | number | string | null;
 };
 
+/**
+ * Pre-bucketed entries, keyed by `"<scope_type>:<scope_id>"`. Built once per
+ * call so resolution is O(1) per variant per scope level instead of a linear
+ * scan of every entry in the tenant (the POS snapshot path prices the whole
+ * catalog in one go — at N entries and N variants the scan was O(N²)).
+ */
+export type PriceEntryIndex = ReadonlyMap<string, readonly ResolvedPriceEntry[]>;
+
 export type PriceQuote = {
   qty: number;
   unit_price: number;
@@ -39,8 +47,21 @@ export type PriceQuote = {
   tax_percent: number;
   tax_amount: number;
   selling_price: number;
-  /** BR-OVP-102 floor: the entry's explicit `floor_price`, or the variant's cost as a cost-based fallback. */
+  /**
+   * BR-OVP-102 floor: the entry's explicit `floor_price`, or the variant's
+   * cost as a cost-based fallback. **Cost-sensitive** (BR-CST-101, Permission
+   * Matrix §51) — HTTP boundaries must strip this for a caller without
+   * `pricing.cost.view`/`pricing.margin.view`; see `CostVisibilityService`.
+   */
   min_allowed_price: number;
+  /**
+   * True when `min_allowed_price` came from the variant's `cost_price` rather
+   * than an explicit `floor_price` on the entry. Post-migration every entry
+   * has a null `floor_price`, so today this is true for essentially the whole
+   * catalog — which is exactly why the masking is unconditional at the
+   * boundary rather than conditional on this flag.
+   */
+  floor_is_cost_derived: boolean;
   source: {
     price_book_id: string;
     entry_id: string;
@@ -118,11 +139,11 @@ export class PricingService {
     lines: readonly PriceableLine[],
     transaction?: Prisma.TransactionClient,
   ): Promise<Map<string, PriceQuote>> {
-    const entries = await this.loadActiveRules(context, transaction);
+    const index = this.buildIndex(await this.loadActiveRules(context, transaction));
     const result = new Map<string, PriceQuote>();
     const unpriced: string[] = [];
     for (const line of lines) {
-      const quote = this.quote(line.variant, entries, line.qty);
+      const quote = this.quote(line.variant, index, line.qty);
       if (!quote) {
         unpriced.push(line.variant.id);
         continue;
@@ -140,9 +161,14 @@ export class PricingService {
 
   /**
    * Loads every currently-effective `PriceBookEntry` for the tenant's active
-   * default Price Book. Scoped so another tenant's entries can never win
+   * **default** Price Book. Scoped so another tenant's entries can never win
    * this tenant's resolution (Multi-tenancy Blueprint §32/§120 precedent —
    * same reasoning WP-007 documented for the old `PricingRule` query).
+   *
+   * `is_default` matters as much as `status`: without it, a non-default
+   * active book (a wholesale or contract book, BR-PRB-101) contributed its
+   * entries to tenant-default resolution and bloated this result set with
+   * rows that must never win here.
    */
   async loadActiveRules(
     context: TenantScope,
@@ -156,22 +182,51 @@ export class PricingService {
         status: 'active',
         effective_from: { lte: now },
         OR: [{ effective_to: null }, { effective_to: { gte: now } }],
-        price_book: { tenant_id: context.tenantId, status: 'active' },
+        price_book: { tenant_id: context.tenantId, status: 'active', is_default: true },
       },
     });
   }
 
-  /** Pure, synchronous resolution against a pre-loaded entry set — used for bulk catalog snapshots (`sync`). */
+  /** `"<scope_type>:<scope_id>"` — `global` entries collapse to a single bucket. */
+  private static scopeKey(scopeType: PriceEntryScopeType, scopeId: string | null): string {
+    return `${scopeType}:${scopeType === 'global' ? '' : scopeId ?? ''}`;
+  }
+
+  /** Buckets entries by resolution scope so `quote()` never scans the full tenant set. */
+  buildIndex(entries: readonly ResolvedPriceEntry[]): PriceEntryIndex {
+    const index = new Map<string, ResolvedPriceEntry[]>();
+    for (const entry of entries) {
+      const key = PricingService.scopeKey(entry.scope_type, entry.scope_id);
+      const bucket = index.get(key);
+      if (bucket) bucket.push(entry);
+      else index.set(key, [entry]);
+    }
+    return index;
+  }
+
+  /**
+   * Pure, synchronous resolution against a pre-loaded entry set — used for
+   * bulk catalog snapshots (`sync`). Indexes once, then resolves each variant
+   * against its own buckets, so a full-catalog snapshot is linear in the
+   * number of variants rather than variants × entries.
+   */
   quoteMany(
     variants: readonly PriceableVariant[],
-    entries: readonly ResolvedPriceEntry[],
+    entries: readonly ResolvedPriceEntry[] | PriceEntryIndex,
   ): Map<string, PriceQuote> {
+    const index = PricingService.asIndex(entries) ?? this.buildIndex(entries as readonly ResolvedPriceEntry[]);
     const result = new Map<string, PriceQuote>();
     for (const variant of variants) {
-      const quote = this.quote(variant, entries, 1);
+      const quote = this.quote(variant, index, 1);
       if (quote) result.set(variant.id, quote);
     }
     return result;
+  }
+
+  private static asIndex(
+    entries: readonly ResolvedPriceEntry[] | PriceEntryIndex,
+  ): PriceEntryIndex | null {
+    return entries instanceof Map ? entries : null;
   }
 
   /**
@@ -182,7 +237,12 @@ export class PricingService {
    * Returns `null` — never a zero/negative fallback — when nothing resolves
    * (BR-PSL-101).
    */
-  quote(variant: PriceableVariant, entries: readonly ResolvedPriceEntry[], qty = 1): PriceQuote | null {
+  quote(
+    variant: PriceableVariant,
+    entries: readonly ResolvedPriceEntry[] | PriceEntryIndex,
+    qty = 1,
+  ): PriceQuote | null {
+    const index = PricingService.asIndex(entries) ?? this.buildIndex(entries as readonly ResolvedPriceEntry[]);
     const levels: ReadonlyArray<{ type: PriceEntryScopeType; id: string | null }> = [
       { type: 'variant', id: variant.id },
       { type: 'product', id: variant.product_id },
@@ -195,12 +255,8 @@ export class PricingService {
       const target = levels.find((candidate) => candidate.type === level)!;
       if (target.type !== 'global' && !target.id) continue;
 
-      const candidates = entries.filter(
-        (entry) =>
-          entry.scope_type === target.type &&
-          (target.type === 'global' || entry.scope_id === target.id) &&
-          decimal(entry.min_qty).lte(qty),
-      );
+      const bucket = index.get(PricingService.scopeKey(target.type, target.id)) ?? [];
+      const candidates = bucket.filter((entry) => decimal(entry.min_qty).lte(qty));
       if (!candidates.length) continue;
 
       const winner = candidates.reduce((best, current) =>
@@ -216,7 +272,8 @@ export class PricingService {
     const taxPercent = decimal(entry.tax_percent);
     const taxAmount = money(netPrice.mul(taxPercent).div(100));
     const sellingPrice = money(netPrice.plus(taxAmount));
-    const floor = entry.floor_price != null ? money(entry.floor_price) : money(variant.cost_price);
+    const floorIsCostDerived = entry.floor_price == null;
+    const floor = floorIsCostDerived ? money(variant.cost_price) : money(entry.floor_price!);
 
     return {
       qty,
@@ -226,6 +283,7 @@ export class PricingService {
       tax_amount: taxAmount.toNumber(),
       selling_price: sellingPrice.toNumber(),
       min_allowed_price: floor.toNumber(),
+      floor_is_cost_derived: floorIsCostDerived,
       source: {
         price_book_id: entry.price_book_id,
         entry_id: entry.id,

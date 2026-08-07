@@ -205,3 +205,96 @@ describe('PricingService — quoteMany (sync catalog snapshot: skips, never thro
     expect(quotes.has('unpriced-variant')).toBe(false);
   });
 });
+
+/**
+ * B4 — the POS snapshot path resolves the whole catalog in one call. Scanning
+ * every tenant entry per variant per scope level made that O(N²)
+ * (~10⁸ filter operations at 10k variants). Entries are bucketed by
+ * `scope_type:scope_id` once per call instead.
+ */
+describe('PricingService — resolution is indexed, not a full scan (B4)', () => {
+  it('loads only the ACTIVE DEFAULT book\'s entries — a non-default active book never contributes', async () => {
+    const prisma = { priceBookEntry: { findMany: jest.fn().mockResolvedValue([]) } };
+    const service = new PricingService(prisma as any);
+
+    await service.loadActiveRules(ctx);
+
+    const where = prisma.priceBookEntry.findMany.mock.calls[0][0].where;
+    expect(where.price_book).toMatchObject({
+      tenant_id: TENANT_A,
+      status: 'active',
+      is_default: true,
+    });
+  });
+
+  it('buckets entries by scope so each variant only touches its own candidates', () => {
+    const service = new PricingService({} as any);
+    const index = service.buildIndex([
+      entry({ scope_type: 'variant', scope_id: 'v-1', unit_price: 11 }),
+      entry({ scope_type: 'variant', scope_id: 'v-2', unit_price: 22 }),
+      entry({ scope_type: 'global', unit_price: 99 }),
+    ]);
+
+    expect(index.get('variant:v-1')).toHaveLength(1);
+    expect(index.get('variant:v-2')).toHaveLength(1);
+    expect(index.get('global:')).toHaveLength(1);
+    expect(index.get('variant:v-3')).toBeUndefined();
+  });
+
+  it('resolves identically whether given a raw entry array or a prebuilt index', () => {
+    const service = new PricingService({} as any);
+    const entries = [
+      entry({ scope_type: 'global', unit_price: 10 }),
+      entry({ scope_type: 'category', scope_id: CATEGORY_ID, unit_price: 20 }),
+      entry({ scope_type: 'variant', scope_id: VARIANT_ID, unit_price: 50 }),
+      entry({ scope_type: 'variant', scope_id: VARIANT_ID, min_qty: 10, unit_price: 45 }),
+    ];
+
+    const fromArray = service.quote(variant(), entries, 12);
+    const fromIndex = service.quote(variant(), service.buildIndex(entries), 12);
+
+    expect(fromArray).toEqual(fromIndex);
+    // Highest qualifying min_qty inside the winning bucket still wins.
+    expect(fromIndex!.net_price).toBe(45);
+  });
+
+  it('prices a 2,000-variant catalog against a 2,000-entry book without a per-variant full scan', () => {
+    const service = new PricingService({} as any);
+    const size = 2_000;
+    const entries = Array.from({ length: size }, (_, index) =>
+      entry({ scope_type: 'variant', scope_id: `v-${index}`, unit_price: 100 + index }),
+    );
+    const variants = Array.from({ length: size }, (_, index) =>
+      variant({ id: `v-${index}`, product_id: `p-${index}` }),
+    );
+
+    const quotes = service.quoteMany(variants, entries);
+
+    expect(quotes.size).toBe(size);
+    expect(quotes.get('v-0')!.net_price).toBe(100);
+    expect(quotes.get(`v-${size - 1}`)!.net_price).toBe(100 + size - 1);
+  });
+});
+
+/**
+ * B3 — BR-CST-101: the floor is the variant's cost whenever the resolved entry
+ * has no explicit `floor_price`. `floor_is_cost_derived` records which of the
+ * two it was, so the masking at the HTTP boundary is auditable.
+ */
+describe('PricingService — the cost-derived floor is flagged as such', () => {
+  const service = new PricingService({} as any);
+
+  it('flags a floor that fell back to the variant cost', () => {
+    const quote = service.quote(variant({ cost_price: 85 }), [entry({ scope_type: 'global', unit_price: 100 })]);
+    expect(quote!.min_allowed_price).toBe(85);
+    expect(quote!.floor_is_cost_derived).toBe(true);
+  });
+
+  it('does not flag an explicit entry floor', () => {
+    const quote = service.quote(variant({ cost_price: 85 }), [
+      entry({ scope_type: 'global', unit_price: 100, floor_price: 90 }),
+    ]);
+    expect(quote!.min_allowed_price).toBe(90);
+    expect(quote!.floor_is_cost_derived).toBe(false);
+  });
+});

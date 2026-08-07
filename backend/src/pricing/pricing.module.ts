@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { PricingService } from './pricing.service';
 import { PricingController } from './pricing.controller';
+import { CostVisibilityService } from './cost-visibility.service';
 import { PriceBookRepository } from './price-book.repository';
 import { PriceBookService } from './price-book.service';
 import { PriceBookController } from './price-book.controller';
@@ -11,6 +12,7 @@ import { OverridesController } from './overrides.controller';
 @Module({
   providers: [
     PricingService,
+    CostVisibilityService,
     PriceBookRepository,
     PriceBookService,
     OverridesRepository,

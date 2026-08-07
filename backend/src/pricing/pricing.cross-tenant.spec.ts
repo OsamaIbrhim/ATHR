@@ -29,8 +29,8 @@ function setup() {
         },
       ],
       priceBook: [
-        { id: PRICE_BOOK_A, tenant_id: TENANT_A, status: 'active' },
-        { id: PRICE_BOOK_B, tenant_id: TENANT_B, status: 'active' },
+        { id: PRICE_BOOK_A, tenant_id: TENANT_A, status: 'active', is_default: true },
+        { id: PRICE_BOOK_B, tenant_id: TENANT_B, status: 'active', is_default: true },
       ],
       priceBookEntry: [
         {

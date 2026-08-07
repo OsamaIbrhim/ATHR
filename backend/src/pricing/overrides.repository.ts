@@ -72,6 +72,37 @@ export class OverridesRepository {
     });
   }
 
+  async findOverrideById(context: TenantScope, id: string): Promise<PriceOverride | null> {
+    return this.prisma.priceOverride.findFirst({ where: { id, tenant_id: context.tenantId } });
+  }
+
+  /**
+   * BR-OVP-102 + Matrix §17: records the independent approval on a pending
+   * below-floor override. `approved_by IS NULL` is part of the predicate, so
+   * two approvers racing can never overwrite each other's recorded identity —
+   * exactly one write wins and the loser sees `count === 0` (same pattern as
+   * `PriceBookRepository.transition`). This is the one mutation on an
+   * otherwise append-only evidence table: it fills the approval fields and
+   * touches nothing else.
+   */
+  async recordOverrideApproval(
+    context: TenantScope,
+    id: string,
+    approverId: string,
+  ): Promise<{ applied: boolean }> {
+    const changed = await this.prisma.priceOverride.updateMany({
+      where: {
+        id,
+        tenant_id: context.tenantId,
+        is_below_floor: true,
+        approved_by: null,
+        applied_by: { not: approverId },
+      },
+      data: { approved_by: approverId, approved_at: new Date() },
+    });
+    return { applied: changed.count === 1 };
+  }
+
   async listOverrides(context: TenantScope, variantId?: string): Promise<PriceOverride[]> {
     return this.prisma.priceOverride.findMany({
       where: { tenant_id: context.tenantId, ...(variantId ? { variant_id: variantId } : {}) },

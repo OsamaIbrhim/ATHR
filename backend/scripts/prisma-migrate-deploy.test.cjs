@@ -15,11 +15,11 @@ test('reports the repository migration history used by deployment', () => {
   // that PR (cancelled by a runner-availability issue upstream), so nothing
   // caught the staleness until WP-008 Phase B's 6 more migrations made the
   // mismatch visible (159 !== 147).
-  assert.equal(countMigrationFolders(), 159);
+  assert.equal(countMigrationFolders(), 160);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608070004_add_price_override_table',
     '202608070005_add_discount_table',
     '202608070006_migrate_pricing_rules_to_price_books',
+    '202608070007_add_price_book_sync_triggers',
   ]);
 });
 
