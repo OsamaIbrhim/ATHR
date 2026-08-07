@@ -20,7 +20,7 @@ export class PricingController {
     @Body() dto: CalculatePriceDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    const quote = await this.pricing.calculate(ctx, dto.variant_id);
+    const quote = await this.pricing.calculate(ctx, dto.variant_id, undefined, dto.qty);
     if (req.user.role !== 'cashier') return quote;
     return {
       selling_price: quote.selling_price,
