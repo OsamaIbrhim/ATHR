@@ -306,6 +306,80 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
 });
 
 /**
+ * B8 — `PriceBookEntry_one_active_per_scope_qty` is a partial unique index
+ * over (price_book_id, scope_type, COALESCE(scope_id,...), min_qty) WHERE
+ * status = 'active', and Postgres checks a non-deferrable unique index per
+ * statement, not at COMMIT. Inserting the successor before demoting the
+ * previous row therefore raised P2002 on a real database while passing here
+ * (`fakePrisma` has no index to violate) — this test pins the order, and
+ * `scripts/verify-price-book-behaviour.cjs` proves it against real Postgres.
+ */
+describe('PriceBookRepository — supersede demotes the previous version before inserting the successor', () => {
+  it('issues the demoting updateMany first, carrying the successor id', async () => {
+    const calls: string[] = [];
+    const previous = {
+      id: 'entry-1', tenant_id: TENANT_A, price_book_id: 'book-1', scope_type: 'global',
+      scope_id: null, min_qty: 1, version: 1, status: 'active',
+    };
+    let demotedWith: any = null;
+    const prisma = {
+      priceBookEntry: {
+        findFirst: async () => previous,
+      },
+      $transaction: async (fn: any) =>
+        fn({
+          priceBookEntry: {
+            updateMany: async (args: any) => {
+              calls.push('updateMany');
+              demotedWith = args;
+              return { count: 1 };
+            },
+            create: async ({ data }: any) => {
+              calls.push('create');
+              return data;
+            },
+          },
+        }),
+    } as any;
+
+    const created: any = await new PriceBookRepository(prisma).supersedeEntry(ctx, 'entry-1', {
+      unitPrice: 120, allowZeroPrice: false, taxPercent: 14, floorPrice: null, createdBy: MAKER,
+    });
+
+    expect(calls).toEqual(['updateMany', 'create']);
+    expect(demotedWith.where).toMatchObject({ id: 'entry-1', status: 'active' });
+    expect(demotedWith.data.superseded_by_id).toBe(created.id);
+    expect(created.version).toBe(2);
+  });
+
+  it('refuses to insert a successor when the previous version was superseded concurrently', async () => {
+    const prisma = {
+      priceBookEntry: {
+        findFirst: async () => ({
+          id: 'entry-1', tenant_id: TENANT_A, price_book_id: 'book-1', scope_type: 'global',
+          scope_id: null, min_qty: 1, version: 1, status: 'active',
+        }),
+      },
+      $transaction: async (fn: any) =>
+        fn({
+          priceBookEntry: {
+            updateMany: async () => ({ count: 0 }),
+            create: async () => {
+              throw new Error('must not insert a second active version');
+            },
+          },
+        }),
+    } as any;
+
+    await expect(
+      new PriceBookRepository(prisma).supersedeEntry(ctx, 'entry-1', {
+        unitPrice: 120, allowZeroPrice: false, taxPercent: 14, floorPrice: null, createdBy: MAKER,
+      }),
+    ).rejects.toMatchObject({ code: 'PRICING_ENTRY_IMMUTABLE' });
+  });
+});
+
+/**
  * H2 (BR-PRB-101/103, Permission Matrix §17): a `draft` book is not live, so
  * `pricing.price-entry.manage` alone builds it up; an `active` book is, so
  * changing a live price additionally requires `pricing.price-book.activate`.

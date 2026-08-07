@@ -19,6 +19,12 @@
 //       leaves exactly one active default — the invariant BR-PRB-104 wants,
 //       rather than the "no replacement can ever exist" the unscoped index
 //       enforced. Also proves a *second active* default is still rejected.
+//   B8  `PriceBookRepository.supersedeEntry`'s statement order survives the
+//       `PriceBookEntry_one_active_per_scope_qty` partial unique index. Found
+//       *by* this proof: the shipped order (insert successor, then demote the
+//       previous row) raised P2002 on a real database while passing against
+//       `fakePrisma` -- BR-PRB-103's only sanctioned way to change a live
+//       price could not actually run.
 //   B7  The cutover migration's tie-break picks the lowest `priority` rule
 //       when two active rules of the same scope_type match one variant,
 //       matching the pre-Phase-B engine (`orderBy: { priority: 'asc' }` then
@@ -112,28 +118,58 @@ async function verifySyncChangeEmission(tenant) {
     tenant.id,
   );
 
-  // Supersede: the previous row is UPDATEd and a successor INSERTed.
-  const successor = await prisma.priceBookEntry.create({
-    data: {
-      tenant_id: tenant.id,
-      price_book_id: book.id,
-      scope_type: 'global',
-      scope_id: null,
-      min_qty: 1,
-      unit_price: 120,
-      tax_percent: 14,
-      version: 2,
-      status: 'active',
-    },
+  // Supersede, in the exact statement order `PriceBookRepository
+  // .supersedeEntry` uses: demote the previous row OUT of the
+  // `PriceBookEntry_one_active_per_scope_qty` partial unique index first, then
+  // insert the successor. Inserting first raises P2002 -- a non-deferrable
+  // unique index is checked per statement, not at COMMIT, so being inside one
+  // transaction does not save it. (This proof is what caught that; the
+  // fakePrisma spec had no index to violate.)
+  const successorId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.priceBookEntry.updateMany({
+      where: { id: entry.id, status: 'active' },
+      data: { status: 'superseded', superseded_by_id: successorId, superseded_at: new Date() },
+    });
+    await tx.priceBookEntry.create({
+      data: {
+        id: successorId,
+        tenant_id: tenant.id,
+        price_book_id: book.id,
+        scope_type: 'global',
+        scope_id: null,
+        min_qty: 1,
+        unit_price: 120,
+        tax_percent: 14,
+        version: 2,
+        status: 'active',
+      },
+    });
   });
-  await prisma.priceBookEntry.update({
-    where: { id: entry.id },
-    data: { status: 'superseded', superseded_by_id: successor.id, superseded_at: new Date() },
-  });
+  record('B8 supersede succeeds against the real one-active-per-scope index', true);
   expectEqual(
     'B1 superseding an entry emits SyncChange rows for both versions',
     (await countPricingChanges(tenant.id)) - before >= 3,
     true,
+  );
+
+  // The invariant behind that ordering constraint, asserted directly.
+  await expectUniqueViolation(
+    'B8 a SECOND active entry for the same (book, scope, min_qty) is rejected',
+    () =>
+      prisma.priceBookEntry.create({
+        data: {
+          tenant_id: tenant.id,
+          price_book_id: book.id,
+          scope_type: 'global',
+          scope_id: null,
+          min_qty: 1,
+          unit_price: 130,
+          tax_percent: 14,
+          version: 3,
+          status: 'active',
+        },
+      }),
   );
 
   // A live-status book transition must reach the terminals...

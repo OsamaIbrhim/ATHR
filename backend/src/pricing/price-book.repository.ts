@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Injectable } from '@nestjs/common';
 import type {
   PriceBook,
@@ -220,9 +221,25 @@ export class PriceBookRepository {
 
   /**
    * BR-PRB-103: the only way to change an entry's price after creation.
-   * Never mutates the previous row -- marks it "superseded" and inserts a
-   * new version referencing it, in one transaction (same pattern as Phase
-   * A's `UomRepository.supersedeConversion`).
+   * Never mutates the previous row's price -- marks it "superseded" and
+   * inserts a new version referencing it, in one transaction (same pattern as
+   * Phase A's `UomRepository.supersedeConversion`).
+   *
+   * **Statement order matters.** `PriceBookEntry_one_active_per_scope_qty` is
+   * a partial unique index over
+   * `(price_book_id, scope_type, COALESCE(scope_id, ...), min_qty)
+   *  WHERE status = 'active'`, and a non-deferrable unique index is checked
+   * per statement, not at COMMIT. Inserting the successor first therefore
+   * raised P2002 against a real database even though both writes are in one
+   * transaction — so the previous row is demoted out of the partial index
+   * *before* the successor is inserted. The successor's id is generated up
+   * front so that demotion can record `superseded_by_id` in the same
+   * statement rather than needing a third write.
+   *
+   * The demotion is an `updateMany` predicated on `status = 'active'`: two
+   * callers superseding the same entry concurrently means exactly one sees
+   * `count === 1` and the other is rejected, instead of both inserting a
+   * successor.
    */
   async supersedeEntry(
     context: TenantScope,
@@ -242,9 +259,21 @@ export class PriceBookRepository {
         `Price Book entry ${previousId} is already superseded; supersede its active successor instead.`,
       );
     }
+    const nextId = randomUUID();
     return this.prisma.$transaction(async (tx) => {
-      const next = await tx.priceBookEntry.create({
+      const demoted = await tx.priceBookEntry.updateMany({
+        where: { id: previous.id, tenant_id: context.tenantId, status: 'active' },
+        data: { status: 'superseded', superseded_by_id: nextId, superseded_at: new Date() },
+      });
+      if (demoted.count !== 1) {
+        throw new AthrDomainError(
+          'PRICING_ENTRY_IMMUTABLE',
+          `Price Book entry ${previousId} was superseded concurrently; supersede its active successor instead.`,
+        );
+      }
+      return tx.priceBookEntry.create({
         data: {
+          id: nextId,
           tenant_id: context.tenantId,
           price_book_id: previous.price_book_id,
           scope_type: previous.scope_type,
@@ -259,11 +288,6 @@ export class PriceBookRepository {
           created_by: data.createdBy,
         },
       });
-      await tx.priceBookEntry.update({
-        where: { id: previous.id },
-        data: { status: 'superseded', superseded_by_id: next.id, superseded_at: new Date() },
-      });
-      return next;
     });
   }
 }
