@@ -139,7 +139,16 @@ function importSpecifiers(path) {
   const matches = source.matchAll(
     /(?:from\s+|import\s*\(|require\s*\(|import\s+)['"]([^'"]+)['"]/g,
   );
-  return [...matches].map((match) => match[1]);
+  // A real import/require specifier is always a static string literal and
+  // never contains `${...}` interpolation. Without this guard, prose inside
+  // a template-literal error message that happens to contain the word
+  // "from" followed by a quoted `${...}` segment (e.g. `from "${a}" to
+  // "${b}"`) is misread as `import ... from "${a}"` and reported as an
+  // undeclared dependency — a false positive on a domain error message, not
+  // an actual import.
+  return [...matches]
+    .map((match) => match[1])
+    .filter((specifier) => !specifier.includes('${'));
 }
 
 export function validateWorkspace(root = repositoryRoot) {

@@ -139,6 +139,27 @@ test('validateWorkspace passes for an otherwise-clean fixture with no forbidden 
   }
 });
 
+test('validateWorkspace does not mistake template-literal prose for an import (WP-008 Phase A regression)', () => {
+  // A domain error message containing the word "from" followed by a quoted
+  // `${...}` interpolation reads, to the naive regex, like
+  // `import ... from "${exists.item_type}"` -- it is not an import at all.
+  const root = writeFixtureWorkspace({
+    domainCoreImport:
+      'export function describe(exists, dto) {\n' +
+      '  return `cannot change item_type from "${exists.item_type}" to "${dto.item_type}" directly.`;\n' +
+      '}',
+  });
+  try {
+    const { failures } = validateWorkspace(root);
+    assert.ok(
+      !failures.some((failure) => failure.includes('undeclared dependency')),
+      `expected no false-positive undeclared-dependency failure, got: ${JSON.stringify(failures)}`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('validateWorkspace fails when @athr/domain-core imports @athr/contracts (WP-004 regression)', () => {
   const root = writeFixtureWorkspace({
     domainCoreDependencies: { '@athr/contracts': '^0.1.0' },
