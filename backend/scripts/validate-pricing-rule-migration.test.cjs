@@ -120,3 +120,20 @@ test('runPostCheck exits non-zero -- a wired check that cannot fail the build pr
   assert.equal(result.ok, false);
   assert.notEqual(result.liveVariants, result.migratedEntries);
 });
+
+// B7: the tie-break that keeps live prices from drifting on cutover lives in
+// the migration SQL itself. `verify-price-book-behaviour.cjs` proves the
+// *semantics* against real Postgres, but it re-runs a copy of the CTEs, so it
+// would still pass if the migration were edited. This assertion pins the
+// migration file: the old engine ordered rules `priority ASC` and took the
+// first match per scope level, so `DISTINCT ON` must break a same-scope_type
+// tie the same way instead of taking an arbitrary row.
+test('the cutover migration breaks same-scope ties by PricingRule.priority', () => {
+  const sql = readFileSync(
+    join(__dirname, '..', 'prisma', 'migrations', '202608070006_migrate_pricing_rules_to_price_books', 'migration.sql'),
+    'utf8',
+  );
+  const winners = sql.slice(sql.indexOf('winners AS ('), sql.indexOf('unmatched AS ('));
+  assert.match(winners, /ORDER BY[^\n]*rank ASC[^\n]*priority ASC/);
+  assert.match(sql.slice(sql.indexOf('matched AS ('), sql.indexOf('winners AS (')), /r\."priority" AS priority/);
+});
