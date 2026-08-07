@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { PriceBookRepository } from './price-book.repository';
 import { PrismaService } from '../prisma/prisma.service';
+import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantContext } from '../identity/tenant-context.type';
+import type { AuthenticatedUser } from '../auth/authenticated-user';
 import {
   CreatePriceBookDto,
   ListPriceBooksDto,
@@ -24,6 +26,7 @@ export class PriceBookService {
   constructor(
     private readonly repository: PriceBookRepository,
     private readonly prisma: PrismaService,
+    private readonly permissionPolicy: PermissionPolicyService,
   ) {}
 
   list(context: TenantContext, dto: ListPriceBooksDto) {
@@ -76,9 +79,22 @@ export class PriceBookService {
     });
   }
 
-  /** Permission Matrix §17 "Separation": the submitter cannot also approve. */
+  /**
+   * Permission Matrix §17 "Separation" / §63 ("Price book creator" must differ
+   * from "Approver"): neither the *creator* nor the submitter may approve.
+   * Checking only `submitted_by` left the documented pair unguarded — create a
+   * book, have a colleague submit it, approve your own book. §64: the check is
+   * on identity, so a different session of the same identity does not satisfy
+   * it either.
+   */
   async approve(context: TenantContext, actorId: string, id: string) {
     const book = await this.repository.assertInTenant(context, id);
+    if (book.created_by && book.created_by === actorId) {
+      throw new AthrDomainError(
+        'PRICING_PRICE_BOOK_SELF_APPROVAL_FORBIDDEN',
+        `Price Book ${id} was created by this same actor; an independent approver is required.`,
+      );
+    }
     if (book.submitted_by && book.submitted_by === actorId) {
       throw new AthrDomainError(
         'PRICING_PRICE_BOOK_SELF_APPROVAL_FORBIDDEN',
@@ -158,9 +174,10 @@ export class PriceBookService {
     return this.repository.listEntries(context, { priceBookId });
   }
 
-  async createEntry(context: TenantContext, actorId: string, dto: CreatePriceEntryDto) {
+  async createEntry(context: TenantContext, actor: AuthenticatedUser, dto: CreatePriceEntryDto) {
+    const actorId = actor.sub;
     const book = await this.repository.assertInTenant(context, dto.price_book_id);
-    this.assertEntriesManageable(book.status);
+    await this.assertEntriesManageable(book.status, actor);
     if (dto.scope_type !== 'global' && !dto.scope_id) {
       throw new AthrDomainError(
         'REQUEST_FIELD_VALUE_INVALID',
@@ -181,25 +198,70 @@ export class PriceBookService {
     });
   }
 
-  async supersedeEntry(context: TenantContext, actorId: string, id: string, dto: SupersedePriceEntryDto) {
+  /**
+   * BR-PRB-103: a new version of an existing entry. Any field the caller
+   * omits is **inherited from the entry being superseded**, never reset to a
+   * literal — a supersede that only moves `unit_price` must not silently drop
+   * this entry's configured `floor_price` (BR-OVP-102) or reset its
+   * `tax_percent` to the interim 14% default.
+   */
+  async supersedeEntry(
+    context: TenantContext,
+    actor: AuthenticatedUser,
+    id: string,
+    dto: SupersedePriceEntryDto,
+  ) {
     const entry = await this.repository.assertEntryInTenant(context, id);
     const book = await this.repository.assertInTenant(context, entry.price_book_id);
-    this.assertEntriesManageable(book.status);
-    this.assertValidPrice(dto.unit_price, dto.allow_zero_price ?? false);
+    await this.assertEntriesManageable(book.status, actor);
+    const allowZeroPrice = dto.allow_zero_price ?? entry.allow_zero_price;
+    this.assertValidPrice(dto.unit_price, allowZeroPrice);
     return this.repository.supersedeEntry(context, id, {
       unitPrice: dto.unit_price,
-      allowZeroPrice: dto.allow_zero_price ?? false,
-      taxPercent: dto.tax_percent ?? 14,
-      floorPrice: dto.floor_price ?? null,
-      createdBy: actorId,
+      allowZeroPrice,
+      taxPercent: dto.tax_percent ?? entry.tax_percent,
+      floorPrice: dto.floor_price ?? entry.floor_price,
+      createdBy: actor.sub,
     });
   }
 
-  private assertEntriesManageable(status: string) {
+  /**
+   * BR-PRB-101/103 + Permission Matrix §17.
+   *
+   * A `draft` book is not live, so `pricing.price-entry.manage` alone is
+   * enough to build it up. An `active` book **is** live: a write there changes
+   * a customer-facing price the moment it commits, with none of the
+   * submit/approve/schedule gating the book-level lifecycle applies. BR-PRB-103
+   * requires such a change to create a new version (which `supersedeEntry`
+   * does) but says nothing about who may make it — so entry mutation on a live
+   * book additionally requires `pricing.price-book.activate`, the existing
+   * Matrix §17 key for "authority to make prices live". No role gains a key
+   * here; this only stops a holder of `price-entry.manage` alone from
+   * repricing production.
+   *
+   * BR-PRB-1xx specifies neither of the two policies the review proposed
+   * (per-entry approval workflow / draft-only) — a per-entry approval state
+   * machine would be governance this repo's BR doc does not define, and
+   * draft-only contradicts BR-PRB-103's "modifying an effective price creates
+   * a new version". Flagged for Osama rather than resolved unilaterally
+   * (CLAUDE.md §6).
+   */
+  private async assertEntriesManageable(status: string, actor: AuthenticatedUser) {
     if (status !== 'draft' && status !== 'active') {
       throw new AthrDomainError(
         'PRICING_PRICE_BOOK_INVALID_TRANSITION',
         `Entries can only be managed on a "draft" or "active" Price Book (current status: "${status}").`,
+      );
+    }
+    if (status !== 'active') return;
+    const role = actor.membership_role ?? null;
+    const canPublishLivePrices = role
+      ? await this.permissionPolicy.hasPermission(role, 'pricing.price-book.activate')
+      : false;
+    if (!canPublishLivePrices) {
+      throw new AthrDomainError(
+        'PRICING_PRICE_BOOK_INVALID_TRANSITION',
+        'This Price Book is active; changing a live price additionally requires "pricing.price-book.activate".',
       );
     }
   }

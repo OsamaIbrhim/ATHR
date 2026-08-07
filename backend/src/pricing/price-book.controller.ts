@@ -98,7 +98,7 @@ export class PriceBookController {
     @Body() dto: CreatePriceEntryDto,
     @Req() req: AuthedRequest,
   ) {
-    return this.svc.createEntry(ctx, req.user.sub, dto);
+    return this.svc.createEntry(ctx, req.user, dto);
   }
 
   @RequirePermission('pricing.price-entry.manage')
@@ -109,6 +109,6 @@ export class PriceBookController {
     @Body() dto: SupersedePriceEntryDto,
     @Req() req: AuthedRequest,
   ) {
-    return this.svc.supersedeEntry(ctx, req.user.sub, id, dto);
+    return this.svc.supersedeEntry(ctx, req.user, id, dto);
   }
 }

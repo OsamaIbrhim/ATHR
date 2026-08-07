@@ -9,6 +9,23 @@ const ctx = contextFor(TENANT_A);
 const MAKER = randomUUID();
 const CHECKER = randomUUID();
 
+/**
+ * Entry mutation on an *active* book additionally requires
+ * `pricing.price-book.activate` (Matrix §17) — these fakes stand in for the
+ * two sides of that check without booting the real policy snapshot.
+ */
+const PRICING_MANAGER = { sub: MAKER, membership_role: 'location_manager' } as any;
+const ENTRY_CLERK = { sub: MAKER, membership_role: 'warehouse_manager' } as any;
+
+function fakePermissionPolicy() {
+  return {
+    hasPermission: async (role: string, permission: string) =>
+      role === 'location_manager' || role === 'tenant_owner'
+        ? true
+        : permission !== 'pricing.price-book.activate',
+  } as any;
+}
+
 function bookRow(overrides: Record<string, unknown> = {}) {
   return {
     id: randomUUID(),
@@ -45,7 +62,11 @@ function setup(rows: ReturnType<typeof bookRow>[] = [], entryRows: Record<string
     priceBookEntry: entryRows,
   });
   const repository = new PriceBookRepository(prisma);
-  return { prisma, repository, service: new PriceBookService(repository, prisma) };
+  return {
+    prisma,
+    repository,
+    service: new PriceBookService(repository, prisma, fakePermissionPolicy()),
+  };
 }
 
 describe('PriceBookService — create (BR-PRB-100, OD-CAT-005 single currency)', () => {
@@ -109,11 +130,31 @@ describe('PriceBookService — lifecycle (BR-PRB-101)', () => {
   });
 
   it('Matrix §17 "Separation": blocks the submitter from approving their own submission', async () => {
-    const book = bookRow({ status: 'submitted', submitted_by: MAKER });
+    const book = bookRow({ status: 'submitted', created_by: CHECKER, submitted_by: MAKER });
     const { service } = setup([book]);
     await expect(service.approve(ctx, MAKER, book.id)).rejects.toMatchObject({
       code: 'PRICING_PRICE_BOOK_SELF_APPROVAL_FORBIDDEN',
     });
+  });
+
+  // Matrix §63 pairs "Price book creator" with "Approver" — checking only
+  // `submitted_by` left create -> colleague submits -> approve your own book
+  // wide open.
+  it('Matrix §63 "Separation": blocks the creator from approving, even when someone else submitted', async () => {
+    const book = bookRow({ status: 'submitted', created_by: MAKER, submitted_by: CHECKER });
+    const { service } = setup([book]);
+    await expect(service.approve(ctx, MAKER, book.id)).rejects.toMatchObject({
+      code: 'PRICING_PRICE_BOOK_SELF_APPROVAL_FORBIDDEN',
+    });
+  });
+
+  it('allows a genuinely independent approver (neither creator nor submitter)', async () => {
+    const independent = randomUUID();
+    const book = bookRow({ status: 'submitted', created_by: MAKER, submitted_by: CHECKER });
+    const { service } = setup([book]);
+    const approved = await service.approve(ctx, independent, book.id);
+    expect(approved.status).toBe('approved');
+    expect(approved.approved_by).toBe(independent);
   });
 
   it('BR-PRB-104: activating a new default book ends the previous default for the same (currency, scope)', async () => {
@@ -141,7 +182,7 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
     const book = bookRow();
     const { service } = setup([book]);
     await expect(
-      service.createEntry(ctx, MAKER, {
+      service.createEntry(ctx, PRICING_MANAGER, {
         price_book_id: book.id, scope_type: 'global', unit_price: -1,
       } as any),
     ).rejects.toMatchObject({ code: 'PRICING_ZERO_OR_NEGATIVE_PRICE_NOT_ALLOWED' });
@@ -151,7 +192,7 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
     const book = bookRow();
     const { service } = setup([book]);
     await expect(
-      service.createEntry(ctx, MAKER, {
+      service.createEntry(ctx, PRICING_MANAGER, {
         price_book_id: book.id, scope_type: 'global', unit_price: 0,
       } as any),
     ).rejects.toMatchObject({ code: 'PRICING_ZERO_OR_NEGATIVE_PRICE_NOT_ALLOWED' });
@@ -160,7 +201,7 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
   it('accepts a zero unit_price with allow_zero_price (BR-PSL-102)', async () => {
     const book = bookRow();
     const { service } = setup([book]);
-    const created = await service.createEntry(ctx, MAKER, {
+    const created = await service.createEntry(ctx, PRICING_MANAGER, {
       price_book_id: book.id, scope_type: 'global', unit_price: 0, allow_zero_price: true,
     } as any);
     expect(created.unit_price.toString()).toBe('0');
@@ -170,7 +211,7 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
     const book = bookRow();
     const { service } = setup([book]);
     await expect(
-      service.createEntry(ctx, MAKER, {
+      service.createEntry(ctx, PRICING_MANAGER, {
         price_book_id: book.id, scope_type: 'variant', unit_price: 100,
       } as any),
     ).rejects.toMatchObject({ code: 'REQUEST_FIELD_VALUE_INVALID' });
@@ -179,11 +220,11 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
   it('supersede creates a new version and marks the previous entry superseded, never edits it in place', async () => {
     const book = bookRow();
     const { service, repository } = setup([book]);
-    const v1 = await service.createEntry(ctx, MAKER, {
+    const v1 = await service.createEntry(ctx, PRICING_MANAGER, {
       price_book_id: book.id, scope_type: 'global', unit_price: 100,
     } as any);
 
-    const v2 = await service.supersedeEntry(ctx, MAKER, v1.id, { unit_price: 120 } as any);
+    const v2 = await service.supersedeEntry(ctx, PRICING_MANAGER, v1.id, { unit_price: 120 } as any);
 
     const v1After = await repository.findEntryById(ctx, v1.id);
     expect(v1After!.status).toBe('superseded');
@@ -197,13 +238,13 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
   it('rejects superseding an already-superseded entry directly', async () => {
     const book = bookRow();
     const { service } = setup([book]);
-    const v1 = await service.createEntry(ctx, MAKER, {
+    const v1 = await service.createEntry(ctx, PRICING_MANAGER, {
       price_book_id: book.id, scope_type: 'global', unit_price: 100,
     } as any);
-    await service.supersedeEntry(ctx, MAKER, v1.id, { unit_price: 120 } as any);
+    await service.supersedeEntry(ctx, PRICING_MANAGER, v1.id, { unit_price: 120 } as any);
 
     await expect(
-      service.supersedeEntry(ctx, MAKER, v1.id, { unit_price: 130 } as any),
+      service.supersedeEntry(ctx, PRICING_MANAGER, v1.id, { unit_price: 130 } as any),
     ).rejects.toMatchObject({ code: 'PRICING_ENTRY_IMMUTABLE' });
   });
 
@@ -211,9 +252,105 @@ describe('PriceBookService — entries (BR-PRB-102/103 versioning, BR-PSL-102/10
     const book = bookRow({ status: 'ended' });
     const { service } = setup([book]);
     await expect(
-      service.createEntry(ctx, MAKER, {
+      service.createEntry(ctx, PRICING_MANAGER, {
         price_book_id: book.id, scope_type: 'global', unit_price: 100,
       } as any),
     ).rejects.toMatchObject({ code: 'PRICING_PRICE_BOOK_INVALID_TRANSITION' });
+  });
+
+  // H1: a supersede that only moves the price must inherit everything else
+  // from the entry it replaces, never reset it to a literal default.
+  it('supersede inherits tax_percent/floor_price/allow_zero_price from the previous entry when the DTO omits them', async () => {
+    const book = bookRow();
+    const { service } = setup([book]);
+    const v1 = await service.createEntry(ctx, PRICING_MANAGER, {
+      price_book_id: book.id, scope_type: 'global', unit_price: 100,
+      tax_percent: 5, floor_price: 80,
+    } as any);
+    expect(v1.tax_percent.toString()).toBe('5');
+
+    const v2 = await service.supersedeEntry(ctx, PRICING_MANAGER, v1.id, { unit_price: 120 } as any);
+
+    expect(v2.tax_percent.toString()).toBe('5');
+    expect(v2.floor_price!.toString()).toBe('80');
+    expect(v2.allow_zero_price).toBe(false);
+  });
+
+  it('supersede still honours values the DTO does supply', async () => {
+    const book = bookRow();
+    const { service } = setup([book]);
+    const v1 = await service.createEntry(ctx, PRICING_MANAGER, {
+      price_book_id: book.id, scope_type: 'global', unit_price: 100,
+      tax_percent: 5, floor_price: 80,
+    } as any);
+
+    const v2 = await service.supersedeEntry(ctx, PRICING_MANAGER, v1.id, {
+      unit_price: 120, tax_percent: 14, floor_price: 90,
+    } as any);
+
+    expect(v2.tax_percent.toString()).toBe('14');
+    expect(v2.floor_price!.toString()).toBe('90');
+  });
+
+  it('inherits allow_zero_price for validation too — a zero-priced entry can be superseded at zero', async () => {
+    const book = bookRow();
+    const { service } = setup([book]);
+    const v1 = await service.createEntry(ctx, PRICING_MANAGER, {
+      price_book_id: book.id, scope_type: 'global', unit_price: 0, allow_zero_price: true,
+    } as any);
+
+    const v2 = await service.supersedeEntry(ctx, PRICING_MANAGER, v1.id, { unit_price: 0 } as any);
+    expect(v2.allow_zero_price).toBe(true);
+    expect(v2.unit_price.toString()).toBe('0');
+  });
+});
+
+/**
+ * H2 (BR-PRB-101/103, Permission Matrix §17): a `draft` book is not live, so
+ * `pricing.price-entry.manage` alone builds it up; an `active` book is, so
+ * changing a live price additionally requires `pricing.price-book.activate`.
+ */
+describe('PriceBookService — entries on a live book require publish authority', () => {
+  it('lets a price-entry manager without publish authority write to a draft book', async () => {
+    const book = bookRow({ status: 'draft' });
+    const { service } = setup([book]);
+    const created = await service.createEntry(ctx, ENTRY_CLERK, {
+      price_book_id: book.id, scope_type: 'global', unit_price: 100,
+    } as any);
+    expect(created.status).toBe('active');
+  });
+
+  it('blocks that same actor from creating an entry on an ACTIVE book', async () => {
+    const book = bookRow({ status: 'active', is_default: true });
+    const { service } = setup([book]);
+    await expect(
+      service.createEntry(ctx, ENTRY_CLERK, {
+        price_book_id: book.id, scope_type: 'global', unit_price: 100,
+      } as any),
+    ).rejects.toMatchObject({ code: 'PRICING_PRICE_BOOK_INVALID_TRANSITION' });
+  });
+
+  it('blocks that same actor from superseding an entry on an ACTIVE book', async () => {
+    const book = bookRow({ status: 'active', is_default: true });
+    const { service } = setup([book]);
+    const v1 = await service.createEntry(ctx, PRICING_MANAGER, {
+      price_book_id: book.id, scope_type: 'global', unit_price: 100,
+    } as any);
+
+    await expect(
+      service.supersedeEntry(ctx, ENTRY_CLERK, v1.id, { unit_price: 1 } as any),
+    ).rejects.toMatchObject({ code: 'PRICING_PRICE_BOOK_INVALID_TRANSITION' });
+  });
+
+  it('allows an actor holding pricing.price-book.activate to reprice a live book (BR-PRB-103)', async () => {
+    const book = bookRow({ status: 'active', is_default: true });
+    const { service } = setup([book]);
+    const v1 = await service.createEntry(ctx, PRICING_MANAGER, {
+      price_book_id: book.id, scope_type: 'global', unit_price: 100,
+    } as any);
+
+    const v2 = await service.supersedeEntry(ctx, PRICING_MANAGER, v1.id, { unit_price: 120 } as any);
+    expect(v2.version).toBe(2);
+    expect(v2.unit_price.toString()).toBe('120');
   });
 });

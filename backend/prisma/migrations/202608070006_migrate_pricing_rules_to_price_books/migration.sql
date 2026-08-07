@@ -57,6 +57,15 @@ WITH matched AS (
         r."overhead_percent" AS overhead_percent,
         r."profit_percent" AS profit_percent,
         r."tax_percent" AS tax_percent,
+        -- Tie-break within one scope_type, matching the OLD engine exactly:
+        -- "PricingService.loadActiveRules" ordered every rule by
+        -- `priority ASC` and `quote()` then took the FIRST match per scope
+        -- level (`rules.find(...)`), so the lowest `priority` won a tie.
+        -- Without carrying this through, `DISTINCT ON` would pick an
+        -- arbitrary row whenever two active same-scope rules match one
+        -- variant, silently drifting that variant's live price.
+        r."priority" AS priority,
+        r."id" AS rule_id,
         CASE r."scope_type"
             WHEN 'variant' THEN 1
             WHEN 'product' THEN 2
@@ -77,9 +86,15 @@ WITH matched AS (
     WHERE v."is_active" = true AND p."is_active" = true
 ),
 winners AS (
+    -- `priority`/`rule_id` are deliberately absent from the target list: this
+    -- CTE is UNION ALLed with `unmatched` (which has no rule behind it), so
+    -- the two column lists must stay symmetric. `DISTINCT ON` permits
+    -- ORDER BY expressions that are not selected; plain SELECT DISTINCT does
+    -- not. `rule_id` last makes an exact priority tie deterministic (the old
+    -- engine left that case to Postgres's arbitrary row order).
     SELECT DISTINCT ON (variant_id) variant_id, tenant_id, cost_price, overhead_percent, profit_percent, tax_percent
     FROM matched
-    ORDER BY variant_id, rank ASC
+    ORDER BY variant_id, rank ASC, priority ASC, rule_id ASC
 ),
 -- Variants with no matching PricingRule row at all today still get priced by
 -- "PricingService.quote()"'s hardcoded { overhead: 20, profit: 35, tax: 14 }
