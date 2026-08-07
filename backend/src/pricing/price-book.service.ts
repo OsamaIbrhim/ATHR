@@ -110,8 +110,9 @@ export class PriceBookService {
   }
 
   /**
-   * Permission Matrix §17 "Separation" / §63 ("Price book creator" must differ
-   * from "Approver"): neither the *creator* nor the submitter may approve.
+   * Permission Matrix §17 "Separation" / §63 (the mandatory SoD pair "Price
+   * book creator" vs. approver): neither the *creator* nor the submitter may
+   * approve.
    * Checking only `submitted_by` left the documented pair unguarded — create a
    * book, have a colleague submit it, approve your own book. §64: the check is
    * on identity, so a different session of the same identity does not satisfy
