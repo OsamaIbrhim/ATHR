@@ -12,6 +12,9 @@ import {
   UpdatePriceBookDraftDto,
 } from './dto/price-book.dto';
 import { CreatePriceEntryDto, SupersedePriceEntryDto } from './dto/price-book-entry.dto';
+import type { PriceBookScope } from '@prisma/client';
+
+const UNIQUE_CONSTRAINT_VIOLATION = 'P2002';
 
 /**
  * WP-008 Phase B (BR-PRB-1xx, Permission Matrix §17): the Price Book
@@ -51,14 +54,41 @@ export class PriceBookService {
         `Price Book currency must be the tenant's operating currency ("${tenant.default_currency}"), not "${currency}".`,
       );
     }
-    return this.repository.create(context, {
-      name: dto.name,
-      currency,
-      scope: dto.scope ?? 'tenant_default',
-      scopeRefId: dto.scope_ref_id ?? null,
-      isDefault: dto.is_default ?? false,
-      createdBy: actorId,
-    });
+    const scope = dto.scope ?? 'tenant_default';
+    return this.asDefaultConflict(
+      () =>
+        this.repository.create(context, {
+          name: dto.name,
+          currency,
+          scope,
+          scopeRefId: dto.scope_ref_id ?? null,
+          isDefault: dto.is_default ?? false,
+          createdBy: actorId,
+        }),
+      `Another Price Book is already the active default for (${currency}, ${scope}, ${dto.scope_ref_id ?? 'tenant-wide'}). End or replace it via the lifecycle instead of flagging a second one.`,
+    );
+  }
+
+  /**
+   * BR-PRB-104: the "one active default per scope" partial unique index is a
+   * real database constraint, so a collision surfaces as a raw Prisma P2002
+   * unless it is translated. Callers get a domain error naming the conflict
+   * (Error Catalog / CLAUDE.md §4) instead of a leaked ORM error code.
+   */
+  private async asDefaultConflict<T>(operation: () => Promise<T>, message: string): Promise<T> {
+    try {
+      return await operation();
+    } catch (error: unknown) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: unknown }).code === UNIQUE_CONSTRAINT_VIOLATION
+      ) {
+        throw new AthrDomainError('PRICING_DEFAULT_PRICE_BOOK_CONFLICT', message);
+      }
+      throw error;
+    }
   }
 
   async updateDraft(context: TenantContext, id: string, dto: UpdatePriceBookDraftDto) {
@@ -130,6 +160,21 @@ export class PriceBookService {
       );
     }
 
+    // Two callers activating replacement defaults for the same scope race on
+    // the same partial unique index; the loser must see the domain conflict,
+    // not a raw P2002.
+    return this.asDefaultConflict(
+      () => this.activateInTransaction(context, actorId, id, book),
+      `Another Price Book became the active default for (${book.currency}, ${book.scope}, ${book.scope_ref_id ?? 'tenant-wide'}) concurrently; re-read it and retry.`,
+    );
+  }
+
+  private activateInTransaction(
+    context: TenantContext,
+    actorId: string,
+    id: string,
+    book: { id: string; is_default: boolean; currency: string; scope: PriceBookScope; scope_ref_id: string | null },
+  ) {
     return this.prisma.$transaction(async (tx) => {
       if (book.is_default) {
         const previousDefault = await tx.priceBook.findFirst({

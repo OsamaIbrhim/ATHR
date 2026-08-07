@@ -72,6 +72,20 @@ export const PRICING_ERROR_CODES = [
     auditRequired: true,
   },
   {
+    // BR-PRB-104: only one *active* default Price Book may exist per
+    // (currency, scope, scope_ref_id). Raised instead of leaking the raw
+    // Prisma P2002 when a caller flags a second book default for a scope
+    // that already has a live default.
+    code: 'PRICING_DEFAULT_PRICE_BOOK_CONFLICT',
+    category: 'state_conflict',
+    defaultHttpStatus: 409,
+    retryable: false,
+    retryMode: 'after_user_action',
+    outcome: 'no_effect',
+    severity: 'error',
+    auditRequired: true,
+  },
+  {
     // BR-PRB-105: an in-use (active, or referenced by any PriceOverride/
     // Discount evidence) Price Book cannot be hard-deleted — archive it.
     code: 'PRICING_PRICE_BOOK_DELETE_FORBIDDEN',
@@ -117,6 +131,32 @@ export const PRICING_ERROR_CODES = [
     defaultHttpStatus: 403,
     retryable: false,
     retryMode: 'after_approval',
+    outcome: 'no_effect',
+    severity: 'error',
+    auditRequired: true,
+  },
+  {
+    // BR-OVP-102 + Permission Matrix §17/§63/§64: a below-floor override is
+    // approved by an identity other than the one that applied it. Different
+    // sessions of the same identity never satisfy the separation.
+    code: 'PRICING_OVERRIDE_SELF_APPROVAL_FORBIDDEN',
+    category: 'authorization',
+    defaultHttpStatus: 403,
+    retryable: false,
+    retryMode: 'never',
+    outcome: 'no_effect',
+    severity: 'error',
+    auditRequired: true,
+  },
+  {
+    // BR-OVP-102: the override is already approved (or was never a
+    // below-floor override needing approval) — approving again is a no-op
+    // that must not silently overwrite the recorded approver.
+    code: 'PRICING_OVERRIDE_NOT_PENDING_APPROVAL',
+    category: 'state_conflict',
+    defaultHttpStatus: 409,
+    retryable: false,
+    retryMode: 'never',
     outcome: 'no_effect',
     severity: 'error',
     auditRequired: true,

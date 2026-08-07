@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { MembershipRole } from '@prisma/client';
 import { OverridesRepository } from './overrides.repository';
 import { PricingService } from './pricing.service';
+import { CostVisibilityService } from './cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { decimal, money } from '../common/money';
@@ -27,6 +28,7 @@ export class OverridesService {
     private readonly repository: OverridesRepository,
     private readonly pricing: PricingService,
     private readonly permissionPolicy: PermissionPolicyService,
+    private readonly costVisibility: CostVisibilityService,
   ) {}
 
   savePolicy(context: TenantContext, role: MembershipRole, dto: PriceOverridePolicyDto) {
@@ -37,8 +39,9 @@ export class OverridesService {
     });
   }
 
-  listOverrides(context: TenantContext, variantId?: string) {
-    return this.repository.listOverrides(context, variantId);
+  /** Rows carry the resolved (often cost-derived) floor — masked per BR-CST-101. */
+  async listOverrides(context: TenantContext, actor: AuthenticatedUser, variantId?: string) {
+    return this.costVisibility.maskFloors(actor, await this.repository.listOverrides(context, variantId));
   }
 
   listDiscounts(context: TenantContext, variantId?: string) {
@@ -93,27 +96,27 @@ export class OverridesService {
     }
 
     const isBelowFloor = overridePrice.lt(floor);
-    let approvedBy: string | null = null;
-    let approvedAt: Date | null = null;
     if (isBelowFloor) {
       // BR-OVP-102: a distinct, explicitly-grantable permission — never
-      // implied by `pricing.manual-override.apply`. Holding it is itself the
-      // authorization to record the approval (unlike Price Book approval,
-      // which additionally requires an independent approver).
-      const canApproveBelowFloor = role
+      // implied by `pricing.manual-override.apply`. It authorizes *requesting*
+      // a below-floor override; the approval itself is a second, separate act
+      // by a different identity (see `approveOverride`).
+      const canRequestBelowFloor = role
         ? await this.permissionPolicy.hasPermission(role, 'pricing.manual-override.above-threshold')
         : false;
-      if (!canApproveBelowFloor) {
+      if (!canRequestBelowFloor) {
+        // BR-CST-101/Matrix §51: the floor is the variant's cost whenever the
+        // resolved entry has no explicit floor, so the *rejection* must not
+        // quote it either — a refused request disclosing cost verbatim is the
+        // same leak as an accepted one.
         throw new AthrDomainError(
           'PRICING_OVERRIDE_BELOW_FLOOR_REQUIRES_APPROVAL',
-          `Override price ${overridePrice.toFixed(2)} is below the floor (${floor.toFixed(2)}); this requires "pricing.manual-override.above-threshold".`,
+          await this.belowFloorMessage(actor, overridePrice, floor),
         );
       }
-      approvedBy = actor.sub;
-      approvedAt = new Date();
     }
 
-    return this.repository.createOverride(context, {
+    const created = await this.repository.createOverride(context, {
       variantId: dto.variant_id,
       reference: dto.reference ?? null,
       basePrice: money(basePrice),
@@ -122,9 +125,64 @@ export class OverridesService {
       isBelowFloor,
       reason: dto.reason,
       appliedBy: actor.sub,
-      approvedBy,
-      approvedAt,
+      // Matrix §17/§63: a below-floor override is recorded PENDING. The actor
+      // applying it can never be its own approver, so it is not self-approved
+      // here — `POST /pricing/overrides/:id/approve` records an independent
+      // approver (`pricing.manual-override.approve`).
+      approvedBy: null,
+      approvedAt: null,
     });
+    return this.costVisibility.maskFloor(actor, created);
+  }
+
+  /**
+   * BR-OVP-102 + Permission Matrix §17/§63/§64: records the independent
+   * approval of a pending below-floor override. The approver must be a
+   * different *identity* from the applier — §64 is explicit that a second
+   * session of the same identity does not satisfy separation, which is why
+   * the applier is compared by `sub` and never taken from the request body
+   * (CLAUDE.md §1: authorization context comes from token claims, never from
+   * client-supplied fields).
+   */
+  async approveOverride(context: TenantContext, actor: AuthenticatedUser, id: string) {
+    const override = await this.repository.findOverrideById(context, id);
+    if (!override) {
+      throw new AthrDomainError('RESOURCE_NOT_FOUND', `Price override ${id} not found.`);
+    }
+    if (!override.is_below_floor || override.approved_by) {
+      throw new AthrDomainError(
+        'PRICING_OVERRIDE_NOT_PENDING_APPROVAL',
+        `Price override ${id} is not awaiting a below-floor approval.`,
+      );
+    }
+    if (override.applied_by === actor.sub) {
+      throw new AthrDomainError(
+        'PRICING_OVERRIDE_SELF_APPROVAL_FORBIDDEN',
+        `Price override ${id} was applied by this same actor; an independent approver is required.`,
+      );
+    }
+
+    const { applied } = await this.repository.recordOverrideApproval(context, id, actor.sub);
+    if (!applied) {
+      throw new AthrDomainError(
+        'PRICING_OVERRIDE_NOT_PENDING_APPROVAL',
+        `Price override ${id} could not be approved — it was changed concurrently.`,
+      );
+    }
+    const approved = await this.repository.findOverrideById(context, id);
+    return this.costVisibility.maskFloor(actor, approved!);
+  }
+
+  private async belowFloorMessage(
+    actor: AuthenticatedUser,
+    overridePrice: ReturnType<typeof decimal>,
+    floor: ReturnType<typeof decimal>,
+  ): Promise<string> {
+    const suffix = 'this requires "pricing.manual-override.above-threshold" and an independent approval.';
+    if (await this.costVisibility.canViewCostDerivedValues(actor)) {
+      return `Override price ${overridePrice.toFixed(2)} is below the floor (${floor.toFixed(2)}); ${suffix}`;
+    }
+    return `Override price ${overridePrice.toFixed(2)} is below the configured floor for this item; ${suffix}`;
   }
 
   /** BR-DSC-200/202/203: a calculated adjustment, distinct from an override; never negative. */

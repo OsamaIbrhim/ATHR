@@ -34,10 +34,30 @@ export class OverridesController {
     return this.svc.applyOverride(ctx, req.user, dto);
   }
 
+  /**
+   * BR-OVP-102, Permission Matrix §17/§63: the independent approval step for a
+   * below-floor override. `pricing.manual-override.approve` guarded nothing
+   * but two list endpoints before this — the applying actor approved their own
+   * below-floor override.
+   */
+  @RequirePermission('pricing.manual-override.approve')
+  @Post('overrides/:id/approve')
+  approveOverride(
+    @TenantCtx() ctx: TenantContext,
+    @Param('id') id: string,
+    @Req() req: AuthedRequest,
+  ) {
+    return this.svc.approveOverride(ctx, req.user, id);
+  }
+
   @RequirePermission('pricing.manual-override.approve')
   @Get('overrides')
-  listOverrides(@TenantCtx() ctx: TenantContext, @Query('variant_id') variantId?: string) {
-    return this.svc.listOverrides(ctx, variantId);
+  listOverrides(
+    @TenantCtx() ctx: TenantContext,
+    @Req() req: AuthedRequest,
+    @Query('variant_id') variantId?: string,
+  ) {
+    return this.svc.listOverrides(ctx, req.user, variantId);
   }
 
   @RequirePermission('pricing.manual-override.apply')

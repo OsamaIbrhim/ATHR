@@ -696,10 +696,12 @@ model PriceBook {
   scope          PriceBookScope   @default(tenant_default)
   scope_ref_id   String?          @db.Uuid
   status         PriceBookStatus  @default(draft)
-  // BR-PRB-104: one default book per (currency, scope, scope_ref_id) --
-  // enforced by a partial unique index in the migration (NULLs in
-  // "scope_ref_id" collapsed via COALESCE so multiple tenant-wide defaults
-  // can't coexist either).
+  // BR-PRB-104: one *active* default book per (currency, scope,
+  // scope_ref_id) -- enforced by a partial unique index in the migration
+  // (NULLs in "scope_ref_id" collapsed via COALESCE so multiple tenant-wide
+  // defaults can't coexist either). The index is scoped to status = 'active'
+  // so a replacement can be drafted and scheduled alongside the book it will
+  // replace; "PriceBookService.activate" swaps them in one transaction.
   is_default     Boolean          @default(false)
   effective_from DateTime?
   effective_to   DateTime?

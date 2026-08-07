@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { OverridesRepository } from './overrides.repository';
 import { OverridesService } from './overrides.service';
 import { PricingService } from './pricing.service';
+import { CostVisibilityService } from './cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 
@@ -18,8 +19,8 @@ function setup() {
         { id: VARIANT_B, tenant_id: TENANT_B, product_id: randomUUID(), cost_price: 50, product: { category_id: null, brand_id: null } },
       ],
       priceBook: [
-        { id: 'book-a', tenant_id: TENANT_A, status: 'active' },
-        { id: 'book-b', tenant_id: TENANT_B, status: 'active' },
+        { id: 'book-a', tenant_id: TENANT_A, status: 'active', is_default: true },
+        { id: 'book-b', tenant_id: TENANT_B, status: 'active', is_default: true },
       ],
       priceBookEntry: [
         { id: 'entry-a', tenant_id: TENANT_A, price_book_id: 'book-a', scope_type: 'global', scope_id: null, min_qty: 1, unit_price: 100, allow_zero_price: false, tax_percent: 0, floor_price: null, effective_from: new Date(0), effective_to: null, status: 'active' },
@@ -34,7 +35,8 @@ function setup() {
   const pricing = new PricingService(prisma);
   const repository = new OverridesRepository(prisma);
   const permissionPolicy = { hasPermission: jest.fn().mockResolvedValue(false) } as unknown as PermissionPolicyService;
-  return { prisma, repository, service: new OverridesService(repository, pricing, permissionPolicy) };
+  const costVisibility = new CostVisibilityService({ hasPermission: async () => true } as unknown as PermissionPolicyService);
+  return { prisma, repository, service: new OverridesService(repository, pricing, permissionPolicy, costVisibility) };
 }
 
 function actor(overrides: Record<string, unknown> = {}) {

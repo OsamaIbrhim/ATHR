@@ -42,9 +42,21 @@ CREATE INDEX "PriceBook_tenant_id_status_idx" ON "PriceBook"("tenant_id", "statu
 -- "scope_ref_id" are collapsed via COALESCE so multiple tenant-wide default
 -- books (scope_ref_id IS NULL) can't coexist either -- Postgres otherwise
 -- treats NULL <> NULL under a plain unique index.
+--
+-- The "status" predicate is what makes the invariant *satisfiable*. Without
+-- it, the index constrained every status, so a draft replacement for the
+-- live default collided with the book it was meant to replace -- the default
+-- book could never be replaced at all, and the supersede-on-activate path in
+-- "PriceBookService.activate" was unreachable. "Default" is only meaningful
+-- for the book currently in force, so only "active" is constrained: any
+-- number of draft/submitted/approved/scheduled candidates may carry the flag
+-- while they work through the lifecycle, and ended/archived books keep theirs
+-- for history. "activate()" demotes the outgoing default (is_default = false,
+-- status = 'ended') before promoting the incoming one inside one
+-- transaction, so this index never observes two active defaults.
 CREATE UNIQUE INDEX "PriceBook_one_default_per_scope" ON "PriceBook"(
     "tenant_id",
     "currency",
     "scope",
     COALESCE("scope_ref_id", '00000000-0000-0000-0000-000000000000'::uuid)
-) WHERE "is_default" = true;
+) WHERE "is_default" = true AND "status" = 'active';
