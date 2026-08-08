@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
+import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { assertBranchAccess } from '../auth/branch-access';
@@ -12,9 +13,13 @@ import type { TenantContext } from '../identity/tenant-context.type';
 export class OffersService {
   private readonly logger = new Logger(OffersService.name);
 
-  constructor(private prisma: PrismaService, private pricing: PricingService) {}
+  constructor(
+    private prisma: PrismaService,
+    private pricing: PricingService,
+    private costVisibility: CostVisibilityService,
+  ) {}
 
-  async suggestions(context: TenantContext, branch_id?: string) {
+  async suggestions(context: TenantContext, actor: AuthenticatedUser, branch_id?: string) {
     const cutoff = new Date(Date.now() - 90 * 86400000);
     const slow = await this.prisma.inventoryStock.findMany({
       where: {
@@ -86,10 +91,16 @@ export class OffersService {
     }
 
     const qtyByStock = new Map(slow.map((stock) => [`${stock.branch_id}:${stock.variant_id}`, stock.qty_on_hand]));
-    return [...pendingByStock.values()].map((item) => ({
+    const rows = [...pendingByStock.values()].map((item) => ({
       ...item,
       qty: qtyByStock.get(`${item.branch_id}:${item.variant_id}`) || 0,
     }));
+    // BR-CST-101: the persisted row keeps the true floor for audit; only the
+    // HTTP projection drops it. Known and deliberately out of scope here:
+    // `suggested_price` is max(floor, current x 0.90), so on the clamped branch
+    // it equals the floor exactly and a caller holding `current_price` can tell
+    // which branch ran. Masking it would remove the endpoint's only output.
+    return this.costVisibility.maskMinAllowedPrices(actor, rows);
   }
 
   async review(
@@ -98,7 +109,7 @@ export class OffersService {
     status: 'approved' | 'rejected',
     actor: AuthenticatedUser,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const reviewed = await this.prisma.$transaction(async (tx) => {
       const suggestion = await tx.offerSuggestion.findFirst({
         where: { id, tenant_id: context.tenantId },
       });
@@ -124,5 +135,8 @@ export class OffersService {
       });
       return tx.offerSuggestion.findFirst({ where: { id, tenant_id: context.tenantId } });
     });
+    // Same row, same field, same gate as `suggestions()` -- masked outside the
+    // transaction so the permission lookup never widens it.
+    return reviewed ? this.costVisibility.maskMinAllowedPrice(actor, reviewed) : reviewed;
   }
 }

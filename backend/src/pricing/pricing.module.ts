@@ -19,6 +19,6 @@ import { OverridesController } from './overrides.controller';
     OverridesService,
   ],
   controllers: [PricingController, PriceBookController, OverridesController],
-  exports: [PricingService, PriceBookService, OverridesService],
+  exports: [PricingService, CostVisibilityService, PriceBookService, OverridesService],
 })
 export class PricingModule {}

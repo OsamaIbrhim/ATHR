@@ -72,4 +72,34 @@ export class CostVisibilityService {
     if (await this.canViewCostDerivedValues(actor)) return [...rows];
     return rows.map(({ floor_price: _floor, ...visible }) => visible);
   }
+
+  /**
+   * The same floor under its other persisted name: `OfferSuggestion` stores the
+   * quote's `min_allowed_price` verbatim, so a row of that table carries cost
+   * for every migrated entry exactly as `PriceOverride.floor_price` does.
+   *
+   * Unlike the override paths this is hardening, not a live leak: the only
+   * roles that clear `GET /offers/suggestions` today (`tenant_owner`,
+   * `location_manager`) both hold `pricing.cost.view`, so a freshly-seeded
+   * environment masks nothing. It is worth routing through the gate anyway —
+   * grants are read from the `PermissionPolicySnapshot` row rather than from
+   * the catalog constant, and nothing but this call ties the offers read path
+   * to cost visibility if a later phase narrows either role.
+   */
+  async maskMinAllowedPrice<T extends { min_allowed_price?: unknown }>(
+    actor: Pick<AuthenticatedUser, 'membership_role'>,
+    row: T,
+  ): Promise<T | Omit<T, 'min_allowed_price'>> {
+    if (await this.canViewCostDerivedValues(actor)) return row;
+    const { min_allowed_price: _floor, ...visible } = row;
+    return visible;
+  }
+
+  async maskMinAllowedPrices<T extends { min_allowed_price?: unknown }>(
+    actor: Pick<AuthenticatedUser, 'membership_role'>,
+    rows: readonly T[],
+  ): Promise<(T | Omit<T, 'min_allowed_price'>)[]> {
+    if (await this.canViewCostDerivedValues(actor)) return [...rows];
+    return rows.map(({ min_allowed_price: _floor, ...visible }) => visible);
+  }
 }
