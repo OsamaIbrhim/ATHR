@@ -95,12 +95,12 @@ export class OffersService {
       ...item,
       qty: qtyByStock.get(`${item.branch_id}:${item.variant_id}`) || 0,
     }));
-    // BR-CST-101: the persisted row keeps the true floor for audit; only the
-    // HTTP projection drops it. Known and deliberately out of scope here:
-    // `suggested_price` is max(floor, current x 0.90), so on the clamped branch
-    // it equals the floor exactly and a caller holding `current_price` can tell
-    // which branch ran. Masking it would remove the endpoint's only output.
-    return this.costVisibility.maskMinAllowedPrices(actor, rows);
+    // BR-CST-101: the persisted row keeps the true floor and the true suggested
+    // price for audit; only the HTTP projection drops them. `suggested_price`
+    // is max(floor, current x 0.90), so on the clamped branch it equals the
+    // floor exactly -- the gate drops it there too, and leaves it alone on the
+    // x 0.90 branch where it discloses nothing. See `maskOfferSuggestion`.
+    return this.costVisibility.maskOfferSuggestions(actor, rows);
   }
 
   async review(
@@ -135,8 +135,9 @@ export class OffersService {
       });
       return tx.offerSuggestion.findFirst({ where: { id, tenant_id: context.tenantId } });
     });
-    // Same row, same field, same gate as `suggestions()` -- masked outside the
-    // transaction so the permission lookup never widens it.
-    return reviewed ? this.costVisibility.maskMinAllowedPrice(actor, reviewed) : reviewed;
+    // Same row, same fields, same gate as `suggestions()` -- masked outside the
+    // transaction so the permission lookup never widens it. The audit row above
+    // is written from the pre-mask `suggestion`, so it keeps the true value.
+    return reviewed ? this.costVisibility.maskOfferSuggestion(actor, reviewed) : reviewed;
   }
 }

@@ -25,7 +25,11 @@ import { TENANT_A, contextFor, fakePrisma } from '../identity/testing/cross-tena
 const ctx = contextFor(TENANT_A);
 const VARIANT_ID = randomUUID();
 const BRANCH_ID = randomUUID();
+const UNIT_PRICE = 100;
+/** Floor loses the max: suggested = max(50, 100 x 0.90) = 90, strictly above cost. */
 const COST_PRICE = 50;
+/** Floor wins the max: suggested = max(95, 100 x 0.90) = 95, i.e. cost exactly. */
+const CLAMPING_COST_PRICE = 95;
 
 function actor(overrides: Record<string, unknown> = {}) {
   return {
@@ -39,7 +43,15 @@ function actor(overrides: Record<string, unknown> = {}) {
 }
 
 /** `hasCostView` drives the gate directly — see the block comment above. */
-function setup(options: { hasCostView: boolean; existingSuggestion?: boolean } = { hasCostView: false }) {
+function setup(
+  options: { hasCostView: boolean; existingSuggestion?: boolean; costPrice?: number } = {
+    hasCostView: false,
+  },
+) {
+  const cost = options.costPrice ?? COST_PRICE;
+  // Mirrors the service's own max(floor, current x 0.90), so the pre-existing
+  // row is consistent with what a fresh generation would have written.
+  const persistedSuggested = Math.max(cost, UNIT_PRICE * 0.9);
   const prisma = fakePrisma(
     {
       inventoryStock: options.existingSuggestion
@@ -64,9 +76,9 @@ function setup(options: { hasCostView: boolean; existingSuggestion?: boolean } =
               variant_id: VARIANT_ID,
               status: 'pending',
               days_unsold: 200,
-              current_price: 100,
-              suggested_price: 90,
-              min_allowed_price: COST_PRICE,
+              current_price: UNIT_PRICE,
+              suggested_price: persistedSuggested,
+              min_allowed_price: cost,
             },
           ]
         : [],
@@ -75,7 +87,7 @@ function setup(options: { hasCostView: boolean; existingSuggestion?: boolean } =
           id: VARIANT_ID,
           tenant_id: TENANT_A,
           product_id: randomUUID(),
-          cost_price: COST_PRICE,
+          cost_price: cost,
           product: { category_id: null, brand_id: null },
         },
       ],
@@ -88,7 +100,7 @@ function setup(options: { hasCostView: boolean; existingSuggestion?: boolean } =
           scope_type: 'global',
           scope_id: null,
           min_qty: 1,
-          unit_price: 100,
+          unit_price: UNIT_PRICE,
           allow_zero_price: false,
           tax_percent: 0,
           // The post-migration state: no explicit floor, so the floor IS cost.
@@ -164,5 +176,104 @@ describe('OffersService — the suggestion floor is never disclosed without cost
     const reviewed: any = await service.review(ctx, pendingId, 'approved', actor());
 
     expect(Number(reviewed.min_allowed_price)).toBe(COST_PRICE);
+  });
+});
+
+/**
+ * The second disclosure on the same row. `suggested_price` is
+ * `max(min_allowed_price, current_price x 0.90)`, so whenever the floor wins
+ * that max the field *is* cost — stripping only `min_allowed_price` would have
+ * left the exact number in the response under a different key.
+ *
+ * `CLAMPING_COST_PRICE` (95) makes the floor win against `100 x 0.90 = 90`;
+ * `COST_PRICE` (50) makes it lose. The gate must distinguish the two.
+ */
+describe('OffersService — suggested_price is masked only where it equals the cost-derived floor', () => {
+  it('strips suggested_price when it clamped to the floor and the actor lacks visibility', async () => {
+    const { service } = setup({ hasCostView: false, costPrice: CLAMPING_COST_PRICE });
+    const rows: any[] = await service.suggestions(ctx, actor());
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty('suggested_price');
+    expect(rows[0]).not.toHaveProperty('min_allowed_price');
+    // Everything that does not disclose cost survives — this masks fields, not the row.
+    expect(Number(rows[0].current_price)).toBe(UNIT_PRICE);
+    expect(rows[0].days_unsold).toBe(200);
+  });
+
+  it('strips suggested_price from an already-pending clamped suggestion on the read path', async () => {
+    const { service } = setup({
+      hasCostView: false,
+      existingSuggestion: true,
+      costPrice: CLAMPING_COST_PRICE,
+    });
+    const rows: any[] = await service.suggestions(ctx, actor());
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty('suggested_price');
+  });
+
+  it('returns a clamped suggested_price to an actor holding cost/margin visibility', async () => {
+    const { service } = setup({ hasCostView: true, costPrice: CLAMPING_COST_PRICE });
+    const rows: any[] = await service.suggestions(ctx, actor());
+
+    expect(Number(rows[0].suggested_price)).toBe(CLAMPING_COST_PRICE);
+    expect(Number(rows[0].min_allowed_price)).toBe(CLAMPING_COST_PRICE);
+  });
+
+  it('keeps suggested_price on the current_price x 0.90 branch even without visibility', async () => {
+    const { service } = setup({ hasCostView: false });
+    const rows: any[] = await service.suggestions(ctx, actor());
+
+    // 90 is derived from current_price alone, which the caller already holds.
+    expect(Number(rows[0].suggested_price)).toBe(90);
+    expect(rows[0]).not.toHaveProperty('min_allowed_price');
+  });
+
+  it('keeps suggested_price on the x 0.90 branch for an actor holding visibility too', async () => {
+    const { service } = setup({ hasCostView: true });
+    const rows: any[] = await service.suggestions(ctx, actor());
+
+    expect(Number(rows[0].suggested_price)).toBe(90);
+  });
+
+  it('persists the true clamped suggested_price even when the response masks it', async () => {
+    const { prisma, service } = setup({ hasCostView: false, costPrice: CLAMPING_COST_PRICE });
+    const rows: any[] = await service.suggestions(ctx, actor());
+
+    expect(rows[0]).not.toHaveProperty('suggested_price');
+    expect(prisma.offerSuggestion.rows).toHaveLength(1);
+    expect(Number(prisma.offerSuggestion.rows[0].suggested_price)).toBe(CLAMPING_COST_PRICE);
+    expect(Number(prisma.offerSuggestion.rows[0].min_allowed_price)).toBe(CLAMPING_COST_PRICE);
+  });
+
+  it('strips a clamped suggested_price from the review response but audits the true value', async () => {
+    const { prisma, service } = setup({
+      hasCostView: false,
+      existingSuggestion: true,
+      costPrice: CLAMPING_COST_PRICE,
+    });
+    const pendingId = prisma.offerSuggestion.rows[0].id;
+
+    const reviewed: any = await service.review(ctx, pendingId, 'approved', actor());
+
+    expect(reviewed.status).toBe('approved');
+    expect(reviewed).not.toHaveProperty('suggested_price');
+    // Audit is not disclosure: both the row and the audit entry keep the truth.
+    expect(Number(prisma.offerSuggestion.rows[0].suggested_price)).toBe(CLAMPING_COST_PRICE);
+    expect(Number(prisma.auditLog.rows[0].meta.suggested_price)).toBe(CLAMPING_COST_PRICE);
+  });
+
+  it('returns a clamped suggested_price on review to an actor holding visibility', async () => {
+    const { prisma, service } = setup({
+      hasCostView: true,
+      existingSuggestion: true,
+      costPrice: CLAMPING_COST_PRICE,
+    });
+    const pendingId = prisma.offerSuggestion.rows[0].id;
+
+    const reviewed: any = await service.review(ctx, pendingId, 'approved', actor());
+
+    expect(Number(reviewed.suggested_price)).toBe(CLAMPING_COST_PRICE);
   });
 });

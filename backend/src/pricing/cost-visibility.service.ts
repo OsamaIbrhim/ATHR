@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { MembershipRole } from '@prisma/client';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import type { AuthenticatedUser } from '../auth/authenticated-user';
+import { sameMoney } from '../common/money';
+import type { MoneyInput } from '../common/money';
 import type { PriceQuote } from './pricing.service';
 
 /**
@@ -78,6 +81,23 @@ export class CostVisibilityService {
    * quote's `min_allowed_price` verbatim, so a row of that table carries cost
    * for every migrated entry exactly as `PriceOverride.floor_price` does.
    *
+   * `suggested_price` is the second disclosure on the same row. It is
+   * `max(floor, current_price × 0.90)`, so on the clamped branch it *equals*
+   * the floor and discloses cost just as directly — and `suggested_price ==
+   * min_allowed_price` is precisely that branch (if the floor loses, the max is
+   * strictly greater than it). On the `× 0.90` branch the number derives from
+   * `current_price` alone, which the caller already holds; it stays visible
+   * because there is nothing to hide there and masking it would empty the
+   * endpoint for no gain.
+   *
+   * Residual, accepted rather than closed: an actor without the permission
+   * still learns `cost ≥ current_price × 0.90` from the field's *absence*, and
+   * `cost < current_price × 0.90` from its presence. That is a bound, not the
+   * value — the exact-cost channel is what this closes. Note this makes the
+   * mask value-conditional, unlike `projectQuote`'s deliberately unconditional
+   * one above; the tradeoff is that the alternative removes the endpoint's only
+   * actionable output.
+   *
    * Unlike the override paths this is hardening, not a live leak: the only
    * roles that clear `GET /offers/suggestions` today (`tenant_owner`,
    * `location_manager`) both hold `pricing.cost.view`, so a freshly-seeded
@@ -86,20 +106,55 @@ export class CostVisibilityService {
    * the catalog constant, and nothing but this call ties the offers read path
    * to cost visibility if a later phase narrows either role.
    */
-  async maskMinAllowedPrice<T extends { min_allowed_price?: unknown }>(
+  async maskOfferSuggestion<T extends CostDisclosingSuggestion>(
     actor: Pick<AuthenticatedUser, 'membership_role'>,
     row: T,
-  ): Promise<T | Omit<T, 'min_allowed_price'>> {
+  ): Promise<MaskedSuggestion<T>> {
     if (await this.canViewCostDerivedValues(actor)) return row;
-    const { min_allowed_price: _floor, ...visible } = row;
-    return visible;
+    return stripSuggestionCostFields(row);
   }
 
-  async maskMinAllowedPrices<T extends { min_allowed_price?: unknown }>(
+  /** The permission is resolved once for the whole page, not once per row. */
+  async maskOfferSuggestions<T extends CostDisclosingSuggestion>(
     actor: Pick<AuthenticatedUser, 'membership_role'>,
     rows: readonly T[],
-  ): Promise<(T | Omit<T, 'min_allowed_price'>)[]> {
+  ): Promise<MaskedSuggestion<T>[]> {
     if (await this.canViewCostDerivedValues(actor)) return [...rows];
-    return rows.map(({ min_allowed_price: _floor, ...visible }) => visible);
+    return rows.map((row) => stripSuggestionCostFields(row));
   }
+}
+
+type CostDisclosingSuggestion = { min_allowed_price?: unknown; suggested_price?: unknown };
+
+/**
+ * Three outcomes, narrowing left to right: the full row, the row without the
+ * floor, and the row without either cost-disclosing field. The last is written
+ * as a nested `Omit` because that is literally how it is destructured below —
+ * TypeScript does not accept the flattened `Omit<T, 'a' | 'b'>` as equivalent
+ * for a generic `T`.
+ */
+type MaskedSuggestion<T extends CostDisclosingSuggestion> =
+  | T
+  | Omit<T, 'min_allowed_price'>
+  | Omit<Omit<T, 'min_allowed_price'>, 'suggested_price'>;
+
+function isMoney(value: unknown): value is MoneyInput {
+  return typeof value === 'number' || typeof value === 'string' || Prisma.Decimal.isDecimal(value);
+}
+
+/**
+ * Both fields are stripped in one pass on purpose: the `suggested_price` test
+ * reads `min_allowed_price`, so masking the floor first would silently degrade
+ * the clamp check to "never mask".
+ */
+function stripSuggestionCostFields<T extends CostDisclosingSuggestion>(row: T): MaskedSuggestion<T> {
+  const { min_allowed_price: floor, ...visible } = row;
+  // Value-equality, not `===`: these are `Prisma.Decimal` instances on a real
+  // database and plain numbers in unit fixtures. A tie (floor exactly equal to
+  // `current_price × 0.90`) masks — the disclosed value is the floor either way.
+  const clampedToFloor =
+    isMoney(floor) && isMoney(visible.suggested_price) && sameMoney(floor, visible.suggested_price);
+  if (!clampedToFloor) return visible;
+  const { suggested_price: _clamped, ...withoutSuggested } = visible;
+  return withoutSuggested;
 }
