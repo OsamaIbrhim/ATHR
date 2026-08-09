@@ -13,6 +13,7 @@ import { deviceTenantContext } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { PosTerminal, Prisma } from '@prisma/client';
 import { PricingService } from '../pricing/pricing.service';
+import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { createHash, randomUUID } from 'crypto';
@@ -44,6 +45,7 @@ export class SalesService {
   constructor(
     private prisma: PrismaService,
     private pricing: PricingService,
+    private costVisibility: CostVisibilityService,
   ) {}
 
   async listSales(context: TenantContext, dto: ListSalesDto, branchId?: string) {
@@ -133,7 +135,27 @@ export class SalesService {
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     assertBranchAccess(actor, invoice.branch_id, ['owner']);
-    return invoice;
+    // BR-CST-101 / Matrix §17 §51: this row discloses exact cost three ways —
+    // `items[].unit_cost` (cost at the moment of sale), the joined
+    // `items[].variant.cost_price` (cost today), and `original_returns[].
+    // items[].unit_cost` (the same figure carried onto the return). `cashier`
+    // clears this endpoint on `sales.sale.view` and does not hold
+    // `sales.sale.view-cost-margin`, so all three are stripped for the till.
+    // Only the response is projected; the stored rows keep the true values,
+    // and the margin reports that need them read those rows directly behind
+    // their own `reports.*.view-cost-margin` guard.
+    if (await this.costVisibility.canViewSaleCostMargin(actor)) return invoice;
+    return {
+      ...invoice,
+      items: invoice.items.map(({ unit_cost: _unitCost, variant, ...item }) => {
+        const { cost_price: _costPrice, ...visibleVariant } = variant;
+        return { ...item, variant: visibleVariant };
+      }),
+      original_returns: invoice.original_returns.map((record) => ({
+        ...record,
+        items: record.items.map(({ unit_cost: _unitCost, ...item }) => item),
+      })),
+    };
   }
 
   private endOfDay(value: string) {
@@ -684,7 +706,13 @@ export class SalesService {
       return invoice;
     });
     this.countCache.clear();
-    return result;
+    // Unconditional, unlike `getInvoice`: this response goes to a POS terminal
+    // authenticated by device token, so there is no membership to resolve a
+    // permission against and no actor the gate could answer for. The till has
+    // no use for `unit_cost` either — it echoes back the sale it just posted —
+    // so the field is dropped outright rather than gated. Both branches of the
+    // transaction are covered: the idempotent replay returns the same shape.
+    return { ...result, items: result.items.map(({ unit_cost: _unitCost, ...item }) => item) };
   }
 
   async createReturn(context: TenantContext, dto: CreateReturnDto, actor: AuthenticatedUser) {
@@ -872,7 +900,12 @@ export class SalesService {
     });
 
     this.countCache.clear();
-    return result;
+    // `ReturnItem.unit_cost` is copied from the sale line it reverses, so the
+    // return response is the same disclosure under a different table. Gated,
+    // not unconditional: unlike `POST /pos/sale` this endpoint authenticates an
+    // actor, so a `location_manager` posting a return still sees the figure.
+    if (await this.costVisibility.canViewSaleCostMargin(actor)) return result;
+    return { ...result, items: result.items.map(({ unit_cost: _unitCost, ...item }) => item) };
   }
 
   async findReturnableInvoice(context: TenantContext, reference: string, actor: AuthenticatedUser) {

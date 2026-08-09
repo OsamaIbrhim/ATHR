@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
-import type { MembershipRole } from '@prisma/client';
+import { Prisma, type MembershipRole } from '@prisma/client';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import type { AuthenticatedUser } from '../auth/authenticated-user';
 import { sameMoney } from '../common/money';
@@ -21,6 +20,13 @@ import type { PriceQuote } from './pricing.service';
  * cost verbatim — and the below-floor rejection message quoted it even when
  * the override was refused.
  *
+ * It is also the enforcement point for Matrix §17's `sales.sale.view-cost-
+ * margin`. That key guards a different disclosure — `SalesInvoiceItem.
+ * unit_cost` is the variant's cost copied verbatim, not a floor that happens to
+ * resolve to cost — but it is the same question about the same actor, and
+ * resolving it anywhere else would mean a second place that decides who may see
+ * cost. See `canViewSaleCostMargin`.
+ *
  * The masking is deliberately **unconditional on the permission**, not
  * conditional on `floor_is_cost_derived`: whether the floor is cost-derived is
  * itself an inference channel, and the two are identical in practice today
@@ -32,6 +38,27 @@ import type { PriceQuote } from './pricing.service';
 @Injectable()
 export class CostVisibilityService {
   constructor(private readonly permissionPolicy: PermissionPolicyService) {}
+
+  /**
+   * Matrix §17 `sales.sale.view-cost-margin` — the same question asked of a
+   * *sale line* rather than of a price quote, and deliberately a different key
+   * rather than a reuse of the two above.
+   *
+   * `SalesInvoiceItem.unit_cost` is not cost-*derived*, it is the variant's
+   * `cost_price` copied verbatim at the moment of sale, and `ReturnItem.
+   * unit_cost` carries it forward — so the sales read path discloses exact cost
+   * without going anywhere near a floor. The Matrix gives that disclosure its
+   * own key and grants it to `tenant_owner`/`location_manager` only; `cashier`
+   * holds `sales.sale.view` but not this, which is Matrix §51 ("no cost/margin
+   * visibility") stated for the till. Answering with `pricing.cost.view` here
+   * would silently re-grant it to every role that happens to hold the pricing
+   * key and deny it to one that holds only the sales key.
+   */
+  async canViewSaleCostMargin(actor: Pick<AuthenticatedUser, 'membership_role'>): Promise<boolean> {
+    const role: MembershipRole | null = actor.membership_role ?? null;
+    if (!role) return false;
+    return this.permissionPolicy.hasPermission(role, 'sales.sale.view-cost-margin');
+  }
 
   /** Either key grants it — Matrix §17 lists them separately, both imply cost-derived visibility. */
   async canViewCostDerivedValues(actor: Pick<AuthenticatedUser, 'membership_role'>): Promise<boolean> {

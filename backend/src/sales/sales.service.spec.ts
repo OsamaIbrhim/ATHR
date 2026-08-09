@@ -5,7 +5,21 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { SalesService } from './sales.service';
+import { CostVisibilityService } from '../pricing/cost-visibility.service';
+import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+
+/**
+ * These cases cover sale/return mechanics, not cost visibility. The gate is
+ * wired fail-closed so they exercise the projection an actor without
+ * `sales.sale.view-cost-margin` receives; `sales.cost-visibility.spec.ts` pins
+ * the gate's own behaviour on both sides.
+ */
+const costVisibilityAnswering = (allowed: boolean) =>
+  new CostVisibilityService({
+    hasPermission: async () => allowed,
+  } as unknown as PermissionPolicyService);
+const maskedCostVisibility = () => costVisibilityAnswering(false);
 
 // WP-007 Phase A: sales entry points take the resolved TenantContext first.
 const ctx = contextFor(TENANT_A);
@@ -77,6 +91,8 @@ function setupSale(options: {
   closedShift?: boolean;
   missingCashier?: boolean;
   missingSeller?: boolean;
+  /** Only the POS-response cost case needs this — see that test for why. */
+  hasCostMargin?: boolean;
 } = {}) {
   let rawCall = 0;
   const tx = {
@@ -215,7 +231,11 @@ function setupSale(options: {
     ),
   };
   return {
-    service: new SalesService(prisma as any, pricing as any),
+    service: new SalesService(
+      prisma as any,
+      pricing as any,
+      costVisibilityAnswering(options.hasCostMargin ?? false),
+    ),
     prisma,
     pricing,
     tx,
@@ -231,7 +251,7 @@ function fingerprint(service: SalesService, dto: any) {
   );
 }
 
-function setupReturn(alreadyReturned = 0) {
+function setupReturn(alreadyReturned = 0, hasCostMargin = false) {
   const soldItem = {
     id: 'sale-item-1',
     variant_id: variantId,
@@ -278,7 +298,7 @@ function setupReturn(alreadyReturned = 0) {
   };
   const prisma = { $transaction: jest.fn((callback) => callback(tx)) };
   return {
-    service: new SalesService(prisma as any, {} as any),
+    service: new SalesService(prisma as any, {} as any, costVisibilityAnswering(hasCostMargin)),
     tx,
   };
 }
@@ -319,6 +339,7 @@ describe('SalesService acceptance-first sale synchronization', () => {
         }),
       }),
     );
+    expect(result.items.every((item: any) => !('unit_cost' in item))).toBe(true);
     expect(tx.inventoryStock.upsert).toHaveBeenCalledTimes(1);
     expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
     expect(String(result.total)).toBe('342');
@@ -369,6 +390,24 @@ describe('SalesService acceptance-first sale synchronization', () => {
     expect(tx.posTerminal.update).not.toHaveBeenCalled();
   });
 
+  /**
+   * Unconditional, unlike every other cost mask in this codebase: `POST
+   * /pos/sale` is authenticated by device token, so there is no membership for
+   * the gate to resolve. `hasCostMargin: true` is the point of the case — even
+   * an answering gate must not put cost on the wire here.
+   */
+  it('never returns unit_cost on the POS sale response, whatever the gate answers', async () => {
+    const { service, tx } = setupSale({ hasCostMargin: true });
+    const result: any = await service.createSale(saleDto(), terminal);
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).not.toHaveProperty('unit_cost');
+    // The persisted line still carries it — the ledger and the margin reports
+    // are built from this row, not from the response.
+    const written = tx.salesInvoice.create.mock.calls[0][0].data.items.create[0];
+    expect(written.unit_cost).toBeDefined();
+  });
+
   it('returns the existing invoice for an identical replay', async () => {
     const { service, tx } = setupSale();
     const dto = saleDto();
@@ -387,7 +426,11 @@ describe('SalesService acceptance-first sale synchronization', () => {
       Promise.resolve(where?.sync_id ? existing : null),
     );
 
-    await expect(service.createSale(dto, terminal)).resolves.toBe(existing);
+    // `toEqual`, not `toBe`: the replay returns the same invoice through the
+    // same cost projection as a first-time post, which is a copy rather than
+    // the stored row. Identity was never what this case was pinning — that the
+    // replay neither re-posts inventory nor writes a second invoice is.
+    await expect(service.createSale(dto, terminal)).resolves.toEqual(existing);
     expect(tx.inventoryStock.upsert).not.toHaveBeenCalled();
     expect(tx.salesInvoice.create).not.toHaveBeenCalled();
   });
@@ -509,5 +552,64 @@ describe('SalesService returns', () => {
       }),
     );
     expect(String(result.refund_total)).toBe('342');
+  });
+
+  /**
+   * BR-CST-101 / Matrix §17 §51. `ReturnItem.unit_cost` is the sale line's cost
+   * carried onto the return, so the return response is the same disclosure as
+   * `GET /sales/:id` under a different table — see `sales.cost-visibility.spec.ts`
+   * for the read-path half.
+   */
+  it('strips unit_cost from the return response for an actor without cost/margin visibility', async () => {
+    const { service, tx } = setupReturn();
+    const result: any = await service.createReturn(
+      ctx,
+      {
+        original_invoice_id: 'sale-1',
+        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
+        reason: 'Wrong size',
+      },
+      actor,
+    );
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).not.toHaveProperty('unit_cost');
+    // Only the response is projected — the written row keeps the true cost.
+    const written = tx.return.create.mock.calls[0][0].data.items.create[0];
+    expect(Number(written.unit_cost)).toBe(100);
+  });
+
+  it('returns unit_cost on a return to an actor holding cost/margin visibility', async () => {
+    const { service } = setupReturn(0, true);
+    const result: any = await service.createReturn(
+      ctx,
+      {
+        original_invoice_id: 'sale-1',
+        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
+        reason: 'Wrong size',
+      },
+      // `membership_role` is what the gate resolves the grant against; the
+      // module's other cases omit it, which is why they mask regardless.
+      { ...actor, membership_role: 'location_manager' } as any,
+    );
+
+    expect(Number(result.items[0].unit_cost)).toBe(100);
+  });
+
+  it('masks the return response when the actor carries no membership_role, gate permissive', async () => {
+    // Fail-closed: no membership means no resolvable grant, so the answer is
+    // "no" even against a gate that would otherwise allow it.
+    const { service } = setupReturn(0, true);
+    const result: any = await service.createReturn(
+      ctx,
+      {
+        original_invoice_id: 'sale-1',
+        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
+        reason: 'Wrong size',
+      },
+      actor,
+    );
+
+    expect(result.items[0]).not.toHaveProperty('unit_cost');
   });
 });
