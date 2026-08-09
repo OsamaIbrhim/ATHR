@@ -135,25 +135,30 @@ export class SalesService {
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     assertBranchAccess(actor, invoice.branch_id, ['owner']);
-    // BR-CST-101 / Matrix §17 §51: this row discloses exact cost three ways —
+    // BR-CST-101 / Matrix §17 §51: this row discloses exact cost four ways —
     // `items[].unit_cost` (cost at the moment of sale), the joined
-    // `items[].variant.cost_price` (cost today), and `original_returns[].
-    // items[].unit_cost` (the same figure carried onto the return). `cashier`
-    // clears this endpoint on `sales.sale.view` and does not hold
-    // `sales.sale.view-cost-margin`, so all three are stripped for the till.
-    // Only the response is projected; the stored rows keep the true values,
-    // and the margin reports that need them read those rows directly behind
-    // their own `reports.*.view-cost-margin` guard.
+    // `items[].variant.cost_price` (cost today), and the same sale-line cost
+    // carried onto the return through *either* join, `items[].return_items[]`
+    // and `original_returns[].items[]`. Both return joins matter: they reach
+    // the same `ReturnItem` rows from opposite ends, so masking one leaves the
+    // figure reachable through the other. `cashier` clears this endpoint on
+    // `sales.sale.view` and does not hold `sales.sale.view-cost-margin`, so
+    // all four are stripped for the till. Only the response is projected; the
+    // stored rows keep the true values, and the margin reports that need them
+    // read those rows directly behind their own `reports.*.view-cost-margin`
+    // guard.
     if (await this.costVisibility.canViewSaleCostMargin(actor)) return invoice;
+    const withoutLineCost = <T extends { unit_cost?: unknown }>({ unit_cost: _unitCost, ...line }: T) =>
+      line;
     return {
       ...invoice,
-      items: invoice.items.map(({ unit_cost: _unitCost, variant, ...item }) => {
+      items: invoice.items.map(({ unit_cost: _unitCost, variant, return_items, ...item }) => {
         const { cost_price: _costPrice, ...visibleVariant } = variant;
-        return { ...item, variant: visibleVariant };
+        return { ...item, variant: visibleVariant, return_items: return_items.map(withoutLineCost) };
       }),
       original_returns: invoice.original_returns.map((record) => ({
         ...record,
-        items: record.items.map(({ unit_cost: _unitCost, ...item }) => item),
+        items: record.items.map(withoutLineCost),
       })),
     };
   }
