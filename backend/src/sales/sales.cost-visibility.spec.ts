@@ -65,7 +65,18 @@ function invoiceFixture() {
           cost_price: VARIANT_COST_PRICE,
           product: { name_en: 'Shirt', name_ar: 'قميص' },
         },
-        return_items: [],
+        // The third join carrying the same figure: the completed returns
+        // hanging off this line, reached without going through
+        // `original_returns`. Non-empty on purpose — an empty array makes
+        // every assertion about it pass vacuously.
+        return_items: [
+          {
+            id: 'return-item-1',
+            qty: 1,
+            unit_price: UNIT_PRICE,
+            unit_cost: UNIT_COST,
+          },
+        ],
       },
     ],
     original_returns: [
@@ -122,6 +133,16 @@ describe('SalesService.getInvoice — sale-line cost is never disclosed without 
     // Dropping the whole join would break the receipt; only the cost goes.
     expect(invoice.items[0].variant.sku).toBe('SKU-1');
     expect(invoice.items[0].variant.product.name_en).toBe('Shirt');
+  });
+
+  it('strips unit_cost from the return_items joined onto each line', async () => {
+    const { service } = setup(false);
+    const invoice: any = await service.getInvoice(ctx, 'sale-1', actor());
+
+    expect(invoice.items[0].return_items).toHaveLength(1);
+    expect(invoice.items[0].return_items[0]).not.toHaveProperty('unit_cost');
+    // The join exists so the UI can show how much of the line came back.
+    expect(invoice.items[0].return_items[0].qty).toBe(1);
   });
 
   it('strips unit_cost from the returns carried on the same invoice', async () => {
