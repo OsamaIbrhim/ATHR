@@ -319,6 +319,36 @@ jobs:
           done
           cat /tmp/athr-api.log
           exit 1
+      # Reaching a healthy /health/ready already proves SwaggerModule.createDocument
+      # (backend/src/main.ts:61-62 runs before app.listen) and the eager
+      # `require("js-yaml")` at the top of @nestjs/swagger's swagger-module.js.
+      # It does NOT prove the serializer: jsyaml.dump() runs only inside the
+      # GET /api/docs-yaml handler. Without this step nothing in CI ever executes
+      # it, so a bad js-yaml resolution would ship green.
+      - name: Prove Swagger document generation, including the js-yaml YAML path
+        run: |
+          curl --silent --fail http://localhost:3000/api/docs-json > /tmp/athr-openapi.json
+          curl --silent --fail http://localhost:3000/api/docs-yaml > /tmp/athr-openapi.yaml
+          node -e "
+            const { readFileSync } = require('node:fs');
+            const yaml = require('js-yaml');
+            const json = JSON.parse(readFileSync('/tmp/athr-openapi.json', 'utf8'));
+            const document = yaml.load(readFileSync('/tmp/athr-openapi.yaml', 'utf8'));
+            const jsonPaths = Object.keys(json.paths || {});
+            const yamlPaths = Object.keys(document.paths || {});
+            if (!json.openapi || jsonPaths.length === 0) {
+              throw new Error('OpenAPI JSON document is empty');
+            }
+            if (document.openapi !== json.openapi) {
+              throw new Error('YAML document does not match the JSON document');
+            }
+            if (yamlPaths.length !== jsonPaths.length) {
+              throw new Error(
+                'YAML exposes ' + yamlPaths.length + ' paths, JSON exposes ' + jsonPaths.length
+              );
+            }
+            console.log('swagger ok: openapi ' + json.openapi + ', ' + jsonPaths.length + ' paths');
+          "
       - run: npm run test:hard:smoke
       - name: Print API log on hard-smoke failure
         if: failure()
