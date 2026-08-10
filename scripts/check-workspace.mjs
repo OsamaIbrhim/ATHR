@@ -40,6 +40,23 @@ const requiredNativeToolchainPackages = new Map([
   ['@rollup/rollup-win32-x64-msvc', '4.62.2'],
 ]);
 
+const testFilePattern = /\.(?:spec|test)\.(?:cjs|js|jsx|mjs|ts|tsx)$/;
+// Only files that actually read from disk can reach across a workspace; this
+// gate keeps the literal scan below off the ~99% of tests that cannot offend.
+const filesystemReadPattern =
+  /\b(?:readFileSync|readFile|readdirSync|existsSync|statSync|createReadStream)\s*\(/;
+
+// Test files that still read across application workspaces, each pending its
+// own scoped clean-up. This list must shrink and never grow: a new entry means
+// a newly written test can fail another team's CI job for a change its author
+// did not make. Removing an entry is the goal, not adding one.
+const crossWorkspaceTestReadExceptions = new Map([
+  [
+    'backend/src/config/athr-identity-contract.spec.ts',
+    'repository-wide brand and installer-identity contract; relocation is tracked separately from WP-T1',
+  ],
+]);
+
 export function findCycles(graph) {
   const cycles = [];
   const visited = new Set();
@@ -149,6 +166,86 @@ function importSpecifiers(path) {
   return [...matches]
     .map((match) => match[1])
     .filter((specifier) => !specifier.includes('${'));
+}
+
+/**
+ * Extracts the contents of every single- and double-quoted string literal,
+ * skipping comments and template literals.
+ *
+ * A regex sweep over raw source cannot tell a path in a doc comment from a path
+ * in code — and this repository has already shipped one false positive of
+ * exactly that kind (prose misread as an import). Walking the source with the
+ * string/comment state tracked is what makes the rule below safe to fail CI on.
+ */
+export function stringLiterals(source) {
+  const literals = [];
+  let index = 0;
+
+  while (index < source.length) {
+    const character = source[index];
+    const next = source[index + 1];
+
+    if (character === '/' && next === '/') {
+      const end = source.indexOf('\n', index);
+      index = end === -1 ? source.length : end + 1;
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    if (character === '`') {
+      index += 1;
+      while (index < source.length && source[index] !== '`') {
+        index += source[index] === '\\' ? 2 : 1;
+      }
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      const quote = character;
+      let value = '';
+      index += 1;
+      while (index < source.length && source[index] !== quote) {
+        if (source[index] === '\n') break;
+        if (source[index] === '\\') {
+          value += source[index + 1] ?? '';
+          index += 2;
+          continue;
+        }
+        value += source[index];
+        index += 1;
+      }
+      index += 1;
+      literals.push(value);
+      continue;
+    }
+    index += 1;
+  }
+
+  return literals;
+}
+
+/**
+ * Returns the application workspace a path literal points into, or null.
+ *
+ * Leading `./` and `../` segments are stripped first: a test resolves its reads
+ * against either the workspace root (the `process.cwd()` house pattern) or its
+ * own directory, and under both, naming another application by directory name
+ * is the thing that makes the read cross a workspace boundary.
+ */
+export function referencedApplication(literal) {
+  if (!literal.includes('/') || literal.includes('${')) return null;
+
+  const normalized = literal
+    .replaceAll('\\', '/')
+    .replace(/^(?:\.{1,2}\/)+/, '');
+
+  for (const application of applicationDirectories) {
+    if (normalized.startsWith(`${application}/`)) return application;
+  }
+  return null;
 }
 
 export function validateWorkspace(root = repositoryRoot) {
@@ -319,6 +416,38 @@ export function validateWorkspace(root = repositoryRoot) {
     }
 
     for (const path of sourceFiles(root, directory)) {
+      const relativePath = relative(root, path).replaceAll('\\', '/');
+
+      // A test may only read files inside its own workspace. Without this,
+      // relative-path reads slip straight past the app-to-app dependency rule
+      // below (which only inspects package.json and import specifiers), and a
+      // change in one application silently fails another application's CI job.
+      if (
+        testFilePattern.test(relativePath) &&
+        !crossWorkspaceTestReadExceptions.has(relativePath)
+      ) {
+        const source = readFileSync(path, 'utf8');
+        if (filesystemReadPattern.test(source)) {
+          const reached = new Set();
+          for (const literal of stringLiterals(source)) {
+            const application = referencedApplication(literal);
+            if (application && application !== directory) {
+              reached.add(application);
+            }
+          }
+          for (const application of [...reached].sort()) {
+            failures.push(
+              `${relativePath} reads files from the ${application} workspace. ` +
+                `A test must only read files inside its own workspace: as written, ` +
+                `an ordinary change in ${application} fails the ${directory} CI job for ` +
+                `someone who did not cause it. Move these assertions into a test that ` +
+                `lives in ${application}/ and reads the file from there — see ` +
+                `pos-electron/src/money-contract.test.ts for the split pattern.`,
+            );
+          }
+        }
+      }
+
       for (const specifier of importSpecifiers(path)) {
         if (specifier.startsWith('.')) {
           const target = relative(

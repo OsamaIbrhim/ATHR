@@ -1,6 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+/**
+ * Backend half of the cross-application financial precision contract.
+ *
+ * This spec asserts only about files inside the backend workspace. The POS and
+ * Admin halves live with the code they describe —
+ * `pos-electron/src/money-contract.test.ts` and
+ * `admin-web/app/sales/money-contract.test.ts` — so that editing a cashier
+ * screen or an invoice page fails the workspace that owns it instead of the
+ * backend CI job. `scripts/check-workspace.mjs` enforces that boundary.
+ */
 describe('financial precision contract', () => {
   const source = (path: string) =>
     readFileSync(join(process.cwd(), path), 'utf8');
@@ -23,30 +33,5 @@ describe('financial precision contract', () => {
     expect(sales).not.toContain('Number(soldItem.unit_price)');
     expect(sales).not.toContain('Number(soldItem.unit_cost)');
     expect(sales).not.toContain('Number(soldItem.unit_tax)');
-  });
-
-  it('keeps POS totals in integer cents', () => {
-    const main = source('../pos-electron/electron/main.ts');
-    const utils = source('../pos-electron/src/utils.ts');
-    const register = source(
-      '../pos-electron/src/screens/RegisterScreen.tsx',
-    );
-
-    expect(main).toContain('lineCents(item.unit_price, item.qty)');
-    expect(main).toContain('sameMoney(localTotal');
-    expect(main).not.toMatch(/Math\.round\s*\(\s*localTotal\s*\*\s*100/);
-    expect(utils).not.toMatch(/\*\s*100/);
-    expect(register).not.toContain('item.unit_price*item.qty');
-  });
-
-  it('does not recompute invoice money with floats in Admin', () => {
-    const invoicePage = source(
-      '../admin-web/app/sales/[id]/page.tsx',
-    );
-
-    expect(invoicePage).toContain('lineTotal(i.unit_price,i.unit_tax,i.qty)');
-    expect(invoicePage).not.toMatch(
-      /Number\(i\.unit_price\)\s*\*\s*i\.qty/,
-    );
   });
 });
