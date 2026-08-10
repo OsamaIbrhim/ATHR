@@ -26,5 +26,10 @@
     "workspace:validate": "node scripts/check-workspace.mjs",
     "workspace:graph": "node scripts/check-workspace.mjs --graph",
     "workspace:cycles": "node scripts/check-workspace.mjs --cycles"
+  },
+  "overrides": {
+    "@nestjs/swagger": {
+      "js-yaml": "5.2.3"
+    }
   }
 }

@@ -319,6 +319,54 @@ jobs:
           done
           cat /tmp/athr-api.log
           exit 1
+      # Reaching a healthy /health/ready already proves SwaggerModule.createDocument
+      # (backend/src/main.ts:61-62 runs before app.listen) and the eager
+      # `require("js-yaml")` at the top of @nestjs/swagger's swagger-module.js.
+      # It does NOT prove the serializer: jsyaml.dump() runs only inside the
+      # GET /api/docs-yaml handler. Without this step nothing in CI ever executes
+      # it, so a bad js-yaml resolution would ship green.
+      - name: Prove Swagger document generation, including the js-yaml YAML path
+        run: |
+          set -euo pipefail
+          curl --silent --fail http://localhost:3000/api/docs-json > /tmp/athr-openapi.json
+          curl --silent --fail http://localhost:3000/api/docs-yaml > /tmp/athr-openapi.yaml
+          node -e "
+            const path = require('node:path');
+            const { readFileSync } = require('node:fs');
+            // Resolve js-yaml the way @nestjs/swagger itself does, from its own
+            // directory, rather than by bare require(). js-yaml is not a declared
+            // backend dependency, so a bare require() depends on it staying hoisted
+            // -- and re-resolution moving it is the exact scenario this step guards.
+            // Going through swagger's own directory also means we assert against the
+            // overridden copy it actually loads.
+            const swaggerDir = path.dirname(require.resolve('@nestjs/swagger'));
+            const yaml = require(require.resolve('js-yaml', { paths: [swaggerDir] }));
+            const json = JSON.parse(readFileSync('/tmp/athr-openapi.json', 'utf8'));
+            const document = yaml.load(readFileSync('/tmp/athr-openapi.yaml', 'utf8'));
+            const jsonPaths = Object.keys(json.paths || {});
+            const yamlPaths = Object.keys(document.paths || {});
+            if (!json.openapi || jsonPaths.length === 0) {
+              throw new Error('OpenAPI JSON document is empty');
+            }
+            if (document.openapi !== json.openapi) {
+              throw new Error('YAML document does not match the JSON document');
+            }
+            if (yamlPaths.length !== jsonPaths.length) {
+              throw new Error(
+                'YAML exposes ' + yamlPaths.length + ' paths, JSON exposes ' + jsonPaths.length
+              );
+            }
+            // Resolve the manifest directly. js-yaml's main entry lives in dist/,
+            // so dirname(require.resolve('js-yaml')) is dist/, which has no
+            // package.json -- deriving the path that way throws.
+            const jsYamlVersion = require(
+              require.resolve('js-yaml/package.json', { paths: [swaggerDir] }),
+            ).version;
+            console.log(
+              'swagger ok: openapi ' + json.openapi + ', ' + jsonPaths.length + ' paths, ' +
+              'js-yaml ' + jsYamlVersion
+            );
+          "
       - run: npm run test:hard:smoke
       - name: Print API log on hard-smoke failure
         if: failure()
