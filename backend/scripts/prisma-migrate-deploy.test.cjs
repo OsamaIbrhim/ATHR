@@ -10,11 +10,16 @@ const {
 } = require('./prisma-migrate-deploy.cjs');
 
 test('reports the repository migration history used by deployment', () => {
-  assert.equal(countMigrationFolders(), 147);
+  // WP-008 Phase A (2349895) added 6 migration folders, 147 -> 153, without
+  // updating this assertion. The stale count also masked a second staleness:
+  // the 202608060001-0006 catalog folders sort after the 202608040110-0112
+  // tenant-scoped ones, so the slice list below was wrong too — assert.equal
+  // threw first, so the deepEqual never got the chance to fail.
+  assert.equal(countMigrationFolders(), 153);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608040110_tenant_scoped_unique_supplierreturn_return_number',
-    '202608040111_tenant_scoped_unique_transfer_transfer_number',
-    '202608040112_fix_ledger_triggers_tenant_id',
+    '202608060004_add_uom_conversion_table',
+    '202608060005_add_productvariant_item_type_base_uom',
+    '202608060006_add_assortment_table',
   ]);
 });
 
