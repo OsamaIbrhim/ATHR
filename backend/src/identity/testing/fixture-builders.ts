@@ -42,6 +42,19 @@ import { TENANT_A } from './cross-tenant-harness';
  * seeded in exactly one place is deliberately absent: a builder there would be
  * indirection with nothing to deduplicate. Adding one when a second caller
  * appears is a copy of any block below.
+ *
+ * ## Two limits of the fake these defaults run into
+ *
+ * `FakeTable.sort` compares with `>`, which coerces a `Prisma.Decimal` through
+ * `valueOf()` to a *string* — so `orderBy` and `aggregate`'s `_max`/`_min` sort
+ * a money column lexicographically, not numerically (`'9' > '100'`). No spec
+ * depends on that today; a test that needs numeric ordering of a money column
+ * has to arrange it explicitly rather than assume the fake provides it.
+ *
+ * These defaults apply to *seed* rows only. `FakeTable.create` builds a row as
+ * `{ id, created_at, ...data }`, so a row a spec creates through the service
+ * under test still carries only what production passed. A new mandatory column
+ * is a one-file change for seeds; the create paths are unaffected either way.
  */
 
 /**
