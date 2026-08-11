@@ -4,6 +4,7 @@ import { UomRepository } from './uom.repository';
 import { UomService } from './uom.service';
 import { CreateUomConversionDto } from './dto/uom-conversion.dto';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { Prisma } from '@prisma/client';
 
 /** WP-008 Phase A — cross-tenant isolation + BR-UOM-102 immutability for the `uom` module. */
 
@@ -25,7 +26,7 @@ function setup() {
         tenant_id: TENANT_A,
         from_uom_id: CARTON_A,
         to_uom_id: PIECE_A,
-        factor: 24,
+        factor: new Prisma.Decimal(24),
         version: 1,
         status: 'active',
         superseded_by_id: null,
@@ -86,11 +87,11 @@ describe('uom conversion — BR-UOM-102 immutability', () => {
     const next = await service.supersedeConversion(contextFor(TENANT_A), CONVERSION_A, { factor: 25 });
 
     const previous = prisma.uomConversion.rows.find((row: any) => row.id === CONVERSION_A);
-    expect(previous.factor).toBe(24); // untouched
+    expect(Number(previous.factor)).toBe(24); // untouched
     expect(previous.status).toBe('superseded');
     expect(previous.superseded_by_id).toBe(next.id);
 
-    expect(next.factor).toBe(25);
+    expect(Number(next.factor)).toBe(25);
     expect(next.version).toBe(2);
     expect(next.status).toBe('active');
     expect(next.from_uom_id).toBe(CARTON_A);
