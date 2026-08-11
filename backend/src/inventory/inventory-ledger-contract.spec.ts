@@ -1,5 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  AUDITED_STOCK_WRITERS,
+  AUDITED_STOCK_WRITERS_MODULE,
+} from './audited-stock-writers';
 
 function sourceFiles(root: string): string[] {
   const result: string[] = [];
@@ -18,15 +22,19 @@ describe('inventory movement ledger contract', () => {
       /\binventoryStock\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(|\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+"InventoryStock"/i;
     const writers = sourceFiles(srcRoot)
       .filter((file) => !file.endsWith('.spec.ts'))
-      .filter((file) => mutationPattern.test(fs.readFileSync(file, 'utf8')))
-      .map((file) => path.relative(srcRoot, file).replaceAll('\\', '/'))
+      .map((file) => ({
+        file,
+        relative: path.relative(srcRoot, file).replaceAll('\\', '/'),
+      }))
+      .filter(({ relative }) => relative !== AUDITED_STOCK_WRITERS_MODULE)
+      .filter(({ file }) => mutationPattern.test(fs.readFileSync(file, 'utf8')))
+      .map(({ relative }) => relative)
       .sort();
 
-    expect(writers).toEqual([
-      'purchasing/purchasing.service.ts',
-      'sales/sales.service.ts',
-      'transfers/transfers.service.ts',
-    ]);
+    // The expectation is the declared allowlist, not a literal inlined here.
+    // A diff to `audited-stock-writers.ts` is the intended way to widen the
+    // audited stock mutation surface; read that file before changing this.
+    expect(writers).toEqual([...AUDITED_STOCK_WRITERS].sort());
   });
 
   it('keeps the database function, semantic triggers, reconciliation backfill, and append-only guard in the migration', () => {

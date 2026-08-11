@@ -1,6 +1,21 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { parseTenantId } from '@athr/domain-core';
 import type { TenantContext } from '../tenant-context.type';
+
+/** Reported on thrown Prisma errors; the value itself is never asserted on. */
+const PRISMA_CLIENT_VERSION = '5.x';
+
+/**
+ * Separator for composite `groupBy` keys. NUL can never appear in a PostgreSQL
+ * text value, so `join`/`split` round-trip exactly and two different field
+ * tuples can never collide into one bucket — including across tenants, where a
+ * collision would silently merge two tenants' rows.
+ *
+ * Written as an escape on purpose. A literal NUL byte here is invisible in
+ * editors and diffs, and has already been misread once as an empty separator.
+ */
+const GROUP_KEY_SEPARATOR = '\u0000';
 
 /**
  * Shared harness for the WP-007 Phase A cross-tenant isolation tests
@@ -174,6 +189,27 @@ export class FakeTable {
     return this.rows.find((row) => this.match(row, flattened)) ?? null;
   };
 
+  /**
+   * Prisma's `*OrThrow` variants do not return null — they raise
+   * `PrismaClientKnownRequestError` with code `P2025`. A real error instance is
+   * constructed here rather than a plain `Error` because production error
+   * handling branches on both the class and the code
+   * (`common/api-error.filter.ts` maps `P2025` to a 404). A stand-in that threw
+   * anything else would let a test pass while the real service returned a 500.
+   */
+  private notFound(operation: string): never {
+    throw new Prisma.PrismaClientKnownRequestError(
+      `No ${operation} found`,
+      { code: 'P2025', clientVersion: PRISMA_CLIENT_VERSION },
+    );
+  }
+
+  findFirstOrThrow = async (args: any = {}) =>
+    (await this.findFirst(args)) ?? this.notFound('FakeTable.findFirstOrThrow');
+
+  findUniqueOrThrow = async (args: any) =>
+    (await this.findUnique(args)) ?? this.notFound('FakeTable.findUniqueOrThrow');
+
   findMany = async ({ where, orderBy, take, skip }: any = {}) => {
     let result = this.sort(this.rows.filter((row) => this.match(row, where)), orderBy);
     if (skip) result = result.slice(skip);
@@ -272,13 +308,13 @@ export class FakeTable {
     const rows = this.rows.filter((row) => this.match(row, where));
     const buckets = new Map<string, Row[]>();
     for (const row of rows) {
-      const key = by.map((field: string) => row[field]).join(' ');
+      const key = by.map((field: string) => row[field]).join(GROUP_KEY_SEPARATOR);
       buckets.set(key, [...(buckets.get(key) ?? []), row]);
     }
     return [...buckets.entries()].map(([key, bucket]) => {
       const grouped: Row = {};
       by.forEach((field: string, index: number) => {
-        grouped[field] = key.split(' ')[index];
+        grouped[field] = key.split(GROUP_KEY_SEPARATOR)[index];
       });
       return { ...grouped, _count: bucket.length };
     });
