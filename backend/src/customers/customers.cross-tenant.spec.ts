@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { CustomersRepository } from './customers.repository';
 import { CustomersService } from './customers.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aCustomer } from '../identity/testing/fixture-builders';
 
 /**
  * WP-007 Phase A §A.3.6 — "Membership A does not grant B" (Multi-tenancy
@@ -15,28 +17,25 @@ const SHARED_PHONE = '01000000000';
 function setup() {
   const prisma = fakePrisma({
     customer: [
-      {
+      aCustomer({
         id: CUSTOMER_A,
         tenant_id: TENANT_A,
         name: 'Tenant A Customer',
         phone: SHARED_PHONE,
         email: 'a@example.com',
         total_invoices: 9,
-        total_spent: 5000,
-        is_vip: false,
-        vip_price_tier: 'cost_plus_overhead',
-      },
-      {
+        total_spent: new Prisma.Decimal(5000),
+      }),
+      aCustomer({
         id: CUSTOMER_B,
         tenant_id: TENANT_B,
         name: 'Tenant B Customer',
         phone: '01111111111',
         email: 'b@example.com',
         total_invoices: 2,
-        total_spent: 100,
+        total_spent: new Prisma.Decimal(100),
         is_vip: true,
-        vip_price_tier: 'cost_plus_overhead',
-      },
+      }),
     ],
     salesInvoice: [],
   });

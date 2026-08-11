@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { ShiftsRepository } from './shifts.repository';
 import { ShiftsService } from './shifts.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aBranch, aSalesInvoice } from '../identity/testing/fixture-builders';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `shifts` module. */
 
@@ -33,14 +35,14 @@ function setup() {
       },
     ],
     branch: [
-      { id: BRANCH_A, tenant_id: TENANT_A, is_active: true },
-      { id: BRANCH_B, tenant_id: TENANT_B, is_active: true },
+      aBranch({ id: BRANCH_A, tenant_id: TENANT_A }),
+      aBranch({ id: BRANCH_B, tenant_id: TENANT_B }),
     ],
     salesInvoice: [
       // Same shift_id in both tenants: an unscoped aggregate would fold
       // tenant B's cash into tenant A's expected drawer total.
-      { id: randomUUID(), tenant_id: TENANT_A, shift_id: SHIFT_A, status: 'completed', payment_method: 'cash', total: 50 },
-      { id: randomUUID(), tenant_id: TENANT_B, shift_id: SHIFT_A, status: 'completed', payment_method: 'cash', total: 9999 },
+      aSalesInvoice({ tenant_id: TENANT_A, shift_id: SHIFT_A, payment_method: 'cash', total: new Prisma.Decimal(50) }),
+      aSalesInvoice({ tenant_id: TENANT_B, shift_id: SHIFT_A, payment_method: 'cash', total: new Prisma.Decimal(9999) }),
     ],
     return: [],
   });

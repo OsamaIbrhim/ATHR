@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { SalesService } from './sales.service';
 import { SalesReadService } from './sales-read.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aBranch, aCustomer, aSalesInvoice } from '../identity/testing/fixture-builders';
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `sales` module.
@@ -22,37 +24,33 @@ const SHARED_PHONE = '01000000000';
 function setup() {
   const prisma = fakePrisma({
     salesInvoice: [
-      {
+      aSalesInvoice({
         id: INVOICE_A,
         tenant_id: TENANT_A,
         branch_id: BRANCH_A,
         invoice_number: 'B-100',
-        status: 'completed',
-        occurred_at: new Date(),
-        total: 100,
+        total: new Prisma.Decimal(100),
         items: [],
-      },
-      {
+      }),
+      aSalesInvoice({
         id: INVOICE_B,
         tenant_id: TENANT_B,
         branch_id: BRANCH_B,
         invoice_number: 'B-100',
-        status: 'completed',
-        occurred_at: new Date(),
-        total: 999,
+        total: new Prisma.Decimal(999),
         items: [],
-      },
+      }),
     ],
     customer: [
-      { id: randomUUID(), tenant_id: TENANT_B, phone: SHARED_PHONE, name: 'B customer' },
+      aCustomer({ tenant_id: TENANT_B, phone: SHARED_PHONE, name: 'B customer' }),
     ],
     return: [
       { id: randomUUID(), tenant_id: TENANT_A, branch_id: BRANCH_A, created_at: new Date() },
       { id: randomUUID(), tenant_id: TENANT_B, branch_id: BRANCH_B, created_at: new Date() },
     ],
     branch: [
-      { id: BRANCH_A, tenant_id: TENANT_A, code: 'A', is_active: true },
-      { id: BRANCH_B, tenant_id: TENANT_B, code: 'B', is_active: true },
+      aBranch({ id: BRANCH_A, tenant_id: TENANT_A, code: 'A' }),
+      aBranch({ id: BRANCH_B, tenant_id: TENANT_B, code: 'B' }),
     ],
     salesInvoiceItem: [],
     returnItem: [],
@@ -101,16 +99,15 @@ describe('sales — cross-tenant isolation', () => {
    */
   it('does not serve one tenant\'s cached invoice count to another', async () => {
     const { reads, prisma } = setup();
-    prisma.salesInvoice.rows.push({
-      id: randomUUID(),
-      tenant_id: TENANT_A,
-      branch_id: BRANCH_A,
-      invoice_number: 'B-101',
-      status: 'completed',
-      occurred_at: new Date(),
-      total: 5,
-      items: [],
-    });
+    prisma.salesInvoice.rows.push(
+      aSalesInvoice({
+        tenant_id: TENANT_A,
+        branch_id: BRANCH_A,
+        invoice_number: 'B-101',
+        total: new Prisma.Decimal(5),
+        items: [],
+      }),
+    );
 
     const forA: any = await reads.listSales(contextFor(TENANT_A), listDto);
     const forB: any = await reads.listSales(contextFor(TENANT_B), listDto);

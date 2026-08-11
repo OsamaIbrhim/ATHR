@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { SellersRepository } from './sellers.repository';
 import { SellersService } from './sellers.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aSalesInvoice } from '../identity/testing/fixture-builders';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `sellers` module. */
 
@@ -35,24 +37,20 @@ function setup() {
       },
     ],
     salesInvoice: [
-      {
-        id: randomUUID(),
+      aSalesInvoice({
         tenant_id: TENANT_A,
         branch_id: BRANCH_A,
         seller_id: SELLER_A,
-        status: 'completed',
         occurred_at: new Date('2026-03-15T10:00:00.000Z'),
-        subtotal: 100,
-      },
-      {
-        id: randomUUID(),
+        subtotal: new Prisma.Decimal(100),
+      }),
+      aSalesInvoice({
         tenant_id: TENANT_B,
         branch_id: BRANCH_B,
         seller_id: SELLER_B,
-        status: 'completed',
         occurred_at: new Date('2026-03-15T10:00:00.000Z'),
-        subtotal: 9999,
-      },
+        subtotal: new Prisma.Decimal(9999),
+      }),
     ],
     return: [],
     // Legacy singleton: id=1 belongs to whichever tenant existed first.

@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { SyncService } from './sync.service';
 import { PricingService } from '../pricing/pricing.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aProduct, aProductVariant, anInventoryStock } from '../identity/testing/fixture-builders';
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `sync` module.
@@ -22,38 +24,36 @@ const PRICE_BOOK_A = randomUUID();
 const PRICE_BOOK_B = randomUUID();
 
 function setup() {
+  const productA = aProduct({ id: PRODUCT_A, tenant_id: TENANT_A, name_en: 'A widget' });
+  const productB = aProduct({ id: PRODUCT_B, tenant_id: TENANT_B, name_en: 'B widget' });
   const prisma = fakePrisma({
     syncChange: [
       { sequence: 1n, tenant_id: TENANT_A, kind: 'product', branch_id: null, entity_key: null },
       { sequence: 2n, tenant_id: TENANT_B, kind: 'product', branch_id: null, entity_key: null },
     ],
-    product: [
-      { id: PRODUCT_A, tenant_id: TENANT_A, name_en: 'A widget', name_ar: null, is_active: true },
-      { id: PRODUCT_B, tenant_id: TENANT_B, name_en: 'B widget', name_ar: null, is_active: true },
-    ],
+    product: [productA, productB],
     productVariant: [
-      {
+      aProductVariant({
         id: VARIANT_A,
         tenant_id: TENANT_A,
         product_id: PRODUCT_A,
         sku: 'A-1',
-        is_active: true,
-        cost_price: 10,
-        product: { id: PRODUCT_A, tenant_id: TENANT_A, name_en: 'A widget', name_ar: null, is_active: true },
-      },
-      {
+        cost_price: new Prisma.Decimal(10),
+        // Pre-hydrated relation: the snapshot projects the parent product.
+        product: { ...productA },
+      }),
+      aProductVariant({
         id: VARIANT_B,
         tenant_id: TENANT_B,
         product_id: PRODUCT_B,
         sku: 'B-1',
-        is_active: true,
-        cost_price: 10,
-        product: { id: PRODUCT_B, tenant_id: TENANT_B, name_en: 'B widget', name_ar: null, is_active: true },
-      },
+        cost_price: new Prisma.Decimal(10),
+        product: { ...productB },
+      }),
     ],
     inventoryStock: [
-      { tenant_id: TENANT_A, branch_id: BRANCH_A, variant_id: VARIANT_A, qty_on_hand: 3 },
-      { tenant_id: TENANT_B, branch_id: BRANCH_B, variant_id: VARIANT_B, qty_on_hand: 7 },
+      anInventoryStock({ tenant_id: TENANT_A, branch_id: BRANCH_A, variant_id: VARIANT_A, qty_on_hand: 3 }),
+      anInventoryStock({ tenant_id: TENANT_B, branch_id: BRANCH_B, variant_id: VARIANT_B, qty_on_hand: 7 }),
     ],
     priceBook: [
       { id: PRICE_BOOK_A, tenant_id: TENANT_A, status: 'active', is_default: true },

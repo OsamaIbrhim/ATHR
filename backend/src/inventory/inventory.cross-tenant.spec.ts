@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { InventoryRepository } from './inventory.repository';
 import { InventoryService } from './inventory.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { anInventoryStock } from '../identity/testing/fixture-builders';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `inventory` module. */
 
@@ -12,8 +13,8 @@ const BRANCH_B = randomUUID();
 function setup() {
   const prisma = fakePrisma({
     inventoryStock: [
-      { tenant_id: TENANT_A, branch_id: BRANCH_A, variant_id: VARIANT, qty_on_hand: 5, qty_reserved: 0 },
-      { tenant_id: TENANT_B, branch_id: BRANCH_B, variant_id: VARIANT, qty_on_hand: 9, qty_reserved: 0 },
+      anInventoryStock({ tenant_id: TENANT_A, branch_id: BRANCH_A, variant_id: VARIANT, qty_on_hand: 5 }),
+      anInventoryStock({ tenant_id: TENANT_B, branch_id: BRANCH_B, variant_id: VARIANT, qty_on_hand: 9 }),
     ],
     inventoryMovement: [
       {

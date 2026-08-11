@@ -1,8 +1,10 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { ProductsRepository } from './products.repository';
 import { ProductsService } from './products.service';
 import { BrandsRepository } from '../brands/brands.repository';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aBrand, aProduct, aProductVariant } from '../identity/testing/fixture-builders';
 
 /** WP-007 Phase A §A.3.6 / WP-008 Phase A — cross-tenant isolation for the `products` module. */
 
@@ -16,30 +18,24 @@ const BRAND_B = randomUUID();
 function setup() {
   const prisma = fakePrisma({
     product: [
-      { id: PRODUCT_A, tenant_id: TENANT_A, name_en: 'Widget', is_active: true },
-      { id: PRODUCT_B, tenant_id: TENANT_B, name_en: 'Widget', is_active: true },
+      aProduct({ id: PRODUCT_A, tenant_id: TENANT_A, name_en: 'Widget' }),
+      aProduct({ id: PRODUCT_B, tenant_id: TENANT_B, name_en: 'Widget' }),
     ],
     productVariant: [
-      {
+      aProductVariant({
         id: VARIANT_A,
         tenant_id: TENANT_A,
         product_id: PRODUCT_A,
         sku: 'SKU-1',
-        is_active: true,
-        cost_price: 10,
-        item_type: 'stocked',
-        created_at: new Date(),
-      },
-      {
+        cost_price: new Prisma.Decimal(10),
+      }),
+      aProductVariant({
         id: VARIANT_B,
         tenant_id: TENANT_B,
         product_id: PRODUCT_B,
         sku: 'SKU-1',
-        is_active: true,
-        cost_price: 99,
-        item_type: 'stocked',
-        created_at: new Date(),
-      },
+        cost_price: new Prisma.Decimal(99),
+      }),
     ],
     inventoryStock: [],
     inventoryMovement: [],
@@ -49,8 +45,8 @@ function setup() {
     returnItem: [],
     supplierReturnItem: [],
     brand: [
-      { id: BRAND_A, tenant_id: TENANT_A, name: 'Nike', is_active: true },
-      { id: BRAND_B, tenant_id: TENANT_B, name: 'Puma', is_active: true },
+      aBrand({ id: BRAND_A, tenant_id: TENANT_A, name: 'Nike' }),
+      aBrand({ id: BRAND_B, tenant_id: TENANT_B, name: 'Puma' }),
     ],
   }, {
     // Lets the nested `product: { tenant_id }` predicate actually be evaluated.
@@ -90,15 +86,14 @@ describe('products — cross-tenant isolation', () => {
    */
   it('does not serve one tenant\'s cached result count to another', async () => {
     const { service, prisma } = setup();
-    prisma.productVariant.rows.push({
-      id: randomUUID(),
-      tenant_id: TENANT_A,
-      product_id: PRODUCT_A,
-      sku: 'SKU-2',
-      is_active: true,
-      cost_price: 10,
-      created_at: new Date(),
-    });
+    prisma.productVariant.rows.push(
+      aProductVariant({
+        tenant_id: TENANT_A,
+        product_id: PRODUCT_A,
+        sku: 'SKU-2',
+        cost_price: new Prisma.Decimal(10),
+      }),
+    );
 
     const forA = await service.list(contextFor(TENANT_A), '', 1, 20);
     const forB = await service.list(contextFor(TENANT_B), '', 1, 20);

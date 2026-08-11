@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { PricingService } from './pricing.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aProductVariant } from '../identity/testing/fixture-builders';
 
 /** WP-008 Phase B — cross-tenant isolation for the `pricing` evaluation engine. */
 
@@ -13,20 +15,20 @@ function setup() {
   const prisma = fakePrisma(
     {
       productVariant: [
-        {
+        aProductVariant({
           id: VARIANT_A,
           tenant_id: TENANT_A,
-          product_id: randomUUID(),
-          cost_price: 100,
+          cost_price: new Prisma.Decimal(100),
+          // Pre-hydrated relation: `quote()` reads `variant.product.brand_id`
+          // and `.category_id` to walk the scope chain.
           product: { category_id: null, brand_id: null },
-        },
-        {
+        }),
+        aProductVariant({
           id: VARIANT_B,
           tenant_id: TENANT_B,
-          product_id: randomUUID(),
-          cost_price: 100,
+          cost_price: new Prisma.Decimal(100),
           product: { category_id: null, brand_id: null },
-        },
+        }),
       ],
       priceBook: [
         { id: PRICE_BOOK_A, tenant_id: TENANT_A, status: 'active', is_default: true },

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { PurchasingService } from './purchasing.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aBranch, aProductVariant, aSupplier } from '../identity/testing/fixture-builders';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `purchasing` module. */
 
@@ -35,14 +36,14 @@ function setup() {
       },
     ],
     supplier: [
-      { id: SUPPLIER_A, tenant_id: TENANT_A, name: 'A supplier' },
-      { id: SUPPLIER_B, tenant_id: TENANT_B, name: 'B supplier' },
+      aSupplier({ id: SUPPLIER_A, tenant_id: TENANT_A, name: 'A supplier' }),
+      aSupplier({ id: SUPPLIER_B, tenant_id: TENANT_B, name: 'B supplier' }),
     ],
     branch: [
-      { id: BRANCH_A, tenant_id: TENANT_A, is_active: true },
-      { id: BRANCH_B, tenant_id: TENANT_B, is_active: true },
+      aBranch({ id: BRANCH_A, tenant_id: TENANT_A }),
+      aBranch({ id: BRANCH_B, tenant_id: TENANT_B }),
     ],
-    productVariant: [{ id: VARIANT_A, tenant_id: TENANT_A, is_active: true }],
+    productVariant: [aProductVariant({ id: VARIANT_A, tenant_id: TENANT_A })],
     supplierReturn: [
       { id: randomUUID(), tenant_id: TENANT_A, branch_id: BRANCH_A, occurred_at: new Date() },
       { id: randomUUID(), tenant_id: TENANT_B, branch_id: BRANCH_B, occurred_at: new Date() },
