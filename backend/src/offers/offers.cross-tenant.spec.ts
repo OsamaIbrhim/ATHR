@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
 import { OffersService } from './offers.service';
 import { PricingService } from '../pricing/pricing.service';
+import { CostVisibilityService } from '../pricing/cost-visibility.service';
+import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `offers` module. */
@@ -41,20 +43,25 @@ function setup() {
     productVariant: [],
     pricingRule: [],
   });
-  return { prisma, service: new OffersService(prisma, new PricingService(prisma)) };
+  // Cost visibility is granted here so these stay isolation tests -- the
+  // masking behaviour itself is pinned in `offers.cost-visibility.spec.ts`.
+  const costVisibility = new CostVisibilityService({
+    hasPermission: async () => true,
+  } as unknown as PermissionPolicyService);
+  return { prisma, service: new OffersService(prisma, new PricingService(prisma), costVisibility) };
 }
 
 const actorFor = (branchId: string) =>
-  ({ sub: randomUUID(), role: 'owner', branch_id: branchId, capabilities: [] }) as any;
+  ({ sub: randomUUID(), role: 'owner', membership_role: 'tenant_owner', branch_id: branchId, capabilities: [] }) as any;
 
 describe('offers — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s pending suggestions', async () => {
     const { service } = setup();
-    const forA = await service.suggestions(contextFor(TENANT_A));
-    expect(forA.map((row) => row.id)).toEqual([SUGGESTION_A]);
+    const forA = await service.suggestions(contextFor(TENANT_A), actorFor(BRANCH_A));
+    expect(forA.map((row: any) => row.id)).toEqual([SUGGESTION_A]);
 
-    const forB = await service.suggestions(contextFor(TENANT_B));
-    expect(forB.map((row) => row.id)).toEqual([SUGGESTION_B]);
+    const forB = await service.suggestions(contextFor(TENANT_B), actorFor(BRANCH_B));
+    expect(forB.map((row: any) => row.id)).toEqual([SUGGESTION_B]);
   });
 
   it('does not review another tenant\'s suggestion', async () => {

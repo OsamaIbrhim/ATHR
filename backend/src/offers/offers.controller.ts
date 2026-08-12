@@ -22,7 +22,7 @@ export class OffersController {
     @Query('branch_id') branch_id: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.suggestions(ctx, resolveBranchScope(req.user, branch_id));
+    return this.svc.suggestions(ctx, req.user, resolveBranchScope(req.user, branch_id));
   }
 
   @RequirePermission('promotion.approve')

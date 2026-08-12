@@ -1,6 +1,8 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
+import { CostVisibilityService } from '../pricing/cost-visibility.service';
+import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { assertBranchAccess } from '../auth/branch-access';
 import { decimal, moneyNumber } from '../common/money';
@@ -9,9 +11,15 @@ import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class OffersService {
-  constructor(private prisma: PrismaService, private pricing: PricingService) {}
+  private readonly logger = new Logger(OffersService.name);
 
-  async suggestions(context: TenantContext, branch_id?: string) {
+  constructor(
+    private prisma: PrismaService,
+    private pricing: PricingService,
+    private costVisibility: CostVisibilityService,
+  ) {}
+
+  async suggestions(context: TenantContext, actor: AuthenticatedUser, branch_id?: string) {
     const cutoff = new Date(Date.now() - 90 * 86400000);
     const slow = await this.prisma.inventoryStock.findMany({
       where: {
@@ -33,7 +41,20 @@ export class OffersService {
     for (const stock of slow) {
       const key = `${stock.branch_id}:${stock.variant_id}`;
       if (pendingByStock.has(key)) continue;
-      const quote = await this.pricing.calculate(context, stock.variant_id);
+      // WP-008 Phase B: BR-PSL-101 -- a variant with no resolvable Price Book
+      // entry throws instead of silently falling back to a price. That is
+      // correct for a sale, but one unpriced slow-mover must not abort the
+      // whole suggestions batch -- it just isn't eligible for a suggestion.
+      let quote: Awaited<ReturnType<PricingService['calculate']>>;
+      try {
+        quote = await this.pricing.calculate(context, stock.variant_id);
+      } catch (error) {
+        if (error instanceof AthrDomainError && error.code === 'PRICING_NO_PRICE_AVAILABLE') {
+          this.logger.warn(`Skipping offer suggestion for unpriced variant ${stock.variant_id}`);
+          continue;
+        }
+        throw error;
+      }
       const currentPrice = quote.selling_price;
       const suggestedPrice = moneyNumber(
         Prisma.Decimal.max(
@@ -70,10 +91,16 @@ export class OffersService {
     }
 
     const qtyByStock = new Map(slow.map((stock) => [`${stock.branch_id}:${stock.variant_id}`, stock.qty_on_hand]));
-    return [...pendingByStock.values()].map((item) => ({
+    const rows = [...pendingByStock.values()].map((item) => ({
       ...item,
       qty: qtyByStock.get(`${item.branch_id}:${item.variant_id}`) || 0,
     }));
+    // BR-CST-101: the persisted row keeps the true floor and the true suggested
+    // price for audit; only the HTTP projection drops them. `suggested_price`
+    // is max(floor, current x 0.90), so on the clamped branch it equals the
+    // floor exactly -- the gate drops it there too, and leaves it alone on the
+    // x 0.90 branch where it discloses nothing. See `maskOfferSuggestion`.
+    return this.costVisibility.maskOfferSuggestions(actor, rows);
   }
 
   async review(
@@ -82,7 +109,7 @@ export class OffersService {
     status: 'approved' | 'rejected',
     actor: AuthenticatedUser,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const reviewed = await this.prisma.$transaction(async (tx) => {
       const suggestion = await tx.offerSuggestion.findFirst({
         where: { id, tenant_id: context.tenantId },
       });
@@ -108,5 +135,9 @@ export class OffersService {
       });
       return tx.offerSuggestion.findFirst({ where: { id, tenant_id: context.tenantId } });
     });
+    // Same row, same fields, same gate as `suggestions()` -- masked outside the
+    // transaction so the permission lookup never widens it. The audit row above
+    // is written from the pre-mask `suggestion`, so it keeps the true value.
+    return reviewed ? this.costVisibility.maskOfferSuggestion(actor, reviewed) : reviewed;
   }
 }

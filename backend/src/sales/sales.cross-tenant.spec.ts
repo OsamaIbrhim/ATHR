@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
 import { SalesService } from './sales.service';
 import { SalesReadService } from './sales-read.service';
+import { CostVisibilityService } from '../pricing/cost-visibility.service';
+import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 
 /**
@@ -64,9 +66,16 @@ function setup() {
   prisma.$transaction = async (fn: any) => fn(prisma);
   prisma.$queryRaw = async () => [];
   const pricing = { calculateMany: async () => new Map(), quoteMany: () => new Map() } as any;
+  // These cases assert tenant isolation, not cost visibility. The gate is wired
+  // with the fail-closed answer so the isolation checks run against the same
+  // projection an unprivileged actor would get; `sales.cost-visibility.spec.ts`
+  // is what pins the gate itself.
+  const costVisibility = new CostVisibilityService({
+    hasPermission: async () => false,
+  } as unknown as PermissionPolicyService);
   return {
     prisma,
-    service: new SalesService(prisma, pricing),
+    service: new SalesService(prisma, pricing, costVisibility),
     reads: new SalesReadService(prisma),
   };
 }
