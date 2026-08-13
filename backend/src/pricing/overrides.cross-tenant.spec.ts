@@ -1,10 +1,12 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { OverridesRepository } from './overrides.repository';
 import { OverridesService } from './overrides.service';
 import { PricingService } from './pricing.service';
 import { CostVisibilityService } from './cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aProductVariant } from '../identity/testing/fixture-builders';
 
 /** WP-008 Phase B — cross-tenant isolation for `PriceOverride`/`Discount`/`PriceOverridePolicy`. */
 
@@ -15,8 +17,9 @@ function setup() {
   const prisma = fakePrisma(
     {
       productVariant: [
-        { id: VARIANT_A, tenant_id: TENANT_A, product_id: randomUUID(), cost_price: 50, product: { category_id: null, brand_id: null } },
-        { id: VARIANT_B, tenant_id: TENANT_B, product_id: randomUUID(), cost_price: 50, product: { category_id: null, brand_id: null } },
+        // Pre-hydrated relation: `quote()` walks `variant.product.brand_id`/`.category_id`.
+        aProductVariant({ id: VARIANT_A, tenant_id: TENANT_A, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null } }),
+        aProductVariant({ id: VARIANT_B, tenant_id: TENANT_B, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null } }),
       ],
       priceBook: [
         { id: 'book-a', tenant_id: TENANT_A, status: 'active', is_default: true },

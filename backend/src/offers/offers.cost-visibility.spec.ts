@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { OffersService } from './offers.service';
 import { PricingService } from '../pricing/pricing.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aProductVariant, anInventoryStock } from '../identity/testing/fixture-builders';
 
 /**
  * BR-CST-101 / Permission Matrix §17 §51 — the `offers` counterpart of the B3
@@ -57,15 +59,14 @@ function setup(
       inventoryStock: options.existingSuggestion
         ? []
         : [
-            {
-              id: randomUUID(),
+            anInventoryStock({
               tenant_id: TENANT_A,
               branch_id: BRANCH_ID,
               variant_id: VARIANT_ID,
               qty_on_hand: 7,
               // Comfortably past the 90-day slow-mover cutoff.
               last_sold_at: new Date(Date.now() - 200 * 86400000),
-            },
+            }),
           ],
       offerSuggestion: options.existingSuggestion
         ? [
@@ -83,13 +84,13 @@ function setup(
           ]
         : [],
       productVariant: [
-        {
+        aProductVariant({
           id: VARIANT_ID,
           tenant_id: TENANT_A,
-          product_id: randomUUID(),
-          cost_price: cost,
+          cost_price: new Prisma.Decimal(cost),
+          // Pre-hydrated relation: `quote()` walks `variant.product.brand_id`/`.category_id`.
           product: { category_id: null, brand_id: null },
-        },
+        }),
       ],
       priceBook: [{ id: 'book-1', tenant_id: TENANT_A, status: 'active', is_default: true }],
       priceBookEntry: [
