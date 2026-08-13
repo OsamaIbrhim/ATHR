@@ -1,10 +1,12 @@
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { OverridesRepository } from './overrides.repository';
 import { OverridesService } from './overrides.service';
 import { PricingService } from './pricing.service';
 import { CostVisibilityService } from './cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aProductVariant } from '../identity/testing/fixture-builders';
 
 /** WP-008 Phase B (BR-OVP-1xx, BR-DSC-2xx): override vs. discount separation, floor approval. */
 
@@ -29,7 +31,8 @@ function setup(options: {
 } = {}) {
   const prisma = fakePrisma({
     productVariant: [
-      { id: VARIANT_ID, tenant_id: TENANT_A, product_id: randomUUID(), cost_price: 50, product: { category_id: null, brand_id: null } },
+      // Pre-hydrated relation: `quote()` walks `variant.product.brand_id`/`.category_id`.
+      aProductVariant({ id: VARIANT_ID, tenant_id: TENANT_A, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null } }),
     ],
     priceBook: [{ id: 'book-1', tenant_id: TENANT_A, status: 'active', is_default: true }],
     priceBookEntry: [

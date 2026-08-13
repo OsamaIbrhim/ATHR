@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { BrandsRepository } from './brands.repository';
 import { BrandsService } from './brands.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aBrand } from '../identity/testing/fixture-builders';
 
 /** WP-008 Phase A — cross-tenant isolation for the `brands` module. */
 
@@ -11,8 +12,8 @@ const BRAND_B = randomUUID();
 function setup() {
   const prisma = fakePrisma({
     brand: [
-      { id: BRAND_A, tenant_id: TENANT_A, name: 'Nike', is_active: true },
-      { id: BRAND_B, tenant_id: TENANT_B, name: 'Puma', is_active: true },
+      aBrand({ id: BRAND_A, tenant_id: TENANT_A, name: 'Nike' }),
+      aBrand({ id: BRAND_B, tenant_id: TENANT_B, name: 'Puma' }),
     ],
     product: [],
   });

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { BranchesRepository } from './branches.repository';
 import { BranchesService } from './branches.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aBranch } from '../identity/testing/fixture-builders';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `branches` module. */
 
@@ -11,8 +12,8 @@ const BRANCH_B = randomUUID();
 function setup() {
   const prisma = fakePrisma({
     branch: [
-      { id: BRANCH_A, tenant_id: TENANT_A, code: 'MAIN', name_ar: 'A', is_active: true },
-      { id: BRANCH_B, tenant_id: TENANT_B, code: 'MAIN-B', name_ar: 'B', is_active: true },
+      aBranch({ id: BRANCH_A, tenant_id: TENANT_A, code: 'MAIN', name_ar: 'A' }),
+      aBranch({ id: BRANCH_B, tenant_id: TENANT_B, code: 'MAIN-B', name_ar: 'B' }),
     ],
   });
   const repository = new BranchesRepository(prisma);

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { SuppliersRepository } from './suppliers.repository';
 import { SuppliersService } from './suppliers.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aSupplier } from '../identity/testing/fixture-builders';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `suppliers` module. */
 
@@ -11,22 +12,22 @@ const SUPPLIER_B = randomUUID();
 function setup() {
   const prisma = fakePrisma({
     supplier: [
-      {
+      aSupplier({
         id: SUPPLIER_A,
         tenant_id: TENANT_A,
         name: 'Shared Name',
         company_name: 'A Trading',
         phone: '0100',
         alias_names: ['alias-a'],
-      },
-      {
+      }),
+      aSupplier({
         id: SUPPLIER_B,
         tenant_id: TENANT_B,
         name: 'Shared Name',
         company_name: 'B Trading',
         phone: '0200',
         alias_names: ['alias-b'],
-      },
+      }),
     ],
     purchaseInvoice: [],
   });

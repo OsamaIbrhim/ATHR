@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { TerminalsRepository } from './terminals.repository';
 import { TerminalsService } from './terminals.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aBranch } from '../identity/testing/fixture-builders';
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `terminals` module.
@@ -24,8 +25,8 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function setup() {
   const prisma = fakePrisma({
     branch: [
-      { id: BRANCH_A, tenant_id: TENANT_A, code: 'A', name_ar: 'A', name_en: 'A', is_active: true },
-      { id: BRANCH_B, tenant_id: TENANT_B, code: 'B', name_ar: 'B', name_en: 'B', is_active: true },
+      aBranch({ id: BRANCH_A, tenant_id: TENANT_A, code: 'A', name_ar: 'A', name_en: 'A' }),
+      aBranch({ id: BRANCH_B, tenant_id: TENANT_B, code: 'B', name_ar: 'B', name_en: 'B' }),
     ],
     posTerminal: [
       {

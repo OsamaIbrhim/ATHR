@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { TransfersService } from './transfers.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { aBranch, aProductVariant } from '../identity/testing/fixture-builders';
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `transfers` module.
@@ -42,11 +43,11 @@ function setup() {
       },
     ],
     branch: [
-      { id: BRANCH_A1, tenant_id: TENANT_A, is_active: true },
-      { id: BRANCH_A2, tenant_id: TENANT_A, is_active: true },
-      { id: BRANCH_B1, tenant_id: TENANT_B, is_active: true },
+      aBranch({ id: BRANCH_A1, tenant_id: TENANT_A }),
+      aBranch({ id: BRANCH_A2, tenant_id: TENANT_A }),
+      aBranch({ id: BRANCH_B1, tenant_id: TENANT_B }),
     ],
-    productVariant: [{ id: VARIANT_A, tenant_id: TENANT_A, is_active: true }],
+    productVariant: [aProductVariant({ id: VARIANT_A, tenant_id: TENANT_A })],
     transferItem: [],
     auditLog: [],
     inventoryStock: [],
@@ -102,7 +103,7 @@ describe('transfers — cross-tenant isolation', () => {
 
   it('refuses to create a transfer for another tenant\'s variant', async () => {
     const { service, prisma } = setup();
-    prisma.productVariant.rows.push({ id: 'foreign-variant', tenant_id: TENANT_B, is_active: true });
+    prisma.productVariant.rows.push(aProductVariant({ id: 'foreign-variant', tenant_id: TENANT_B }));
 
     await expect(
       service.create(
