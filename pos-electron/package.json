@@ -30,7 +30,7 @@
     "concurrently": "^8.2.2",
     "copyfiles": "^2.4.1",
     "cross-env": "^7.0.3",
-    "electron": "39.8.10",
+    "electron": "41.10.5",
     "electron-builder": "26.15.3",
     "typescript": "^5.4.0",
     "vite": "6.4.3",
