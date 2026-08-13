@@ -80,6 +80,15 @@ export class CreateProductDto extends VariantIdentityFieldsDto {
   @IsUUID()
   brand_id?: string;
 
+  /**
+   * WP-008 Phase C (BR-TAX-201, OD-CAT-014): the product-level default tax
+   * category. Optional on the wire -- omitted, the service resolves the
+   * tenant's STANDARD category rather than leaving the product untaxed.
+   */
+  @IsOptional()
+  @IsUUID()
+  tax_category_id?: string;
+
   @IsOptional()
   @IsUUID()
   category_id?: string;

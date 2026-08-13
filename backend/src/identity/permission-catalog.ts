@@ -106,6 +106,29 @@ const PRICING_PERMISSIONS = [
   'pricing.export',
 ] as const;
 
+/**
+ * Matrix §18 Tax — WP-008 Phase C. The full key list the Matrix declares,
+ * verbatim. Which of these are actually *enforced* at a call site in this
+ * phase, and which are declared-but-unwired, is spelled out in
+ * `DENY_BY_DEFAULT_PERMISSIONS` below and in the Phase C PR description —
+ * Phase B shipped a key that was declared, granted, and enforced at zero call
+ * sites, and that leak is the reason this distinction is written down.
+ */
+const TAX_PERMISSIONS = [
+  'tax.code.view',
+  'tax.rule.create',
+  'tax.rule.update-draft',
+  'tax.rule.submit',
+  'tax.rule.approve',
+  'tax.rule.schedule',
+  'tax.rule.activate',
+  'tax.rule.supersede',
+  'tax.exemption.apply',
+  'tax.exemption.approve',
+  'tax.calculation.override',
+  'tax.export',
+] as const;
+
 /** Matrix §20 Sales, §28 Returns. */
 const SALES_PERMISSIONS = [
   'sales.sale.view',
@@ -217,6 +240,7 @@ const TENANT_STRUCTURE_PERMISSIONS = [
 export const BUSINESS_PERMISSIONS = [
   ...CATALOG_PERMISSIONS,
   ...PRICING_PERMISSIONS,
+  ...TAX_PERMISSIONS,
   ...SALES_PERMISSIONS,
   ...INVENTORY_PERMISSIONS,
   ...PURCHASING_PERMISSIONS,
@@ -337,6 +361,12 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   // Self-approval (creator === approver) is still blocked at the service
   // layer regardless of holding both keys (Matrix §17 "Separation").
   ...PRICING_PERMISSIONS,
+  // WP-008 Phase C: read-only. A store manager needs to see which rate
+  // applies to what they sell; authoring and activating tax rules is
+  // tenant-level (Matrix §18: activation is H/A2/P2) and stays with the
+  // owner. `tax.calculation.override` is deny-by-default for every role
+  // (BR-TAX-206) — see `DENY_BY_DEFAULT_PERMISSIONS`.
+  'tax.code.view',
   'promotion.view',
   'promotion.create',
   'promotion.update-draft',
@@ -379,8 +409,36 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'tenant.membership.view',
 ];
 
-/** Matrix §48 Tenant Owner: everything in this catalog. */
-const TENANT_OWNER_GRANTS: readonly BusinessPermission[] = [...BUSINESS_PERMISSIONS];
+/**
+ * Keys that exist in the catalog so they can be granted deliberately, and are
+ * granted to **no role by any default template** — not even `tenant_owner`.
+ *
+ * `tax.calculation.override` (Matrix §18: "Manual tax override C/A3 وقد تمنع
+ * بالكامل حسب jurisdiction") is the only member today. BR-TAX-206 classifies
+ * manual tax override as forbidden by default and says a correction is made by
+ * changing tax eligibility or issuing an authorised corrective document —
+ * "لا مبلغ ضريبة حر", not a free tax amount.
+ *
+ * This differs from `pricing.manual-override.above-threshold`, which is
+ * withheld from `cashier` but still reaches `tenant_owner` through the blanket
+ * grant below. A tax override must not reach anyone implicitly, so it is
+ * subtracted from that blanket grant rather than merely omitted from the
+ * narrower ones.
+ *
+ * Removing a key from this list re-grants it to every owner on the next policy
+ * snapshot version. Do not do that without a jurisdiction decision.
+ */
+export const DENY_BY_DEFAULT_PERMISSIONS: readonly BusinessPermission[] = [
+  'tax.calculation.override',
+];
+
+/**
+ * Matrix §48 Tenant Owner: everything in this catalog **except** the
+ * deny-by-default keys above.
+ */
+const TENANT_OWNER_GRANTS: readonly BusinessPermission[] = BUSINESS_PERMISSIONS.filter(
+  (permission) => !DENY_BY_DEFAULT_PERMISSIONS.includes(permission),
+);
 
 export const BUSINESS_ROLE_PERMISSIONS: Readonly<
   Record<MembershipRole, readonly BusinessPermission[]>
@@ -434,8 +492,19 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
  * holding both `pricing.price-book.submit` and `.approve` — the permission
  * catalog only ever expresses "may this role call this endpoint," not the
  * per-instance maker-checker check (Matrix §17 "Separation").
+ *
+ * v5 -> v6: WP-008 Phase C adds the Matrix §18 Tax keys. `tenant_owner` gains
+ * all of them **except** `tax.calculation.override`, which is subtracted from
+ * the blanket owner grant by `DENY_BY_DEFAULT_PERMISSIONS` (BR-TAX-206:
+ * forbidden by default, Matrix §18: "قد تمنع بالكامل حسب jurisdiction").
+ * `location_manager` gains `tax.code.view` only — a store manager needs to
+ * see which rate applies, but tax rules are tenant-level and their
+ * maker-checker lifecycle (Matrix §18: activation is H/A2/P2) sits with the
+ * owner. `warehouse_manager`, `cashier` and `seller` are unchanged: the POS
+ * receives tax through the catalog sync snapshot, not through a tax endpoint,
+ * so no till-side role needs a §18 key.
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 5;
+export const PERMISSION_POLICY_CURRENT_VERSION = 6;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(

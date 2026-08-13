@@ -1,15 +1,27 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Prisma, PriceEntryScopeType } from '@prisma/client';
+import { Prisma, PriceEntryScopeType, type TaxMode } from '@prisma/client';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { decimal, money } from '../common/money';
 import type { TenantScope } from '../identity/tenant-context.type';
+import {
+  TaxResolutionService,
+  type TaxCodeIndex,
+  type TaxResolution,
+} from '../tax/tax-resolution.service';
 
 export type PriceableVariant = {
   id: string;
   product_id: string;
   cost_price: Prisma.Decimal | number | string;
-  product: { category_id?: string | null; brand_id?: string | null };
+  /** WP-008 Phase C (OD-CAT-014): the variant-level tax override; null = inherit. */
+  tax_category_id?: string | null;
+  product: {
+    category_id?: string | null;
+    brand_id?: string | null;
+    /** WP-008 Phase C (BR-TAX-201): the product-level default tax category. */
+    tax_category_id?: string | null;
+  };
 };
 
 /** One line to price: a variant at a specific quantity (BR-PSL-104 quantity breaks). */
@@ -27,7 +39,16 @@ export type ResolvedPriceEntry = {
   min_qty: Prisma.Decimal | number | string;
   unit_price: Prisma.Decimal | number | string;
   allow_zero_price: boolean;
-  tax_percent: Prisma.Decimal | number | string;
+  /**
+   * WP-008 Phase C: NO LONGER READ. The rate now comes from the active
+   * `TaxCode` for the variant's tax category (BR-TAX-201). Retained on the
+   * type only because the column still exists and callers still select `*`;
+   * `priceFromEntry` deliberately ignores it. Two sources of truth for a
+   * charged amount is the failure mode this phase removes.
+   */
+  tax_percent?: Prisma.Decimal | number | string;
+  /** WP-008 Phase C (BR-TAX-204): does `unit_price` already contain tax? */
+  tax_mode: TaxMode;
   floor_price: Prisma.Decimal | number | string | null;
 };
 
@@ -41,12 +62,25 @@ export type PriceEntryIndex = ReadonlyMap<string, readonly ResolvedPriceEntry[]>
 
 export type PriceQuote = {
   qty: number;
+  /**
+   * The tax-EXCLUSIVE unit price. Under an `exclusive` entry this is the
+   * authored `unit_price` unchanged; under an `inclusive` entry (BR-TAX-204)
+   * it is the net extracted from the authored tax-inclusive price, so a
+   * caller that adds `tax_amount` to this always lands on the shelf price.
+   */
   unit_price: number;
   /** Kept alongside `unit_price` for callers written against the pre-Phase-B shape (offers/sales/sync). */
   net_price: number;
   tax_percent: number;
   tax_amount: number;
   selling_price: number;
+  /**
+   * WP-008 Phase C — the BR-TAX-202 snapshot for this line, resolved at quote
+   * time so the caller that writes the sales document does not re-resolve
+   * (and so cannot resolve a *different* version between quoting and
+   * committing).
+   */
+  tax: TaxResolution;
   /**
    * BR-OVP-102 floor: the entry's explicit `floor_price`, or the variant's
    * cost as a cost-based fallback. **Cost-sensitive** (BR-CST-101, Permission
@@ -100,7 +134,10 @@ const SCOPE_PRIORITY: readonly PriceEntryScopeType[] = [
  */
 @Injectable()
 export class PricingService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly tax: TaxResolutionService,
+  ) {}
 
   async calculate(
     context: TenantScope,
@@ -109,17 +146,18 @@ export class PricingService {
     qty = 1,
   ): Promise<PriceQuote> {
     const db = transaction || this.prisma;
-    const [variant, entries] = await Promise.all([
+    const [variant, entries, taxCodes] = await Promise.all([
       db.productVariant.findFirst({
         where: { id: variantId, tenant_id: context.tenantId },
         include: { product: true },
       }),
       this.loadActiveRules(context, transaction),
+      this.tax.loadActiveCodeIndex(context, transaction),
     ]);
     if (!variant) {
       throw new AthrDomainError('RESOURCE_NOT_FOUND', `Variant ${variantId} not found.`);
     }
-    const result = this.quote(variant, entries, qty);
+    const result = this.quote(variant, entries, qty, taxCodes);
     if (!result) {
       throw new AthrDomainError(
         'PRICING_NO_PRICE_AVAILABLE',
@@ -139,11 +177,15 @@ export class PricingService {
     lines: readonly PriceableLine[],
     transaction?: Prisma.TransactionClient,
   ): Promise<Map<string, PriceQuote>> {
-    const index = this.buildIndex(await this.loadActiveRules(context, transaction));
+    const [entries, taxCodes] = await Promise.all([
+      this.loadActiveRules(context, transaction),
+      this.tax.loadActiveCodeIndex(context, transaction),
+    ]);
+    const index = this.buildIndex(entries);
     const result = new Map<string, PriceQuote>();
     const unpriced: string[] = [];
     for (const line of lines) {
-      const quote = this.quote(line.variant, index, line.qty);
+      const quote = this.quote(line.variant, index, line.qty, taxCodes);
       if (!quote) {
         unpriced.push(line.variant.id);
         continue;
@@ -213,11 +255,23 @@ export class PricingService {
   quoteMany(
     variants: readonly PriceableVariant[],
     entries: readonly ResolvedPriceEntry[] | PriceEntryIndex,
+    taxCodes: TaxCodeIndex,
   ): Map<string, PriceQuote> {
     const index = PricingService.asIndex(entries) ?? this.buildIndex(entries as readonly ResolvedPriceEntry[]);
     const result = new Map<string, PriceQuote>();
     for (const variant of variants) {
-      const quote = this.quote(variant, index, 1);
+      let quote: PriceQuote | null;
+      try {
+        quote = this.quote(variant, index, 1, taxCodes);
+      } catch (error) {
+        // WP-008 Phase C: a variant whose tax category has no active TaxCode
+        // is OMITTED from the catalog, exactly as an unpriced one already is
+        // (BR-PSL-101 precedent above). It is deliberately not advertised
+        // untaxed: a till that cannot be told the correct rate must not be
+        // told a wrong one. Every other error still propagates.
+        if (error instanceof AthrDomainError && error.code === 'TAX_NO_ACTIVE_CODE') continue;
+        throw error;
+      }
       if (quote) result.set(variant.id, quote);
     }
     return result;
@@ -240,7 +294,8 @@ export class PricingService {
   quote(
     variant: PriceableVariant,
     entries: readonly ResolvedPriceEntry[] | PriceEntryIndex,
-    qty = 1,
+    qty: number,
+    taxCodes: TaxCodeIndex,
   ): PriceQuote | null {
     const index = PricingService.asIndex(entries) ?? this.buildIndex(entries as readonly ResolvedPriceEntry[]);
     const levels: ReadonlyArray<{ type: PriceEntryScopeType; id: string | null }> = [
@@ -262,26 +317,49 @@ export class PricingService {
       const winner = candidates.reduce((best, current) =>
         decimal(current.min_qty).gt(decimal(best.min_qty)) ? current : best,
       );
-      return this.priceFromEntry(variant, winner, qty);
+      return this.priceFromEntry(variant, winner, qty, taxCodes);
     }
     return null;
   }
 
-  private priceFromEntry(variant: PriceableVariant, entry: ResolvedPriceEntry, qty: number): PriceQuote {
-    const netPrice = money(entry.unit_price);
-    const taxPercent = decimal(entry.tax_percent);
-    const taxAmount = money(netPrice.mul(taxPercent).div(100));
-    const sellingPrice = money(netPrice.plus(taxAmount));
+  /**
+   * WP-008 Phase C: the tax half of this method no longer reads
+   * `entry.tax_percent`. The rate comes from the active `TaxCode` for the
+   * variant's tax category (BR-TAX-201), and `entry.tax_mode` says whether the
+   * authored `unit_price` already contains it (BR-TAX-204).
+   *
+   * A variant whose category has no active code throws rather than quoting a
+   * zero-rated line — the same "no silent fallback" stance Phase B took for a
+   * missing price.
+   */
+  private priceFromEntry(
+    variant: PriceableVariant,
+    entry: ResolvedPriceEntry,
+    qty: number,
+    taxCodes: TaxCodeIndex,
+  ): PriceQuote {
+    const authored = money(entry.unit_price);
+    const categoryId = this.tax.resolveCategoryId(variant);
+    const taxCode = taxCodes.get(categoryId);
+    if (!taxCode) {
+      throw new AthrDomainError(
+        'TAX_NO_ACTIVE_CODE',
+        `No active tax code for category ${categoryId} (variant ${variant.id}). A rate must be activated before this item can be priced.`,
+      );
+    }
+    const tax = this.tax.calculate(taxCode, authored, entry.tax_mode);
+
     const floorIsCostDerived = entry.floor_price == null;
     const floor = floorIsCostDerived ? money(variant.cost_price) : money(entry.floor_price!);
 
     return {
       qty,
-      unit_price: netPrice.toNumber(),
-      net_price: netPrice.toNumber(),
-      tax_percent: taxPercent.toNumber(),
-      tax_amount: taxAmount.toNumber(),
-      selling_price: sellingPrice.toNumber(),
+      unit_price: tax.net_amount.toNumber(),
+      net_price: tax.net_amount.toNumber(),
+      tax_percent: tax.rate_snapshot.toNumber(),
+      tax_amount: tax.tax_amount.toNumber(),
+      selling_price: tax.gross_amount.toNumber(),
+      tax,
       min_allowed_price: floor.toNumber(),
       floor_is_cost_derived: floorIsCostDerived,
       source: {

@@ -7,6 +7,7 @@ import type {
   PriceBookStatus,
   PriceEntryScopeType,
   Prisma,
+  TaxMode,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
@@ -197,6 +198,13 @@ export class PriceBookRepository {
       unitPrice: Prisma.Decimal.Value;
       allowZeroPrice: boolean;
       taxPercent: Prisma.Decimal.Value;
+      /**
+       * WP-008 Phase C (BR-TAX-204): required, never defaulted. Whether
+       * `unitPrice` already contains tax is a property of the price context
+       * the entry was authored in, and guessing it is a ~14% error on every
+       * sale the entry prices.
+       */
+      taxMode: TaxMode;
       floorPrice: Prisma.Decimal.Value | null;
       createdBy: string;
     },
@@ -211,6 +219,7 @@ export class PriceBookRepository {
         unit_price: data.unitPrice,
         allow_zero_price: data.allowZeroPrice,
         tax_percent: data.taxPercent,
+        tax_mode: data.taxMode,
         floor_price: data.floorPrice,
         version: 1,
         status: 'active',
@@ -248,6 +257,8 @@ export class PriceBookRepository {
       unitPrice: Prisma.Decimal.Value;
       allowZeroPrice: boolean;
       taxPercent: Prisma.Decimal.Value;
+      /** BR-TAX-204: restated on every version, never inherited silently. */
+      taxMode: TaxMode;
       floorPrice: Prisma.Decimal.Value | null;
       createdBy: string;
     },
@@ -282,6 +293,7 @@ export class PriceBookRepository {
           unit_price: data.unitPrice,
           allow_zero_price: data.allowZeroPrice,
           tax_percent: data.taxPercent,
+          tax_mode: data.taxMode,
           floor_price: data.floorPrice,
           version: previous.version + 1,
           status: 'active',

@@ -14,6 +14,7 @@ import type { TenantContext } from '../identity/tenant-context.type';
 import { PosTerminal, Prisma } from '@prisma/client';
 import { PricingService } from '../pricing/pricing.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
+import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { createHash, randomUUID } from 'crypto';
@@ -46,6 +47,7 @@ export class SalesService {
     private prisma: PrismaService,
     private pricing: PricingService,
     private costVisibility: CostVisibilityService,
+    private taxSnapshots: SalesTaxSnapshotService,
   ) {}
 
   async listSales(context: TenantContext, dto: ListSalesDto, branchId?: string) {
@@ -597,6 +599,35 @@ export class SalesService {
       const invoiceItemByVariant = new Map(
         invoice.items.map((item) => [item.variant_id, item]),
       );
+
+      // WP-008 Phase C (BR-TAX-202): stamp the resolved code/rate/base/amount/
+      // mode/version onto the document, inside the same transaction that
+      // created it. `quote.tax` was resolved once in `calculateMany` above, so
+      // the snapshot records the version that priced the sale — re-resolving
+      // here could pick up a version activated in between and stamp a rate the
+      // line was never quoted at.
+      //
+      // The base is the per-line total (unit net x qty), not the unit net: it
+      // is the amount the recorded `tax_amount` was actually computed over,
+      // and a reader reconciling a document should not have to re-multiply.
+      await this.taxSnapshots.record(
+        context,
+        tx,
+        invoice.id,
+        saleItems.map((item) => {
+          const quote = currentQuotes.get(item.variant_id)!;
+          const invoiceItem = invoiceItemByVariant.get(item.variant_id)!;
+          return {
+            salesInvoiceItemId: invoiceItem.id,
+            tax: {
+              ...quote.tax,
+              base_amount: lineMoney(quote.tax.base_amount, item.qty),
+              tax_amount: lineMoney(item.tax, item.qty),
+            },
+          };
+        }),
+      );
+
       for (const item of saleItems) {
         const invoiceItem = invoiceItemByVariant.get(item.variant_id);
         if (!invoiceItem) {

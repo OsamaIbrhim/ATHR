@@ -17,6 +17,10 @@ async function main() {
   await prisma.return.deleteMany();
   await prisma.refreshToken.deleteMany();
   await prisma.posTerminal.deleteMany();
+  // WP-008 Phase C: snapshots cascade from their invoice, but they are
+  // cleared explicitly first so the reverse-FK order below stays readable as
+  // the dependency order it documents.
+  await prisma.salesTaxSnapshot.deleteMany();
   await prisma.salesInvoiceItem.deleteMany();
   await prisma.salesInvoice.deleteMany();
   await prisma.purchaseInvoiceItem.deleteMany();
@@ -28,6 +32,11 @@ async function main() {
   await prisma.offerSuggestion.deleteMany();
   await prisma.productVariant.deleteMany();
   await prisma.product.deleteMany();
+  // After Product/ProductVariant (both hold onDelete: Restrict FKs to
+  // TaxCategory) and before Customer (TaxExemption restricts on it).
+  await prisma.taxExemption.deleteMany();
+  await prisma.taxCode.deleteMany();
+  await prisma.taxCategory.deleteMany();
   await prisma.customer.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.priceBookEntry.deleteMany();
@@ -91,6 +100,38 @@ async function main() {
   const cat_t = await prisma.category.create({ data: { tenant_id, name_ar: 'تيشيرتات', name_en: 'T-Shirts' }});
   const cat_s = await prisma.category.create({ data: { tenant_id, name_ar: 'قمصان', name_en: 'Shirts' }});
   const cat_j = await prisma.category.create({ data: { tenant_id, name_ar: 'جينز', name_en: 'Jeans' }});
+
+  // Tax (WP-008 Phase C, BR-TAX-200/201): the seeded catalog is a single
+  // standard-rate assortment, so one category and one active v1 code at the
+  // 14% the pre-Phase-C engine charged. Without an ACTIVE code the seeded
+  // variants cannot be priced at all (BR-TAX-201 blocks rather than falling
+  // back), which is the intended behaviour, not an oversight.
+  const taxCategory = await prisma.taxCategory.create({
+    data: {
+      tenant_id,
+      code: 'STANDARD',
+      name_en: 'Standard rate',
+      name_ar: 'المعدل القياسي',
+    },
+  });
+  await prisma.taxCode.create({
+    data: {
+      tenant_id,
+      tax_category_id: taxCategory.id,
+      code: 'STANDARD',
+      name_en: 'Standard rate v1',
+      name_ar: 'المعدل القياسي - الإصدار الأول',
+      jurisdiction: 'EG',
+      rate: 14,
+      // BR-TAX-204: the seeded Price Book entries below store tax-exclusive
+      // net prices, so the code's own behaviour matches its price context.
+      tax_mode: 'exclusive',
+      rounding_policy: 'line',
+      version: 1,
+      status: 'active',
+      activated_at: new Date(),
+    },
+  });
 
   // Products + Variants – 12 products, 28 variants
   const productsData = [
@@ -159,6 +200,7 @@ async function main() {
         name_en: p.name_en,
         brand: p.brand,
         category_id: p.category_id,
+        tax_category_id: taxCategory.id,
         has_variants: true,
         variants: {
           create: p.variants.map(v => ({
@@ -226,6 +268,7 @@ async function main() {
         unit_price: unitPrice,
         allow_zero_price: false,
         tax_percent: 14,
+        tax_mode: 'exclusive',
         version: 1,
         status: 'active',
       },
