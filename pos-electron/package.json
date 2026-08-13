@@ -4,6 +4,9 @@
   "private": true,
   "description": "ATHR Operations POS – offline-first Electron workspace",
   "main": "dist-electron/main.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "dev:electron": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
@@ -30,7 +33,7 @@
     "concurrently": "^8.2.2",
     "copyfiles": "^2.4.1",
     "cross-env": "^7.0.3",
-    "electron": "39.8.10",
+    "electron": "41.10.5",
     "electron-builder": "26.15.3",
     "typescript": "^5.4.0",
     "vite": "6.4.3",
