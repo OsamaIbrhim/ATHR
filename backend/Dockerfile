@@ -35,7 +35,13 @@ RUN apt-get update \
     && useradd --system --uid 1001 --gid athr --home-dir /app athr
 
 COPY --from=build --chown=athr:athr /app/package.json /app/package-lock.json /app/
-COPY --from=build --chown=athr:athr /app/node_modules/@athr /app/node_modules/@athr
+# Copy the whole hoisted root tree, not just @athr. npm decides per-lockfile
+# whether a shared transitive dependency lands in backend/node_modules or is
+# hoisted to the root, and that decision shifts whenever an unrelated workspace
+# gains or loses a copy. Copying only @athr left the image missing whatever npm
+# had hoisted (ms and debug, reached through jsonwebtoken), which builds fine
+# and then dies at boot with MODULE_NOT_FOUND.
+COPY --from=build --chown=athr:athr /app/node_modules /app/node_modules
 COPY --from=build --chown=athr:athr /app/packages/contracts/package.json /app/packages/contracts/package.json
 COPY --from=build --chown=athr:athr /app/packages/contracts/dist /app/packages/contracts/dist
 COPY --from=build --chown=athr:athr /app/packages/domain-core/package.json /app/packages/domain-core/package.json
