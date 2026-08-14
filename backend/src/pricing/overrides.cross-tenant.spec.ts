@@ -6,7 +6,8 @@ import { PricingService } from './pricing.service';
 import { CostVisibilityService } from './cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
-import { aProductVariant } from '../identity/testing/fixture-builders';
+import { aProductVariant, aTaxCategory, aTaxCode, taxCategoryIdFor } from '../identity/testing/fixture-builders';
+import { TaxResolutionService } from '../tax/tax-resolution.service';
 
 /** WP-008 Phase B — cross-tenant isolation for `PriceOverride`/`Discount`/`PriceOverridePolicy`. */
 
@@ -16,10 +17,18 @@ const VARIANT_B = randomUUID();
 function setup() {
   const prisma = fakePrisma(
     {
+      taxCategory: [
+        aTaxCategory({ tenant_id: TENANT_A }),
+        aTaxCategory({ tenant_id: TENANT_B }),
+      ],
+      taxCode: [
+        aTaxCode({ tenant_id: TENANT_A, rate: new Prisma.Decimal(0) }),
+        aTaxCode({ tenant_id: TENANT_B, rate: new Prisma.Decimal(0) }),
+      ],
       productVariant: [
         // Pre-hydrated relation: `quote()` walks `variant.product.brand_id`/`.category_id`.
-        aProductVariant({ id: VARIANT_A, tenant_id: TENANT_A, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null } }),
-        aProductVariant({ id: VARIANT_B, tenant_id: TENANT_B, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null } }),
+        aProductVariant({ id: VARIANT_A, tenant_id: TENANT_A, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null, tax_category_id: taxCategoryIdFor(TENANT_A) } }),
+        aProductVariant({ id: VARIANT_B, tenant_id: TENANT_B, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null, tax_category_id: taxCategoryIdFor(TENANT_B) } }),
       ],
       priceBook: [
         { id: 'book-a', tenant_id: TENANT_A, status: 'active', is_default: true },
@@ -35,7 +44,7 @@ function setup() {
     },
     { priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } } },
   );
-  const pricing = new PricingService(prisma);
+  const pricing = new PricingService(prisma, new TaxResolutionService(prisma));
   const repository = new OverridesRepository(prisma);
   const permissionPolicy = { hasPermission: jest.fn().mockResolvedValue(false) } as unknown as PermissionPolicyService;
   const costVisibility = new CostVisibilityService({ hasPermission: async () => true } as unknown as PermissionPolicyService);

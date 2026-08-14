@@ -4,7 +4,9 @@ import { ProductsRepository } from './products.repository';
 import { ProductsService } from './products.service';
 import { BrandsRepository } from '../brands/brands.repository';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
-import { aBrand, aProduct, aProductVariant } from '../identity/testing/fixture-builders';
+import { aBrand, aProduct, aProductVariant, aTaxCategory, aTaxCode } from '../identity/testing/fixture-builders';
+import { TaxCodeService } from '../tax/tax-code.service';
+import { TaxCodeRepository } from '../tax/tax-code.repository';
 
 /** WP-007 Phase A §A.3.6 / WP-008 Phase A — cross-tenant isolation for the `products` module. */
 
@@ -17,6 +19,14 @@ const BRAND_B = randomUUID();
 
 function setup() {
   const prisma = fakePrisma({
+    taxCategory: [
+      aTaxCategory({ tenant_id: TENANT_A }),
+      aTaxCategory({ tenant_id: TENANT_B }),
+    ],
+    taxCode: [
+      aTaxCode({ tenant_id: TENANT_A }),
+      aTaxCode({ tenant_id: TENANT_B }),
+    ],
     product: [
       aProduct({ id: PRODUCT_A, tenant_id: TENANT_A, name_en: 'Widget' }),
       aProduct({ id: PRODUCT_B, tenant_id: TENANT_B, name_en: 'Widget' }),
@@ -54,7 +64,7 @@ function setup() {
   });
   const repository = new ProductsRepository(prisma);
   const brands = new BrandsRepository(prisma);
-  return { prisma, repository, brands, service: new ProductsService(repository, brands) };
+  return { prisma, repository, brands, service: new ProductsService(repository, brands, new TaxCodeService(new TaxCodeRepository(prisma))) };
 }
 
 describe('products — cross-tenant isolation', () => {

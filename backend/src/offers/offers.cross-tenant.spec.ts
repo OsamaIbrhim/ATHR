@@ -4,6 +4,7 @@ import { PricingService } from '../pricing/pricing.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { TaxResolutionService } from '../tax/tax-resolution.service';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `offers` module. */
 
@@ -48,7 +49,7 @@ function setup() {
   const costVisibility = new CostVisibilityService({
     hasPermission: async () => true,
   } as unknown as PermissionPolicyService);
-  return { prisma, service: new OffersService(prisma, new PricingService(prisma), costVisibility) };
+  return { prisma, service: new OffersService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), costVisibility) };
 }
 
 const actorFor = (branchId: string) =>

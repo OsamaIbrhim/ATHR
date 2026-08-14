@@ -232,26 +232,28 @@ export class TaxResolutionService {
     }
   }
 
-  /**
-   * BR-TAX-206 — manual tax override is forbidden by default.
-   *
-   * There is deliberately no free tax-amount parameter anywhere in this
-   * service. The BR is explicit that a correction is made by changing tax
-   * eligibility or issuing an authorised corrective document, "لا مبلغ ضريبة
-   * حر" — not a free tax amount. So this guard exists to *reject*, and the
-   * `tax.calculation.override` key it names is granted to no role by any
-   * default template (`DENY_BY_DEFAULT_PERMISSIONS`).
-   *
-   * See the Phase C PR description: the tension between "the Matrix declares
-   * an override key" and "the BR forbids a free tax amount" is flagged there
-   * rather than resolved by quietly building the free-amount path.
-   */
-  assertManualOverrideAllowed(permissions: readonly string[]): void {
-    if (!permissions.includes('tax.calculation.override')) {
-      throw new AthrDomainError(
-        'TAX_MANUAL_OVERRIDE_FORBIDDEN',
-        'Manual tax override is denied by default (BR-TAX-206). Correct the tax by changing the item\'s tax category or eligibility, or issue an authorised corrective document — a free tax amount is never accepted.',
-      );
-    }
-  }
 }
+
+/*
+ * BR-TAX-206 — "Tax override اليدوي ممنوع افتراضيًا".
+ *
+ * There is deliberately NO `assertManualOverrideAllowed` guard here, and no
+ * free tax-amount parameter anywhere in this service. A permission check would
+ * be the weaker construction: it implies a free-amount path exists and is
+ * merely gated. The BR says the opposite — a correction is made by changing
+ * tax eligibility or issuing an authorised corrective document,
+ * "لا مبلغ ضريبة حر", not a free tax amount.
+ *
+ * So the enforcement is structural rather than conditional:
+ *   1. No endpoint accepts a tax amount (see `tax.controller.ts`).
+ *   2. Tax is only ever derived from an active `TaxCode`.
+ *   3. `tax.calculation.override` is granted to no role by any default
+ *      template — it is subtracted from even the blanket `tenant_owner`
+ *      grant by `DENY_BY_DEFAULT_PERMISSIONS`.
+ *   4. `SalesTaxSnapshot` is append-only at the database level.
+ *
+ * The `TAX_MANUAL_OVERRIDE_FORBIDDEN` error code is registered against the day
+ * a jurisdiction decision introduces such a path. The tension between the
+ * Matrix declaring an override key and the BR forbidding a free tax amount is
+ * flagged in the Phase C PR description rather than resolved here.
+ */

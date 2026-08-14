@@ -2,6 +2,9 @@ import { ProductsService } from './products.service';
 import { ProductsRepository } from './products.repository';
 import { BrandsRepository } from '../brands/brands.repository';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+import { TaxCodeService } from '../tax/tax-code.service';
+import { TaxCodeRepository } from '../tax/tax-code.repository';
+import { aTaxCategory, aTaxCode } from '../identity/testing/fixture-builders';
 
 // WP-007 Phase A: `ProductsService` now depends on `ProductsRepository`
 // rather than `PrismaService` directly, and every method takes a
@@ -11,7 +14,7 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 const ctx = contextFor(TENANT_A);
 
 function serviceOver(prisma: any) {
-  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any));
+  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any), new TaxCodeService(new TaxCodeRepository(prisma as any)));
 }
 
 function productReadPrisma(variants: any[], total = variants.length) {
@@ -36,7 +39,16 @@ function productReadPrisma(variants: any[], total = variants.length) {
 describe('ProductsService pagination', () => {
   it('preserves an explicitly confirmed zero initial cost', async () => {
     const create = jest.fn().mockResolvedValue({ id: 'p1', variants: [] });
-    const service = serviceOver({ product: { create } });
+    // WP-008 Phase C (BR-TAX-201): a Product must resolve to a tax category,
+    // and with none supplied the service falls back to the tenant's STANDARD
+    // one — the row migration 202608130003 creates for every tenant.
+    const service = serviceOver({
+      product: { create },
+      taxCategory: {
+        findMany: jest.fn().mockResolvedValue([aTaxCategory()]),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    });
 
     await service.createProduct(ctx, {
       name_en: 'Free sample',
@@ -84,6 +96,7 @@ describe('ProductsService pagination', () => {
 
   it('suggests close product names when a typed name has no exact match', async () => {
     const prisma = {
+      taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
       ...productReadPrisma([], 0),
       $queryRaw: jest.fn().mockResolvedValue([
         { name_en: 'T-Shirt', name_ar: 'تي شيرت', sku: 'TSHIRT-1', score: 0.72 },
@@ -104,6 +117,7 @@ describe('ProductsService pagination', () => {
 
   it('does not expose moving-average cost as an editable variant field', async () => {
     const prisma = {
+      taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
       productVariant: {
         findFirst: jest.fn().mockResolvedValue({ id: 'v1' }),
         update: jest.fn().mockResolvedValue({ id: 'v1' }),
@@ -125,6 +139,7 @@ describe('ProductsService pagination', () => {
 
   it('soft-deactivates a variant so delayed offline sales can still reference it', async () => {
     const prisma = {
+      taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
       productVariant: {
         findFirst: jest.fn().mockResolvedValue({ id: 'v1', is_active: true }),
         update: jest.fn().mockResolvedValue({ id: 'v1', is_active: false }),

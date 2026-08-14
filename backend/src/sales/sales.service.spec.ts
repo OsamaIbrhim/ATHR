@@ -8,6 +8,10 @@ import { SalesService } from './sales.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
+import { Prisma } from '@prisma/client';
+
+const TAX_CODE_ID = '00000000-0000-0000-0000-0000000c0de1';
 
 /**
  * These cases cover sale/return mechanics, not cost visibility. The gate is
@@ -213,6 +217,7 @@ function setupSale(options: {
       update: jest.fn(),
     },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
+    salesTaxSnapshot: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
   };
   const prisma = {
     $transaction: jest.fn((callback) => callback(tx)),
@@ -225,6 +230,27 @@ function setupSale(options: {
           {
             net_price: options.currentPrice ?? 150,
             tax_amount: options.currentTax ?? 21,
+            // WP-008 Phase C (BR-TAX-202): `calculateMany` now resolves the
+            // snapshot alongside the price, and `SalesService` writes it
+            // inside the sale transaction. Note the snapshot's amounts are the
+            // SERVER-resolved ones, so they stay consistent with
+            // `rate_snapshot` even in the tests below that deliberately make
+            // the till submit a different price (PRICE_VARIANCE).
+            tax: {
+              tax_code_id: TAX_CODE_ID,
+              code_snapshot: 'STANDARD',
+              rate_snapshot: new Prisma.Decimal('14.0000'),
+              base_amount: new Prisma.Decimal(options.currentPrice ?? 150),
+              tax_amount: new Prisma.Decimal(options.currentTax ?? 21),
+              mode_snapshot: 'exclusive',
+              version_snapshot: 1,
+              rounding_policy_snapshot: 'line',
+              exemption_id: null,
+              net_amount: new Prisma.Decimal(options.currentPrice ?? 150),
+              gross_amount: new Prisma.Decimal(
+                (options.currentPrice ?? 150) + (options.currentTax ?? 21),
+              ),
+            },
           },
         ],
       ]),
@@ -235,6 +261,7 @@ function setupSale(options: {
       prisma as any,
       pricing as any,
       costVisibilityAnswering(options.hasCostMargin ?? false),
+      new SalesTaxSnapshotService(),
     ),
     prisma,
     pricing,
@@ -298,7 +325,7 @@ function setupReturn(alreadyReturned = 0, hasCostMargin = false) {
   };
   const prisma = { $transaction: jest.fn((callback) => callback(tx)) };
   return {
-    service: new SalesService(prisma as any, {} as any, costVisibilityAnswering(hasCostMargin)),
+    service: new SalesService(prisma as any, {} as any, costVisibilityAnswering(hasCostMargin), new SalesTaxSnapshotService()),
     tx,
   };
 }

@@ -608,8 +608,21 @@ export class SalesService {
       // line was never quoted at.
       //
       // The base is the per-line total (unit net x qty), not the unit net: it
-      // is the amount the recorded `tax_amount` was actually computed over,
-      // and a reader reconciling a document should not have to re-multiply.
+      // is the amount the recorded `tax_amount` was computed over, and a
+      // reader reconciling a document should not have to re-multiply.
+      //
+      // **Both `base_amount` and `tax_amount` come from the SERVER-resolved
+      // quote, never from the till's submitted `unit_tax`.** The two can
+      // legitimately differ — a till running a stale catalog submits the old
+      // rate, which is recorded on `SalesInvoiceItem.unit_tax` (what was
+      // actually charged) and flagged with `PRICE_VARIANCE` above. Mixing the
+      // two sources here would produce a snapshot where
+      // `base_amount x rate_snapshot != tax_amount`, i.e. evidence that
+      // contradicts its own arithmetic — which defeats BR-CAT-105
+      // ("كل حساب مالي قابل للتفسير") in the one table that exists to be
+      // auditable. The snapshot answers "what did the tax rules say"; the
+      // invoice line answers "what did the till collect"; the warning code
+      // records that they disagreed.
       await this.taxSnapshots.record(
         context,
         tx,
@@ -622,7 +635,7 @@ export class SalesService {
             tax: {
               ...quote.tax,
               base_amount: lineMoney(quote.tax.base_amount, item.qty),
-              tax_amount: lineMoney(item.tax, item.qty),
+              tax_amount: lineMoney(quote.tax.tax_amount, item.qty),
             },
           };
         }),

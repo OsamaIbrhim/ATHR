@@ -5,7 +5,8 @@ import { PricingService } from '../pricing/pricing.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
-import { aProductVariant, anInventoryStock } from '../identity/testing/fixture-builders';
+import { aProductVariant, aTaxCategory, aTaxCode, anInventoryStock, taxCategoryIdFor } from '../identity/testing/fixture-builders';
+import { TaxResolutionService } from '../tax/tax-resolution.service';
 
 /**
  * BR-CST-101 / Permission Matrix §17 §51 — the `offers` counterpart of the B3
@@ -56,6 +57,8 @@ function setup(
   const persistedSuggested = Math.max(cost, UNIT_PRICE * 0.9);
   const prisma = fakePrisma(
     {
+      taxCategory: [aTaxCategory({ tenant_id: TENANT_A })],
+      taxCode: [aTaxCode({ tenant_id: TENANT_A, rate: new Prisma.Decimal(0) })],
       inventoryStock: options.existingSuggestion
         ? []
         : [
@@ -89,7 +92,7 @@ function setup(
           tenant_id: TENANT_A,
           cost_price: new Prisma.Decimal(cost),
           // Pre-hydrated relation: `quote()` walks `variant.product.brand_id`/`.category_id`.
-          product: { category_id: null, brand_id: null },
+          product: { category_id: null, brand_id: null, tax_category_id: taxCategoryIdFor(TENANT_A) },
         }),
       ],
       priceBook: [{ id: 'book-1', tenant_id: TENANT_A, status: 'active', is_default: true }],
@@ -118,7 +121,7 @@ function setup(
   const costVisibility = new CostVisibilityService({
     hasPermission: async () => options.hasCostView,
   } as unknown as PermissionPolicyService);
-  return { prisma, service: new OffersService(prisma, new PricingService(prisma), costVisibility) };
+  return { prisma, service: new OffersService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), costVisibility) };
 }
 
 describe('OffersService — the suggestion floor is never disclosed without cost/margin visibility', () => {

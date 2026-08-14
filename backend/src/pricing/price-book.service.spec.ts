@@ -389,7 +389,7 @@ describe('PriceBookRepository — supersede demotes the previous version before 
     } as any;
 
     const created: any = await new PriceBookRepository(prisma).supersedeEntry(ctx, 'entry-1', {
-      unitPrice: 120, allowZeroPrice: false, taxPercent: 14, floorPrice: null, createdBy: MAKER,
+      unitPrice: 120, allowZeroPrice: false, taxPercent: 14, taxMode: 'exclusive', floorPrice: null, createdBy: MAKER,
     });
 
     expect(calls).toEqual(['updateMany', 'create']);
@@ -419,7 +419,7 @@ describe('PriceBookRepository — supersede demotes the previous version before 
 
     await expect(
       new PriceBookRepository(prisma).supersedeEntry(ctx, 'entry-1', {
-        unitPrice: 120, allowZeroPrice: false, taxPercent: 14, floorPrice: null, createdBy: MAKER,
+        unitPrice: 120, allowZeroPrice: false, taxPercent: 14, taxMode: 'exclusive', floorPrice: null, createdBy: MAKER,
       }),
     ).rejects.toMatchObject({ code: 'PRICING_ENTRY_IMMUTABLE' });
   });

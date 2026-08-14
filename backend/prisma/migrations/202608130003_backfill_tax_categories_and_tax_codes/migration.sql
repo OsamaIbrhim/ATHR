@@ -72,10 +72,14 @@ BEGIN
   END LOOP;
 
   IF ambiguity_count > 0 THEN
+    -- The format argument of RAISE must be a single string literal, not an
+    -- expression -- `'a' || 'b'` here is a syntax error, and the remediation
+    -- prose goes in a HINT clause rather than being concatenated on.
     RAISE EXCEPTION
-      'WP-008 Phase C tax backfill aborted: % tenant(s) charge more than one distinct tax rate through the active default Price Book, so a single TaxCode v1 cannot be derived without guessing which products keep which rate.%'
-      || E'\n\nResolve by deciding the per-category split explicitly (create the TaxCategory/TaxCode rows and repoint the affected products) before re-running this deploy. Run "node scripts/validate-tax-code-migration.cjs" for the full per-entry breakdown.',
-      ambiguity_count, ambiguity_report;
+      'WP-008 Phase C tax backfill aborted: % tenant(s) charge more than one distinct tax rate through the active default Price Book, so a single TaxCode v1 cannot be derived without guessing which products keep which rate.%',
+      ambiguity_count, ambiguity_report
+      USING HINT =
+        'Decide the per-category split explicitly (create the TaxCategory/TaxCode rows and repoint the affected products) before re-running this deploy. Run "node scripts/validate-tax-code-migration.cjs" for the full per-entry breakdown.';
   END IF;
 END
 $$;

@@ -27,10 +27,13 @@ BEGIN
         LIMIT 20
       ) AS s;
 
+    -- RAISE's format argument must be a single string literal (an expression
+    -- there is a syntax error); the remediation goes in HINT.
     RAISE EXCEPTION
-      'WP-008 Phase C: % Product row(s) still have no tax_category_id after the 202608130003 backfill. First rows:%'
-      || E'\n\nThis means the tenant owns products but was skipped by the backfill. Assign a TaxCategory explicitly -- do not default-assign.',
-      orphan_count, E'\n  ' || orphan_sample;
+      'WP-008 Phase C: % Product row(s) still have no tax_category_id after the 202608130003 backfill. First rows:%',
+      orphan_count, E'\n  ' || orphan_sample
+      USING HINT =
+        'The tenant owns products but was skipped by the backfill. Assign a TaxCategory explicitly -- do not default-assign.';
   END IF;
 END
 $$;
