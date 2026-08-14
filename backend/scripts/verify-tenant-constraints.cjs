@@ -322,7 +322,7 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
   });
 
   return {
-    branch, secondBranch, category, product, variant, customer, supplier, posTerminal, shift, inventoryStock,
+    branch, secondBranch, category, taxCategory, product, variant, customer, supplier, posTerminal, shift, inventoryStock,
     salesInvoice, salesInvoiceItem, returnRecord, returnItem, purchaseInvoice, purchaseInvoiceItem,
     supplierReturn, supplierReturnItem, transfer, transferItem, transferTransitMovement,
     sellerCommissionPeriod, inventoryMovement, inventoryCostMovement, offerSuggestion,
@@ -384,7 +384,13 @@ function foreignKeyCases(chainA, chainB) {
     { table: 'transferTransitMovement', name: 'TransferTransitMovement.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, transfer_id: chainA.transfer.id, transfer_item_id: chainA.transferItem.id, variant_id: chainB.variant.id, movement_type: 'shipped', quantity_delta: 1, in_transit_after: 1, idempotency_key: `${chainA.label}-fk-ttm-variant-idem`, occurred_at: new Date() }) },
     { table: 'offerSuggestion', name: 'OfferSuggestion.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, variant_id: chainB.variant.id, branch_id: chainA.branch.id, days_unsold: 1, current_price: 1, suggested_price: 1, min_allowed_price: 1 }) },
     { table: 'offerSuggestion', name: 'OfferSuggestion.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, variant_id: chainA.variant.id, branch_id: chainB.branch.id, days_unsold: 1, current_price: 1, suggested_price: 1, min_allowed_price: 1 }) },
-    { table: 'product', name: 'Product.category_id -> Category', data: () => ({ tenant_id: chainA.tenant, name_en: `${chainA.label}-fk-product`, category_id: chainB.category.id }) },
+    { table: 'product', name: 'Product.category_id -> Category', data: () => ({ tenant_id: chainA.tenant, name_en: `${chainA.label}-fk-product`, category_id: chainB.category.id, tax_category_id: chainA.taxCategory.id }) },
+    // WP-008 Phase C: the two composite FKs this phase adds. Tenant B's
+    // TaxCategory attached to tenant A's Product/Variant must be rejected by
+    // the database, not merely by the service layer.
+    { table: 'product', name: 'Product.tax_category_id -> TaxCategory', data: () => ({ tenant_id: chainA.tenant, name_en: `${chainA.label}-fk-product-tax`, tax_category_id: chainB.taxCategory.id }) },
+    { table: 'productVariant', name: 'ProductVariant.tax_category_id -> TaxCategory', data: () => ({ tenant_id: chainA.tenant, product_id: chainA.product.id, sku: `${chainA.label}-fk-variant-tax`, cost_price: 1, tax_category_id: chainB.taxCategory.id }) },
+    { table: 'taxCode', name: 'TaxCode.tax_category_id -> TaxCategory', data: () => ({ tenant_id: chainA.tenant, tax_category_id: chainB.taxCategory.id, code: `${chainA.label}-fk-code`, name_en: 'x', rate: 14, tax_mode: 'exclusive', updated_at: new Date() }) },
     { table: 'productVariant', name: 'ProductVariant.product_id -> Product', data: () => ({ tenant_id: chainA.tenant, product_id: chainB.product.id, sku: `${chainA.label}-fk-variant`, cost_price: 1 }) },
     { table: 'sellerCommissionPeriodRow', name: 'SellerCommissionPeriodRow.period_id -> SellerCommissionPeriod', data: () => ({ tenant_id: chainA.tenant, period_id: chainB.sellerCommissionPeriod.id, seller_id: chainA.secondSharedUserId, seller_name: 'x', invoice_count: 0, gross_sales_before_tax: 0, return_count: 0, returns_before_tax: 0, net_sales_before_tax: 0, commission_rate: 0, percentage_commission: 0, target_achieved: false, target_bonus: 0, estimated_total: 0 }) },
   ];
@@ -394,7 +400,10 @@ function foreignKeyCases(chainA, chainB) {
 function uniquenessCases(chainA, chainB) {
   return [
     { table: 'branch', name: 'Branch (tenant_id, code)', valueA: () => ({ code: `${chainA.label}-dup-code` }), rowA: () => ({ tenant_id: chainA.tenant, name_ar: 'x' }), rowB: () => ({ tenant_id: chainB.tenant, name_ar: 'x' }) },
-    { table: 'product', name: 'Product (tenant_id, sku_base)', valueA: () => ({ sku_base: `${chainA.label}-dup-skubase` }), rowA: () => ({ tenant_id: chainA.tenant, name_en: 'x' }), rowB: () => ({ tenant_id: chainB.tenant, name_en: 'x' }) },
+    { table: 'product', name: 'Product (tenant_id, sku_base)', valueA: () => ({ sku_base: `${chainA.label}-dup-skubase` }), rowA: () => ({ tenant_id: chainA.tenant, name_en: 'x', tax_category_id: chainA.taxCategory.id }), rowB: () => ({ tenant_id: chainB.tenant, name_en: 'x', tax_category_id: chainB.taxCategory.id }) },
+    // WP-008 Phase C: TaxCategory.code is unique per tenant, so the same code
+    // must coexist across two tenants and collide within one.
+    { table: 'taxCategory', name: 'TaxCategory (tenant_id, code)', valueA: () => ({ code: `${chainA.label}-dup-taxcat` }), rowA: () => ({ tenant_id: chainA.tenant, name_en: 'x', updated_at: new Date() }), rowB: () => ({ tenant_id: chainB.tenant, name_en: 'x', updated_at: new Date() }) },
     { table: 'productVariant', name: 'ProductVariant (tenant_id, sku)', valueA: () => ({ sku: `${chainA.label}-dup-sku` }), rowA: () => ({ tenant_id: chainA.tenant, product_id: chainA.product.id, cost_price: 1 }), rowB: () => ({ tenant_id: chainB.tenant, product_id: chainB.product.id, cost_price: 1 }) },
     { table: 'productVariant', name: 'ProductVariant (tenant_id, barcode_internal)', valueA: () => ({ barcode_internal: `${chainA.label}-dup-barcode` }), rowA: () => ({ tenant_id: chainA.tenant, product_id: chainA.product.id, cost_price: 1, sku: `${chainA.label}-barcode-dup-a-${crypto.randomUUID()}` }), rowB: () => ({ tenant_id: chainB.tenant, product_id: chainB.product.id, cost_price: 1, sku: `${chainA.label}-barcode-dup-b-${crypto.randomUUID()}` }) },
     { table: 'customer', name: 'Customer (tenant_id, phone)', valueA: () => ({ phone: `${chainA.label}-dup-phone` }), rowA: () => ({ tenant_id: chainA.tenant }), rowB: () => ({ tenant_id: chainB.tenant }) },
