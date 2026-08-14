@@ -65,7 +65,30 @@ jobs:
         shell: bash
         run: find release -type f -printf '%p %s bytes\n'
 
+      # The upload step below is skipped on pull_request runs, so it can no
+      # longer be what proves electron-builder actually emitted an installer.
+      # This assertion runs on every event and keeps a silently empty `dist`
+      # (renamed product, changed directories.output, partial pack) red.
+      - name: Verify the installer was produced
+        shell: bash
+        run: |
+          shopt -s nullglob
+          installers=(release/*.exe)
+          if (( ${#installers[@]} == 0 )); then
+            echo "::error::npm run dist finished but produced no .exe in pos-electron/release"
+            exit 1
+          fi
+          ls -l "${installers[@]}"
+
+      # A ~102 MB installer on every pull_request run exhausted the
+      # account-level Actions artifact storage quota, which then failed the
+      # upload and turned green builds red. The binary is only needed when
+      # someone is about to install it on the POS laptop, so keep the copy for
+      # the two events that mean "I want to run this": a manual
+      # workflow_dispatch on any branch, and a push to the pos-rc branch.
+      # Pull requests still build and still fail on a broken installer.
       - name: Upload Windows installer
+        if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/pos-rc' }}
         uses: actions/upload-artifact@v4
         with:
           name: athr-pos-windows-${{ github.sha }}
@@ -74,8 +97,25 @@ jobs:
             pos-electron/release/*.blockmap
             pos-electron/release/latest*.yml
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
           compression-level: 0
+
+      - name: Explain the skipped upload
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          {
+            echo "## Installer built, artifact not kept"
+            echo
+            echo "The installer built successfully. Pull request runs do not"
+            echo "upload it, because a ~102 MB artifact per run exhausts the"
+            echo "Actions storage quota."
+            echo
+            echo "To get an installable build from this branch:"
+            echo "**Actions -> POS Windows Installer -> Run workflow ->"
+            echo "Branch: \`${{ github.head_ref }}\` -> Run workflow**."
+            echo "The artifact appears on that run and is kept for 7 days."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload effective builder config on failure
         if: ${{ failure() }}
