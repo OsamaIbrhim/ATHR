@@ -56,10 +56,18 @@ try {
             alias_names: [],
           },
         }))
+      // WP-008 Phase C (BR-TAX-201): Product.tax_category_id is NOT NULL.
+      // Reuse the tenant's seeded STANDARD category rather than creating a
+      // second one, so this fixture taxes exactly like real seeded stock.
+      const taxCategory = await tx.taxCategory.findFirstOrThrow({
+        where: { tenant_id: tenantId },
+        orderBy: { code: 'asc' },
+      })
       const product = await tx.product.create({
         data: {
           tenant_id: tenantId,
           name_en: `Cost smoke ${randomUUID().slice(0, 8)}`,
+          tax_category_id: taxCategory.id,
           has_variants: false,
         },
       })

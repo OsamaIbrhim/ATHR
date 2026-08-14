@@ -75,8 +75,23 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
   const category = await prisma.category.create({
     data: { tenant_id: tenantId, name_ar: 'تصنيف اختبار' },
   });
+  // WP-008 Phase C (BR-TAX-201): `Product.tax_category_id` is NOT NULL, so
+  // every fixture chain needs its own tenant-owned TaxCategory.
+  const taxCategory = await prisma.taxCategory.create({
+    data: {
+      tenant_id: tenantId,
+      code: 'STANDARD',
+      name_en: `${label} standard rate`,
+      updated_at: new Date(),
+    },
+  });
   const product = await prisma.product.create({
-    data: { tenant_id: tenantId, name_en: `${label} product`, category_id: category.id },
+    data: {
+      tenant_id: tenantId,
+      name_en: `${label} product`,
+      category_id: category.id,
+      tax_category_id: taxCategory.id,
+    },
   });
   const variant = await prisma.productVariant.create({
     data: { tenant_id: tenantId, product_id: product.id, sku: `${label}-SKU`, cost_price: 10 },

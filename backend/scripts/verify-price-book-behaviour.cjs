@@ -264,8 +264,23 @@ async function verifyMigrationTieBreak(tenant) {
   const category = await prisma.category.create({
     data: { tenant_id: tenant.id, name_ar: 'تصنيف اختبار الأولوية' },
   });
+  // WP-008 Phase C (BR-TAX-201): Product.tax_category_id is NOT NULL.
+  const taxCategory = await prisma.taxCategory.create({
+    data: {
+      tenant_id: tenant.id,
+      code: 'STANDARD',
+      name_en: 'Standard rate',
+      updated_at: new Date(),
+    },
+  });
   const product = await prisma.product.create({
-    data: { tenant_id: tenant.id, name_en: 'Priority fixture', category_id: category.id, is_active: true },
+    data: {
+      tenant_id: tenant.id,
+      name_en: 'Priority fixture',
+      category_id: category.id,
+      tax_category_id: taxCategory.id,
+      is_active: true,
+    },
   });
   const variant = await prisma.productVariant.create({
     data: { tenant_id: tenant.id, product_id: product.id, sku: `PRIO-${randomUUID()}`, cost_price: 100, is_active: true },

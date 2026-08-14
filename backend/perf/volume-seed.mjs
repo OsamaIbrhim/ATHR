@@ -29,7 +29,13 @@ const batchSize = 500
 try {
 const branch = await prisma.branch.findFirst({ where: { is_active: true } })
 const category = await prisma.category.findFirst()
-if (!branch || !category) throw new Error('Run the normal development seed before volume-seed.mjs')
+// WP-008 Phase C (BR-TAX-201): Product.tax_category_id is NOT NULL. The
+// development seed creates one STANDARD category per tenant; reuse it rather
+// than inventing a second one, so perf rows tax exactly like seeded rows.
+const taxCategory = await prisma.taxCategory.findFirst({
+  where: { tenant_id: branch?.tenant_id, code: 'STANDARD' },
+})
+if (!branch || !category || !taxCategory) throw new Error('Run the normal development seed before volume-seed.mjs')
 
 const variantIds = []
 for (let offset = 0; offset < productCount; offset += batchSize) {
@@ -42,6 +48,7 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
   const products = missingIndexes.map((index) => ({
     id: stableUuid('product', index), tenant_id: branch.tenant_id, name_en: `Performance product ${index}`,
     name_ar: `منتج اختبار أداء ${index}`, category_id: category.id,
+    tax_category_id: taxCategory.id,
     brand: 'Bold Perf', has_variants: false,
   }))
   const variants = products.map((product) => {
