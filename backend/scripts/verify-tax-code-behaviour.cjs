@@ -142,8 +142,10 @@ async function verifySnapshotImmutability(tenant) {
       tenant_id: tenant.id,
       name_en: 'C1 product',
       tax_category_id: category.id,
+      // No `tenant_id` in the nested create: it is part of the composite
+      // relation and Prisma derives it from the parent Product.
       variants: {
-        create: [{ tenant_id: tenant.id, sku: `C1-${randomUUID().slice(0, 8)}`, cost_price: 50 }],
+        create: [{ sku: `C1-${randomUUID().slice(0, 8)}`, cost_price: 50 }],
       },
     },
     include: { variants: true },
@@ -159,10 +161,11 @@ async function verifySnapshotImmutability(tenant) {
       tax_amount: 14,
       total: 114,
       payment_method: 'cash',
+      // Same as above: `tenant_id` is part of the composite invoice relation
+      // and must not be repeated in the nested create.
       items: {
         create: [
           {
-            tenant_id: tenant.id,
             variant_id: variant.id,
             qty: 1,
             unit_price: 100,
