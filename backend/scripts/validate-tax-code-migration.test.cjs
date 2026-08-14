@@ -10,6 +10,13 @@ function noopLog() {}
  * The queries are matched on distinctive fragments rather than exact text, so
  * a whitespace change in the tool does not silently turn a stub into `[]` and
  * make a failing case look like a passing one.
+ *
+ * **What these tests do NOT cover:** the SQL itself. `runQuery` is stubbed, so
+ * a malformed query passes here and fails only against a real database — which
+ * is exactly what happened once (an ungrouped `o.rate` in the post-check's
+ * HAVING). The SQL is proven in CI's `migration-gate`, which runs both checks
+ * against a populated Postgres. These tests cover the decision logic: what
+ * counts as ambiguous, what is reported as INFO, and what fails the deploy.
  */
 function stubQuery(responses) {
   return async (sql) => {

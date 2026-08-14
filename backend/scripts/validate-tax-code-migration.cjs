@@ -153,13 +153,12 @@ async function runPostCheck(runQuery, log = console.log, logError = console.erro
      )
      SELECT o."tenant_id"::text AS tenant_id,
             o.rate::text AS observed_rate,
-            coalesce(max(c."rate")::text, '(none)') AS migrated_rate
+            coalesce(c."rate"::text, '(none)') AS migrated_rate
      FROM observed o
      LEFT JOIN "TaxCode" c
        ON c."tenant_id" = o."tenant_id" AND c."status" = 'active' AND c."code" = 'STANDARD'
      WHERE o.distinct_rates = 1
-     GROUP BY 1, 2
-     HAVING max(c."rate") IS NULL OR max(c."rate") <> o.rate`,
+       AND (c."rate" IS NULL OR c."rate" <> o.rate)`,
   );
 
   if (mismatches.length) {
