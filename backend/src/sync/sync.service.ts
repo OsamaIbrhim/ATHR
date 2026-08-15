@@ -151,11 +151,11 @@ export class SyncService {
   /**
    * Replaces Prisma's automatic `include: { product: true }` relation loader,
    * which exceeds Postgres's max_stack_depth once the parent variant set is
-   * unbounded and large (confirmed at CI catalog volume). The variant `where`
-   * already filters on `product: { is_active: true, tenant_id }`, so every
-   * returned variant's product_id is guaranteed to resolve here -- a miss
-   * means that invariant broke, and this fails loud rather than silently
-   * shrinking the catalog.
+   * unbounded and large (confirmed at CI catalog volume). The product batch
+   * query is deliberately unfiltered on `is_active` (only tenant_id + id) so
+   * a product deactivated between the two queries cannot strand a variant
+   * the first query already committed to returning -- the throw below is a
+   * true invariant guard, not a race that's merely unlikely to fire.
    */
   private async attachProducts<T extends { readonly id: string; readonly product_id: string }>(
     context: TenantContext,

@@ -160,6 +160,17 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
         run: node scripts/verify-tax-code-behaviour.cjs
+      # hard-load stack-depth fix: SyncService's catalog snapshot used
+      # Prisma's automatic include:{product:true} relation loader, which
+      # exceeds Postgres's max_stack_depth once the parent ProductVariant
+      # set is unbounded and large (confirmed between 7,500 and 10,031
+      # rows). fakePrisma runs no real query planner/executor, so this only
+      # reproduces against a real database.
+      - name: Verify sync snapshot behaviour at catalog volume
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/verify-sync-snapshot-behaviour.cjs
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.policy.outputs.upgrade_ref }}
@@ -536,8 +547,6 @@ jobs:
       - run: npm run prisma:seed
       - run: npm run perf:seed
       - run: npm run build
-      - name: TEMP diagnostic - reproduce snapshot()'s 5-way concurrent Prisma query via a standalone script
-        run: node scripts/tmp-repro-stack-depth.mjs
       - name: Start API
         run: |
           npm run start:prod > /tmp/athr-api.log 2>&1 &
@@ -548,9 +557,6 @@ jobs:
           cat /tmp/athr-api.log
           exit 1
       - run: npm run test:hard
-      - name: Print API log
-        if: always()
-        run: cat /tmp/athr-api.log
       - name: Print API log
         if: always()
         run: cat /tmp/athr-api.log
