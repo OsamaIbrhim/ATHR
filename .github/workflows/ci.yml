@@ -532,6 +532,12 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
         working-directory: ${{ github.workspace }}
+      - name: TEMP diagnostic - verbose Postgres statement logging
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "ALTER SYSTEM SET log_statement = 'all';"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "ALTER SYSTEM SET log_min_error_statement = 'error';"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "ALTER SYSTEM SET log_error_verbosity = 'verbose';"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "SELECT pg_reload_conf();"
       - run: npx prisma migrate deploy
       - run: npm run prisma:seed
       - run: npm run perf:seed
