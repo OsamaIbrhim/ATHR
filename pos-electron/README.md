@@ -82,6 +82,26 @@ npm run build
 npm run dist   # Windows NSIS installer
 ```
 
+## Get a CI-built Windows installer
+
+The `POS Windows Installer` workflow builds the installer on every pull request
+that touches POS code, but it only keeps the ~102 MB binary when it is actually
+wanted, because uploading it on every run exhausts the account-level Actions
+artifact storage quota.
+
+To download an installable build for a smoke test on the POS laptop:
+
+1. Open **Actions → POS Windows Installer → Run workflow**.
+2. Select the branch you want to build and click **Run workflow**.
+3. When the run finishes, download the `athr-pos-windows-<sha>` artifact from
+   that run's summary page. It is retained for 7 days.
+
+Pushes to `pos-rc` upload the artifact automatically. Pull request runs do not —
+they still build the installer and still fail if it cannot be produced, and
+their run summary repeats the instructions above. Published releases are not
+affected: `POS Release` attaches the installer to an immutable GitHub Release,
+which does not consume the artifact quota.
+
 ATHR uses `athr_pos.sqlite`. The first ATHR launch copies and verifies a legacy
 `bold_pos.sqlite` plus secure state without deleting the source. Preserve both
 files whenever pending outbox sales exist. Never re-enter a sale after a print
