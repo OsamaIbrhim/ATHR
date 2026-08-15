@@ -20,6 +20,16 @@
 // well-understood query shape, confirmed separately (via `psql` bisection)
 // to be safe at the same volume with or without a JOIN.
 //
+// A prior version of this script proved the SHAPE works in isolation
+// (a hand-copied reimplementation of the batching loop) but never called
+// SyncService itself -- a revert of the actual fix, or a bad edit to
+// PRODUCT_BATCH_SIZE, or a broken merge would have sailed through
+// migration-gate. This version constructs SyncService directly against a
+// real PrismaClient -- the pattern already used in
+// `sync.cross-tenant.spec.ts` -- and asserts on the actual output of
+// `.pull()` (which, with no cursor, calls the private `snapshot()`). It
+// requires `npm run build` to have produced `dist/` first.
+//
 // Proves:
 //   S1 The regression is real at this volume: a raw
 //      `include: { product: true }` findMany still fails with Postgres
@@ -27,15 +37,34 @@
 //      query stops crashing), Prisma or Postgres changed underlying
 //      behavior -- worth knowing explicitly rather than a silent flip that
 //      makes S2 look like it's testing something it no longer is.
-//   S2 The shape SyncService.attachProducts() actually uses -- the filter
-//      query without include, then a flat chunked id-IN(...) batch --
-//      succeeds at the same volume and resolves every variant's product.
-//      This is the real regression guard: if `include: { product: true }`
-//      is ever reintroduced on this path, this is what catches it.
+//   S2 SyncService.pull() -- the actual shipped code, not a reimplementation
+//      of it -- succeeds at the same volume and returns every priced
+//      variant. This is the real regression guard: if `include: { product:
+//      true }` is ever reintroduced on this path, or PRODUCT_BATCH_SIZE is
+//      changed to something unsafe, or the merge logic breaks, this fails.
 'use strict';
 
+const path = require('node:path');
 const { randomUUID } = require('crypto');
 const { PrismaClient, Prisma } = require('@prisma/client');
+
+const distSync = path.join(__dirname, '..', 'dist', 'src', 'sync', 'sync.service.js');
+const distPricing = path.join(__dirname, '..', 'dist', 'src', 'pricing', 'pricing.service.js');
+const distTax = path.join(__dirname, '..', 'dist', 'src', 'tax', 'tax-resolution.service.js');
+
+let SyncService, PRODUCT_BATCH_SIZE, PricingService, TaxResolutionService;
+try {
+  ({ SyncService, PRODUCT_BATCH_SIZE } = require(distSync));
+  ({ PricingService } = require(distPricing));
+  ({ TaxResolutionService } = require(distTax));
+} catch (error) {
+  console.error(
+    `Could not load compiled SyncService from ${distSync}. This script asserts on the ` +
+      `actual shipped code, so it requires \`npm run build\` to have run first (see ` +
+      `migration-gate in ci.yml). Original error: ${error?.message ?? error}`,
+  );
+  process.exit(1);
+}
 
 const prisma = new PrismaClient();
 
@@ -43,7 +72,6 @@ const prisma = new PrismaClient();
 // plus the pre-existing dev seed rows) and confirmed safe at 7,500. Seed past
 // the confirmed-failing point, not merely past the confirmed-safe one.
 const VARIANT_COUNT = 10_500;
-const PRODUCT_BATCH_SIZE = 1_000; // must match SyncService's PRODUCT_BATCH_SIZE
 
 let failed = 0;
 
@@ -61,8 +89,57 @@ async function seedCatalog() {
   const tenant = await prisma.tenant.create({
     data: { name: `sync-snapshot-verify-${randomUUID()}`, default_currency: 'EGP' },
   });
+  const branch = await prisma.branch.create({
+    data: { tenant_id: tenant.id, code: `SNAP-${randomUUID().slice(0, 8)}`, name_ar: 'فرع الفحص' },
+  });
   const category = await prisma.taxCategory.create({
     data: { tenant_id: tenant.id, code: 'STANDARD', name_en: 'Standard', updated_at: new Date() },
+  });
+  // A minimal fully-priced catalog: one active TaxCode for the category and
+  // one global, active, default PriceBookEntry, so every seeded variant
+  // resolves a price and S2's count assertion is not confounded by
+  // pricing/tax gaps unrelated to this bug (BR-PSL-101/BR-TAX-201 would
+  // otherwise silently omit unpriced/untaxed variants from the result).
+  await prisma.taxCode.create({
+    data: {
+      tenant_id: tenant.id,
+      tax_category_id: category.id,
+      code: 'STANDARD',
+      name_en: 'Standard rate',
+      jurisdiction: 'EG',
+      calculation_method: 'percentage',
+      rate: new Prisma.Decimal('14.0000'),
+      tax_mode: 'exclusive',
+      rounding_policy: 'line',
+      version: 1,
+      status: 'active',
+      activated_at: new Date(),
+      updated_at: new Date(),
+    },
+  });
+  const priceBook = await prisma.priceBook.create({
+    data: {
+      tenant_id: tenant.id,
+      name: 'Snapshot verify book',
+      currency: 'EGP',
+      status: 'active',
+      is_default: true,
+    },
+  });
+  await prisma.priceBookEntry.create({
+    data: {
+      tenant_id: tenant.id,
+      price_book_id: priceBook.id,
+      scope_type: 'global',
+      scope_id: null,
+      min_qty: 1,
+      unit_price: 100,
+      allow_zero_price: false,
+      tax_mode: 'exclusive',
+      effective_from: new Date(0),
+      effective_to: null,
+      status: 'active',
+    },
   });
 
   const BATCH = 500;
@@ -91,7 +168,7 @@ async function seedCatalog() {
     });
   }
 
-  return { tenant, category };
+  return { tenant, branch, category };
 }
 
 async function verifyRawIncludeStillFails(tenant) {
@@ -122,42 +199,37 @@ async function verifyRawIncludeStillFails(tenant) {
   }
 }
 
-async function verifyFixedShapeSucceeds(tenant) {
-  const variants = await prisma.productVariant.findMany({
-    where: {
-      tenant_id: tenant.id,
-      is_active: true,
-      product: { is_active: true, tenant_id: tenant.id },
-    },
-  });
-  expectEqual(
-    'S2 the filter query without include returns every seeded variant',
-    variants.length,
-    VARIANT_COUNT,
-  );
+async function verifyRealSyncServiceSucceeds(tenant, branch) {
+  const tax = new TaxResolutionService(prisma);
+  const pricing = new PricingService(prisma, tax);
+  const service = new SyncService(prisma, pricing, tax);
+  const context = { tenantId: tenant.id };
 
-  const productIds = [...new Set(variants.map((variant) => variant.product_id))];
-  const productsById = new Map();
-  for (let offset = 0; offset < productIds.length; offset += PRODUCT_BATCH_SIZE) {
-    const chunk = productIds.slice(offset, offset + PRODUCT_BATCH_SIZE);
-    const products = await prisma.product.findMany({
-      where: { tenant_id: tenant.id, id: { in: chunk } },
-    });
-    for (const product of products) productsById.set(product.id, product);
+  let result;
+  try {
+    // No cursor -> pull() calls the private snapshot(), the code path that
+    // crashed. This is SyncService.pull as shipped, not a reimplementation.
+    result = await service.pull(context, branch.id);
+  } catch (error) {
+    record(
+      'S2 SyncService.pull() (the real shipped code) succeeds at 10,500 rows',
+      false,
+      `threw: ${String(error?.message ?? error).slice(0, 300)}`,
+    );
+    return;
   }
-
-  const unresolved = variants.filter((variant) => !productsById.has(variant.product_id));
+  record('S2 SyncService.pull() (the real shipped code) succeeds at 10,500 rows', true);
   expectEqual(
-    'S2 the chunked flat id-IN(...) batch resolves every variant\'s product (SyncService.attachProducts\' invariant)',
-    unresolved.length,
-    0,
+    "S2 every seeded, fully-priced variant is present in the real snapshot's products",
+    result.products.length,
+    VARIANT_COUNT,
   );
 }
 
 async function main() {
-  const { tenant } = await seedCatalog();
+  const { tenant, branch } = await seedCatalog();
   await verifyRawIncludeStillFails(tenant);
-  await verifyFixedShapeSucceeds(tenant);
+  await verifyRealSyncServiceSucceeds(tenant, branch);
 
   process.stdout.write(
     failed ? `\n${failed} check(s) FAILED\n` : '\nAll sync snapshot behaviour checks passed\n',

@@ -12,8 +12,13 @@ import type { TenantContext } from '../identity/tenant-context.type';
  * ~100). A flat `id IN (...)` batch is a different, well-understood query
  * shape that does not hit this. Batch defensively rather than assume an
  * unbounded array is safe at any catalog size.
+ *
+ * Exported so `verify-sync-snapshot-behaviour.cjs` (migration-gate) imports
+ * this value instead of restating it -- a copy in two files can drift
+ * silently and the CI proof would then be checking a different chunk size
+ * than the one actually shipped.
  */
-const PRODUCT_BATCH_SIZE = 1_000;
+export const PRODUCT_BATCH_SIZE = 1_000;
 
 @Injectable()
 export class SyncService {
@@ -156,6 +161,21 @@ export class SyncService {
    * a product deactivated between the two queries cannot strand a variant
    * the first query already committed to returning -- the throw below is a
    * true invariant guard, not a race that's merely unlikely to fire.
+   *
+   * Honest note on WHY, not just that: this was isolated behaviourally, not
+   * diagnosed to a Postgres/Prisma internal cause. Bisecting the failing
+   * statement against a real `postgres:16` instance showed: the plain
+   * variant filter query alone (no `include`) succeeds at 10k+ rows; the
+   * same query plus `include: { product: true }` fails identically with
+   * Postgres error 54001 whether concurrent or not; the same query plus
+   * `include` bounded to `take: 100` succeeds. That isolates the *trigger*
+   * (Prisma's relation-loader fan-out over an unbounded parent set) but not
+   * the mechanism inside Postgres's executor that actually exhausts the
+   * C stack for that access pattern. The fix below takes a categorically
+   * different, independently-bisected-safe query shape (a flat `id IN (...)`
+   * batch has no JOIN, no relation-loader fan-out, and was separately
+   * confirmed safe at the same row count) rather than tuning the unsafe one,
+   * so it does not depend on ever fully explaining the internal cause.
    */
   private async attachProducts<T extends { readonly id: string; readonly product_id: string }>(
     context: TenantContext,

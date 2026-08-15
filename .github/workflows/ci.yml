@@ -165,7 +165,14 @@ jobs:
       # exceeds Postgres's max_stack_depth once the parent ProductVariant
       # set is unbounded and large (confirmed between 7,500 and 10,031
       # rows). fakePrisma runs no real query planner/executor, so this only
-      # reproduces against a real database.
+      # reproduces against a real database. This proof asserts on
+      # SyncService itself rather than a reimplementation of its query
+      # shape, so it needs the compiled service.
+      - name: Build backend for the sync snapshot proof
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: npm run build
       - name: Verify sync snapshot behaviour at catalog volume
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
