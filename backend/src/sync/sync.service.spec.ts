@@ -16,13 +16,14 @@ describe('SyncService incremental synchronization', () => {
     barcode_internal: 'B-1',
     size: 'M',
     color: 'Blue',
-    product: {
-      is_active: true,
-      name_en: 'Shirt',
-      name_ar: 'قميص',
-      category_id: null,
-      brand: null,
-    },
+  };
+  const product = {
+    id: 'product-1',
+    is_active: true,
+    name_en: 'Shirt',
+    name_ar: 'قميص',
+    category_id: null,
+    brand: null,
   };
   const quote = { net_price: 150, tax_amount: 21 };
   it('returns an unsigned protocol-v2 snapshot with a resumable cursor', async () => {
@@ -35,6 +36,9 @@ describe('SyncService incremental synchronization', () => {
       },
       productVariant: {
         findMany: jest.fn().mockResolvedValue([variant]),
+      },
+      product: {
+        findMany: jest.fn().mockResolvedValue([product]),
       },
       inventoryStock: {
         findMany: jest.fn().mockResolvedValue([
@@ -123,6 +127,9 @@ describe('SyncService incremental synchronization', () => {
       },
       productVariant: {
         findMany: jest.fn().mockResolvedValue([variant]),
+      },
+      product: {
+        findMany: jest.fn().mockResolvedValue([product]),
       },
       inventoryStock: {
         findMany: jest.fn().mockResolvedValue([

@@ -1,8 +1,19 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import type { Product } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
 import { TaxResolutionService } from '../tax/tax-resolution.service';
 import type { TenantContext } from '../identity/tenant-context.type';
+
+/**
+ * Prisma's automatic relation loader for `include: { product: true }` fans
+ * out into a Postgres statement that exceeds `max_stack_depth` once the
+ * parent result set is unbounded and large (confirmed at ~10k rows; safe at
+ * ~100). A flat `id IN (...)` batch is a different, well-understood query
+ * shape that does not hit this. Batch defensively rather than assume an
+ * unbounded array is safe at any catalog size.
+ */
+const PRODUCT_BATCH_SIZE = 1_000;
 
 @Injectable()
 export class SyncService {
@@ -57,7 +68,7 @@ export class SyncService {
         .map((change) => change.entity_key)
         .filter((value): value is string => !!value),
     );
-    const [variants, stock, rules, taxCodes] = await Promise.all([
+    const [variantRows, stock, rules, taxCodes] = await Promise.all([
       this.prisma.productVariant.findMany({
         where: {
           tenant_id: context.tenantId,
@@ -65,7 +76,6 @@ export class SyncService {
           is_active: true,
           ...(resetCatalog ? {} : { id: { in: [...requestedIds] } }),
         },
-        include: { product: true },
       }),
       this.prisma.inventoryStock.findMany({
         where: {
@@ -77,6 +87,7 @@ export class SyncService {
       this.pricing.loadActiveRules(context),
       this.tax.loadActiveCodeIndex(context),
     ]);
+    const variants = await this.attachProducts(context, variantRows);
     const presentIds = new Set(variants.map((variant) => variant.id));
     const deletedVariantIds = resetCatalog ? [] : [...requestedIds].filter((id) => !presentIds.has(id));
     const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
@@ -105,14 +116,13 @@ export class SyncService {
       where: { tenant_id: context.tenantId },
       _max: { sequence: true },
     });
-    const [variants, stock, rules, sellers, taxCodes] = await Promise.all([
+    const [variantRows, stock, rules, sellers, taxCodes] = await Promise.all([
       this.prisma.productVariant.findMany({
         where: {
           tenant_id: context.tenantId,
           is_active: true,
           product: { is_active: true, tenant_id: context.tenantId },
         },
-        include: { product: true },
       }),
       this.prisma.inventoryStock.findMany({
         where: { tenant_id: context.tenantId, branch_id: branchId },
@@ -121,6 +131,7 @@ export class SyncService {
       this.sellers(context, branchId),
       this.tax.loadActiveCodeIndex(context),
     ]);
+    const variants = await this.attachProducts(context, variantRows);
     const issuedAt = new Date().toISOString();
     const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
     const products = variants
@@ -135,6 +146,39 @@ export class SyncService {
       sellers, reset_sellers: true,
       reset_products: true, reset_stock: true, has_more: false,
     };
+  }
+
+  /**
+   * Replaces Prisma's automatic `include: { product: true }` relation loader,
+   * which exceeds Postgres's max_stack_depth once the parent variant set is
+   * unbounded and large (confirmed at CI catalog volume). The variant `where`
+   * already filters on `product: { is_active: true, tenant_id }`, so every
+   * returned variant's product_id is guaranteed to resolve here -- a miss
+   * means that invariant broke, and this fails loud rather than silently
+   * shrinking the catalog.
+   */
+  private async attachProducts<T extends { readonly id: string; readonly product_id: string }>(
+    context: TenantContext,
+    variants: readonly T[],
+  ): Promise<(T & { readonly product: Product })[]> {
+    const productIds = [...new Set(variants.map((variant) => variant.product_id))];
+    const productsById = new Map<string, Product>();
+    for (let offset = 0; offset < productIds.length; offset += PRODUCT_BATCH_SIZE) {
+      const chunk = productIds.slice(offset, offset + PRODUCT_BATCH_SIZE);
+      const products = await this.prisma.product.findMany({
+        where: { tenant_id: context.tenantId, id: { in: chunk } },
+      });
+      for (const product of products) productsById.set(product.id, product);
+    }
+    return variants.map((variant) => {
+      const product = productsById.get(variant.product_id);
+      if (!product) {
+        throw new Error(
+          `SyncService: active product ${variant.product_id} not found for active variant ${variant.id}; the variant query's product filter invariant broke.`,
+        );
+      }
+      return { ...variant, product };
+    });
   }
 
   private sellers(context: TenantContext, branchId: string) {
