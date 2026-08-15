@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
 import { ProductsRepository } from './products.repository';
 import { BrandsRepository } from '../brands/brands.repository';
+import { TaxCodeService } from '../tax/tax-code.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantContext } from '../identity/tenant-context.type';
 
@@ -12,7 +13,38 @@ export class ProductsService {
   constructor(
     private readonly repository: ProductsRepository,
     private readonly brands: BrandsRepository,
+    private readonly tax: TaxCodeService,
   ) {}
+
+  /**
+   * WP-008 Phase C (BR-TAX-201). Explicit id wins; otherwise the tenant's
+   * `STANDARD` category, which the `202608130003` migration created for every
+   * tenant that owned products. Never invents one — a tenant with no category
+   * at all is a real misconfiguration and is reported as such.
+   */
+  private async resolveTaxCategoryId(
+    context: TenantContext,
+    requested: string | undefined,
+  ): Promise<string> {
+    if (requested) {
+      const category = await this.tax.findCategoryInTenant(context, requested);
+      if (!category) {
+        throw new AthrDomainError(
+          'RESOURCE_NOT_FOUND',
+          `Tax category ${requested} not found.`,
+        );
+      }
+      return category.id;
+    }
+    const fallback = await this.tax.findDefaultCategory(context);
+    if (!fallback) {
+      throw new AthrDomainError(
+        'TAX_NO_ACTIVE_CODE',
+        'This tenant has no tax category, so a product cannot be created (BR-TAX-201). Create a tax category first.',
+      );
+    }
+    return fallback.id;
+  }
 
   async list(
     context: TenantContext,
@@ -138,12 +170,21 @@ export class ProductsService {
     if (dto.brand_id) {
       await this.brands.assertInTenant(context, dto.brand_id);
     }
+    // WP-008 Phase C (BR-TAX-201): every Product resolves to a tax category.
+    // An explicit `tax_category_id` is validated in-tenant first, so a
+    // cross-tenant id reads as "not found" rather than reaching the composite
+    // FK. Omitted, it falls back to the tenant's STANDARD category — the one
+    // the Phase C migration created for every existing tenant. If neither
+    // exists the create is rejected: a product with no tax category would be
+    // unsellable anyway, and failing at creation names the cause.
+    const taxCategoryId = await this.resolveTaxCategoryId(context, dto.tax_category_id);
     const product = await this.repository.saveProduct(context, {
       name_en: dto.name_en,
       name_ar: dto.name_ar,
       brand: dto.brand,
       brand_id: dto.brand_id,
       category_id: dto.category_id,
+      tax_category_id: taxCategoryId,
       has_variants: !!(dto.size || dto.color || dto.style),
       variants: {
         create: [{

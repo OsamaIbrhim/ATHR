@@ -253,6 +253,7 @@ export class PriceBookService {
           unitPrice: dto.unit_price,
           allowZeroPrice: dto.allow_zero_price ?? false,
           taxPercent: dto.tax_percent ?? 14,
+          taxMode: dto.tax_mode,
           floorPrice: dto.floor_price ?? null,
           createdBy: actorId,
         }),
@@ -283,6 +284,7 @@ export class PriceBookService {
       unitPrice: dto.unit_price,
       allowZeroPrice,
       taxPercent: dto.tax_percent ?? entry.tax_percent,
+      taxMode: dto.tax_mode ?? entry.tax_mode,
       floorPrice: dto.floor_price ?? entry.floor_price,
       createdBy: actor.sub,
     });

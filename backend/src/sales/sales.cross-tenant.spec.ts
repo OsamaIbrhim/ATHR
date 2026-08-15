@@ -6,6 +6,7 @@ import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aBranch, aCustomer, aSalesInvoice } from '../identity/testing/fixture-builders';
+import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `sales` module.
@@ -73,7 +74,7 @@ function setup() {
   } as unknown as PermissionPolicyService);
   return {
     prisma,
-    service: new SalesService(prisma, pricing, costVisibility),
+    service: new SalesService(prisma, pricing, costVisibility, new SalesTaxSnapshotService()),
     reads: new SalesReadService(prisma),
   };
 }

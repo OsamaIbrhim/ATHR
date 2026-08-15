@@ -705,11 +705,17 @@ async function mutationIntegrityLoad(adminToken) {
         const coverageQuantity = 2
         const coverageKey = `hard-smoke-deficit-coverage:${deficitSyncId}`
         const coverageBranch = await tx.branch.findUniqueOrThrow({ where: { id: branchId } })
+        // WP-008 Phase C (BR-TAX-201): Product.tax_category_id is NOT NULL.
+        const coverageTaxCategory = await tx.taxCategory.findFirstOrThrow({
+          where: { tenant_id: coverageBranch.tenant_id },
+          orderBy: { code: 'asc' },
+        })
         const coverageProduct = await tx.product.create({
           data: {
             tenant_id: coverageBranch.tenant_id,
             name_en: `Negative coverage probe ${deficitSyncId}`,
             name_ar: 'اختبار تغطية المخزون السالب',
+            tax_category_id: coverageTaxCategory.id,
             has_variants: false,
           },
         })

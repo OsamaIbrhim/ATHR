@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
+import { TaxResolutionService } from '../tax/tax-resolution.service';
 import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
@@ -8,6 +9,7 @@ export class SyncService {
   constructor(
     private prisma: PrismaService,
     private pricing: PricingService,
+    private tax: TaxResolutionService,
   ) {}
 
   private catalogValidUntil(now = Date.now()) {
@@ -55,7 +57,7 @@ export class SyncService {
         .map((change) => change.entity_key)
         .filter((value): value is string => !!value),
     );
-    const [variants, stock, rules] = await Promise.all([
+    const [variants, stock, rules, taxCodes] = await Promise.all([
       this.prisma.productVariant.findMany({
         where: {
           tenant_id: context.tenantId,
@@ -73,10 +75,11 @@ export class SyncService {
         },
       }),
       this.pricing.loadActiveRules(context),
+      this.tax.loadActiveCodeIndex(context),
     ]);
     const presentIds = new Set(variants.map((variant) => variant.id));
     const deletedVariantIds = resetCatalog ? [] : [...requestedIds].filter((id) => !presentIds.has(id));
-    const quotes = this.pricing.quoteMany(variants, rules);
+    const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
     // WP-008 Phase B (BR-PSL-101): a variant with no resolvable price is
     // omitted from `quotes` rather than throwing (unlike `calculate`) --
     // the offline catalog snapshot must not fail entirely for one unpriced
@@ -102,7 +105,7 @@ export class SyncService {
       where: { tenant_id: context.tenantId },
       _max: { sequence: true },
     });
-    const [variants, stock, rules, sellers] = await Promise.all([
+    const [variants, stock, rules, sellers, taxCodes] = await Promise.all([
       this.prisma.productVariant.findMany({
         where: {
           tenant_id: context.tenantId,
@@ -116,9 +119,10 @@ export class SyncService {
       }),
       this.pricing.loadActiveRules(context),
       this.sellers(context, branchId),
+      this.tax.loadActiveCodeIndex(context),
     ]);
     const issuedAt = new Date().toISOString();
-    const quotes = this.pricing.quoteMany(variants, rules);
+    const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
     const products = variants
       .filter((variant) => quotes.has(variant.id))
       .map((variant) => this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt));

@@ -3,7 +3,8 @@ import { Prisma } from '@prisma/client';
 import { SyncService } from './sync.service';
 import { PricingService } from '../pricing/pricing.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
-import { aProduct, aProductVariant, anInventoryStock } from '../identity/testing/fixture-builders';
+import { aProduct, aProductVariant, aTaxCategory, aTaxCode, anInventoryStock } from '../identity/testing/fixture-builders';
+import { TaxResolutionService } from '../tax/tax-resolution.service';
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `sync` module.
@@ -27,6 +28,14 @@ function setup() {
   const productA = aProduct({ id: PRODUCT_A, tenant_id: TENANT_A, name_en: 'A widget' });
   const productB = aProduct({ id: PRODUCT_B, tenant_id: TENANT_B, name_en: 'B widget' });
   const prisma = fakePrisma({
+    taxCategory: [
+      aTaxCategory({ tenant_id: TENANT_A }),
+      aTaxCategory({ tenant_id: TENANT_B }),
+    ],
+    taxCode: [
+      aTaxCode({ tenant_id: TENANT_A }),
+      aTaxCode({ tenant_id: TENANT_B }),
+    ],
     syncChange: [
       { sequence: 1n, tenant_id: TENANT_A, kind: 'product', branch_id: null, entity_key: null },
       { sequence: 2n, tenant_id: TENANT_B, kind: 'product', branch_id: null, entity_key: null },
@@ -85,7 +94,7 @@ function setup() {
     );
     return { _max: { sequence: rows.at(-1)?.sequence ?? 0n } };
   };
-  return { prisma, service: new SyncService(prisma, new PricingService(prisma)) };
+  return { prisma, service: new SyncService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), new TaxResolutionService(prisma)) };
 }
 
 describe('sync — cross-tenant isolation (Blueprint §123)', () => {

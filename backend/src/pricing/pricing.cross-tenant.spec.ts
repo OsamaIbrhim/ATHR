@@ -2,7 +2,8 @@ import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PricingService } from './pricing.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
-import { aProductVariant } from '../identity/testing/fixture-builders';
+import { aProductVariant, aTaxCategory, aTaxCode, taxCategoryIdFor } from '../identity/testing/fixture-builders';
+import { TaxResolutionService } from '../tax/tax-resolution.service';
 
 /** WP-008 Phase B — cross-tenant isolation for the `pricing` evaluation engine. */
 
@@ -14,6 +15,14 @@ const PRICE_BOOK_B = randomUUID();
 function setup() {
   const prisma = fakePrisma(
     {
+      taxCategory: [
+        aTaxCategory({ tenant_id: TENANT_A }),
+        aTaxCategory({ tenant_id: TENANT_B }),
+      ],
+      taxCode: [
+        aTaxCode({ tenant_id: TENANT_A }),
+        aTaxCode({ tenant_id: TENANT_B }),
+      ],
       productVariant: [
         aProductVariant({
           id: VARIANT_A,
@@ -21,13 +30,13 @@ function setup() {
           cost_price: new Prisma.Decimal(100),
           // Pre-hydrated relation: `quote()` reads `variant.product.brand_id`
           // and `.category_id` to walk the scope chain.
-          product: { category_id: null, brand_id: null },
+          product: { category_id: null, brand_id: null, tax_category_id: taxCategoryIdFor(TENANT_A) },
         }),
         aProductVariant({
           id: VARIANT_B,
           tenant_id: TENANT_B,
           cost_price: new Prisma.Decimal(100),
-          product: { category_id: null, brand_id: null },
+          product: { category_id: null, brand_id: null, tax_category_id: taxCategoryIdFor(TENANT_B) },
         }),
       ],
       priceBook: [
@@ -71,7 +80,7 @@ function setup() {
       priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } },
     },
   );
-  return { prisma, service: new PricingService(prisma) };
+  return { prisma, service: new PricingService(prisma, new TaxResolutionService(prisma)) };
 }
 
 describe('pricing — cross-tenant isolation', () => {

@@ -6,7 +6,8 @@ import { PricingService } from './pricing.service';
 import { CostVisibilityService } from './cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { TENANT_A, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
-import { aProductVariant } from '../identity/testing/fixture-builders';
+import { aProductVariant, aTaxCategory, aTaxCode, taxCategoryIdFor } from '../identity/testing/fixture-builders';
+import { TaxResolutionService } from '../tax/tax-resolution.service';
 
 /** WP-008 Phase B (BR-OVP-1xx, BR-DSC-2xx): override vs. discount separation, floor approval. */
 
@@ -30,9 +31,11 @@ function setup(options: {
   hasCostView?: boolean;
 } = {}) {
   const prisma = fakePrisma({
+    taxCategory: [aTaxCategory({ tenant_id: TENANT_A })],
+    taxCode: [aTaxCode({ tenant_id: TENANT_A, rate: new Prisma.Decimal(0) })],
     productVariant: [
       // Pre-hydrated relation: `quote()` walks `variant.product.brand_id`/`.category_id`.
-      aProductVariant({ id: VARIANT_ID, tenant_id: TENANT_A, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null } }),
+      aProductVariant({ id: VARIANT_ID, tenant_id: TENANT_A, cost_price: new Prisma.Decimal(50), product: { category_id: null, brand_id: null, tax_category_id: taxCategoryIdFor(TENANT_A) } }),
     ],
     priceBook: [{ id: 'book-1', tenant_id: TENANT_A, status: 'active', is_default: true }],
     priceBookEntry: [
@@ -50,7 +53,7 @@ function setup(options: {
   }, {
     priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } },
   });
-  const pricing = new PricingService(prisma);
+  const pricing = new PricingService(prisma, new TaxResolutionService(prisma));
   const overridesRepo = new OverridesRepository(prisma);
   const permissionPolicy = {
     hasPermission: jest.fn().mockResolvedValue(options.hasAboveThreshold ?? false),

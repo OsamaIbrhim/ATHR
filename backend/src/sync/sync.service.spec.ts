@@ -1,5 +1,7 @@
 import { SyncService } from './sync.service';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+import { TaxResolutionService } from '../tax/tax-resolution.service';
+import { aTaxCode } from '../identity/testing/fixture-builders';
 
 // WP-007 Phase A: pull() takes the resolved TenantContext first.
 const ctx = contextFor(TENANT_A);
@@ -25,6 +27,7 @@ describe('SyncService incremental synchronization', () => {
   const quote = { net_price: 150, tax_amount: 21 };
   it('returns an unsigned protocol-v2 snapshot with a resumable cursor', async () => {
     const prisma = {
+      taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
       syncChange: {
         aggregate: jest
           .fn()
@@ -53,6 +56,7 @@ describe('SyncService incremental synchronization', () => {
     const result = await new SyncService(
       prisma as any,
       pricing as any,
+      new TaxResolutionService(prisma as any),
     ).pull(ctx, 'branch-1');
 
     expect(result).toMatchObject({
@@ -78,6 +82,7 @@ describe('SyncService incremental synchronization', () => {
       releaseCursor = resolve;
     });
     const prisma = {
+      taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
       syncChange: { aggregate: jest.fn().mockReturnValue(cursor) },
       productVariant: { findMany: jest.fn().mockResolvedValue([]) },
       inventoryStock: { findMany: jest.fn().mockResolvedValue([]) },
@@ -90,6 +95,7 @@ describe('SyncService incremental synchronization', () => {
     const pulling = new SyncService(
       prisma as any,
       pricing as any,
+      new TaxResolutionService(prisma as any),
     ).pull(ctx, 'branch-1');
 
     await Promise.resolve();
@@ -104,6 +110,7 @@ describe('SyncService incremental synchronization', () => {
 
   it('returns only changed variants and branch stock after a cursor', async () => {
     const prisma = {
+      taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
       syncChange: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -137,6 +144,7 @@ describe('SyncService incremental synchronization', () => {
     const result = await new SyncService(
       prisma as any,
       pricing as any,
+      new TaxResolutionService(prisma as any),
     ).pull(ctx, 'branch-1', '42');
 
     expect(result).toMatchObject({
@@ -157,11 +165,13 @@ describe('SyncService incremental synchronization', () => {
 
   it('returns an empty lightweight delta when nothing changed', async () => {
     const prisma = {
+      taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
       syncChange: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const result = await new SyncService(
       prisma as any,
       {} as any,
+      new TaxResolutionService(prisma as any),
     ).pull(ctx, 'branch-1', '43');
 
     expect(result).toMatchObject({

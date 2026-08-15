@@ -150,6 +150,16 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
         run: node scripts/verify-price-book-behaviour.cjs
+      # WP-008 Phase C: tax snapshot immutability, the one-active-code partial
+      # index, activate's demote-before-promote statement order and SyncChange
+      # emission are all enforced by the database. fakePrisma runs no trigger
+      # and enforces no partial index, so a green jest suite proves none of
+      # them -- this is where the phase's central test actually runs.
+      - name: Verify Tax Code behaviour (WP-008 Phase C)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/verify-tax-code-behaviour.cjs
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.policy.outputs.upgrade_ref }}
@@ -184,10 +194,12 @@ jobs:
           # post-migration for the hard 1:1 "no live variant lost its price"
           # invariant, which exits non-zero and fails this job.
           node scripts/validate-pricing-rule-migration.cjs
+          node scripts/validate-tax-code-migration.cjs
           npx prisma migrate deploy
           npx prisma migrate deploy
           npx prisma migrate status
           node scripts/validate-pricing-rule-migration.cjs --post-check
+          node scripts/validate-tax-code-migration.cjs --post-check
           npx prisma migrate diff --exit-code \
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \

@@ -4,6 +4,7 @@ import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { PricingService } from '../pricing/pricing.service';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 
 /**
  * BR-CST-101 / Permission Matrix §17 §51 — the `sales` counterpart of the
@@ -107,7 +108,7 @@ function setup(hasCostMargin: boolean) {
   } as unknown as PermissionPolicyService);
   return {
     prisma,
-    service: new SalesService(prisma as any, {} as unknown as PricingService, costVisibility),
+    service: new SalesService(prisma as any, {} as unknown as PricingService, costVisibility, new SalesTaxSnapshotService()),
   };
 }
 

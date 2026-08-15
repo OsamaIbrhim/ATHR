@@ -3,11 +3,12 @@ import { SalesService } from './sales.service';
 import { SalesReadService } from './sales-read.service';
 import { SalesController } from './sales.controller';
 import { PricingModule } from '../pricing/pricing.module';
+import { TaxModule } from '../tax/tax.module';
 import { InvoicePdfService } from './invoice-pdf.service';
 import { TerminalsModule } from '../terminals/terminals.module';
 
 @Module({
-  imports: [PricingModule, TerminalsModule],
+  imports: [PricingModule, TaxModule, TerminalsModule],
   providers: [
     SalesService,
     SalesReadService,

@@ -83,6 +83,27 @@ const nextSequence = (): number => (sequence += 1);
 
 const zero = (): Prisma.Decimal => new Prisma.Decimal(0);
 
+/**
+ * WP-008 Phase C. A stable, per-tenant `TaxCategory` id.
+ *
+ * `Product.tax_category_id` is NOT NULL (BR-TAX-201), so every product fixture
+ * needs one. Deriving it from the tenant id rather than calling `randomUUID()`
+ * per builder call means a spec that seeds a product, a variant override and a
+ * `TaxCategory`/`TaxCode` all land on the same category without threading an
+ * id through — while two different tenants still get different ids, so a
+ * cross-tenant test cannot pass by accident on a shared constant.
+ *
+ * The last block of the tenant UUID is replaced rather than hashed so the
+ * relationship stays legible in a failure dump: tenant `...0001` owns category
+ * `...7a01`.
+ */
+export function taxCategoryIdFor(tenantId: string): string {
+  return `${tenantId.slice(0, 24)}7a${tenantId.slice(26)}`;
+}
+
+/** The `Prisma.Decimal` 14% every pre-Phase-C fixture was implicitly priced at. */
+const standardRate = (): Prisma.Decimal => new Prisma.Decimal('14.0000');
+
 export interface BranchRow {
   id: string;
   tenant_id: string;
@@ -151,14 +172,23 @@ export interface ProductRow {
   image_url: string | null;
   is_active: boolean;
   has_variants: boolean;
+  /**
+   * WP-008 Phase C (BR-TAX-201): NOT NULL in the schema, so the default is
+   * here rather than repeated across specs. It is a per-tenant constant
+   * (`taxCategoryIdFor`) so a product and its tenant's `TaxCategory` line up
+   * without every spec having to seed and thread an id.
+   */
+  tax_category_id: string;
   created_at: Date;
 }
 
 export function aProduct(overrides: FixtureOverrides<ProductRow> = {}): BuiltRow<ProductRow> {
+  const tenantId = (overrides.tenant_id as string | undefined) ?? TENANT_A;
   return withOverrides<ProductRow>(
     {
       id: randomUUID(),
-      tenant_id: TENANT_A,
+      tenant_id: tenantId,
+      tax_category_id: taxCategoryIdFor(tenantId),
       sku_base: null,
       name_en: `Product ${nextSequence()}`,
       name_ar: null,
@@ -190,6 +220,14 @@ export interface ProductVariantRow {
   is_active: boolean;
   item_type: string;
   base_uom_id: string | null;
+  /**
+   * WP-008 Phase C (OD-CAT-014): the variant-level tax OVERRIDE. Defaults to
+   * `null`, which is the schema default and means "inherit the product's
+   * category" — a fixture that defaulted this to a real id would make every
+   * variant look like a deliberate override and quietly bypass the inheritance
+   * path this phase's resolution rests on.
+   */
+  tax_category_id: string | null;
   created_at: Date;
 }
 
@@ -200,6 +238,7 @@ export function aProductVariant(
     {
       id: randomUUID(),
       tenant_id: TENANT_A,
+      tax_category_id: null,
       product_id: randomUUID(),
       sku: `SKU-${nextSequence()}`,
       barcode_ean13: null,
@@ -368,6 +407,130 @@ export function aSalesInvoice(
       occurred_at: now,
       received_at: now,
       created_at: now,
+    },
+    overrides,
+  );
+}
+
+/**
+ * WP-008 Phase C. `TaxCategory` and `TaxCode` are seeded by every spec that
+ * prices anything, since `PricingService` now resolves the rate through them
+ * — that is the "seeded in more than one file" bar this file's contract sets.
+ *
+ * (`priceBook`/`priceBookEntry` still have no builders despite being seeded in
+ * several files. Adding them is a separate change, not something to slip into
+ * a feature PR — flagged in the Phase C PR description rather than done here.)
+ */
+export interface TaxCategoryRow {
+  id: string;
+  tenant_id: string;
+  code: string;
+  name_en: string;
+  name_ar: string | null;
+  description: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export function aTaxCategory(
+  overrides: FixtureOverrides<TaxCategoryRow> = {},
+): BuiltRow<TaxCategoryRow> {
+  const tenantId = (overrides.tenant_id as string | undefined) ?? TENANT_A;
+  const now = new Date();
+  return withOverrides<TaxCategoryRow>(
+    {
+      // Matches `aProduct`'s default so a product and its category line up
+      // without the spec having to wire them together.
+      id: taxCategoryIdFor(tenantId),
+      tenant_id: tenantId,
+      code: 'STANDARD',
+      name_en: 'Standard rate',
+      name_ar: null,
+      description: null,
+      is_active: true,
+      created_by: null,
+      created_at: now,
+      updated_at: now,
+    },
+    overrides,
+  );
+}
+
+export interface TaxCodeRow {
+  id: string;
+  tenant_id: string;
+  tax_category_id: string;
+  code: string;
+  name_en: string;
+  name_ar: string | null;
+  jurisdiction: string;
+  calculation_method: string;
+  /** Decimal, never a bare number — see rule 1 in this file's header. */
+  rate: Prisma.Decimal;
+  tax_mode: string;
+  rounding_policy: string;
+  exemption_allowed: boolean;
+  effective_from: Date | null;
+  effective_to: Date | null;
+  version: number;
+  status: string;
+  supersedes_id: string | null;
+  superseded_at: Date | null;
+  superseded_by_id: string | null;
+  created_by: string | null;
+  submitted_by: string | null;
+  submitted_at: Date | null;
+  approved_by: string | null;
+  approved_at: Date | null;
+  scheduled_by: string | null;
+  scheduled_at: Date | null;
+  activated_by: string | null;
+  activated_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export function aTaxCode(overrides: FixtureOverrides<TaxCodeRow> = {}): BuiltRow<TaxCodeRow> {
+  const tenantId = (overrides.tenant_id as string | undefined) ?? TENANT_A;
+  const now = new Date();
+  return withOverrides<TaxCodeRow>(
+    {
+      id: randomUUID(),
+      tenant_id: tenantId,
+      tax_category_id: taxCategoryIdFor(tenantId),
+      code: 'STANDARD',
+      name_en: 'Standard rate v1',
+      name_ar: null,
+      jurisdiction: 'EG',
+      calculation_method: 'percentage',
+      rate: standardRate(),
+      // BR-TAX-204: the pre-Phase-C engine treated every stored price as
+      // tax-exclusive, so this default keeps existing specs' arithmetic.
+      tax_mode: 'exclusive',
+      rounding_policy: 'line',
+      exemption_allowed: false,
+      effective_from: null,
+      effective_to: null,
+      version: 1,
+      // `active` by default: a draft code prices nothing, and a spec that
+      // wants a lifecycle state says so explicitly.
+      status: 'active',
+      supersedes_id: null,
+      superseded_at: null,
+      superseded_by_id: null,
+      created_by: null,
+      submitted_by: null,
+      submitted_at: null,
+      approved_by: null,
+      approved_at: null,
+      scheduled_by: null,
+      scheduled_at: null,
+      activated_by: null,
+      activated_at: null,
+      created_at: now,
+      updated_at: now,
     },
     overrides,
   );

@@ -11,13 +11,14 @@ const {
 
 test('reports the repository migration history used by deployment', () => {
   // Master corrected WP-008 Phase A's stale count to 153 (PR #67, 628defa).
-  // Phase B adds 7 more folders (202608070001-0007), so 153 -> 160, and the
-  // 202608070xxx pricing folders now sort last.
-  assert.equal(countMigrationFolders(), 160);
+  // Phase B adds 7 more folders (202608070001-0007), so 153 -> 160.
+  // Phase C adds 8 (202608130001-0008), so 160 -> 168, and the 202608130xxx
+  // tax folders now sort last.
+  assert.equal(countMigrationFolders(), 168);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608070005_add_discount_table',
-    '202608070006_migrate_pricing_rules_to_price_books',
-    '202608070007_add_price_book_sync_triggers',
+    '202608130006_add_tax_exemption_table',
+    '202608130007_add_sales_tax_snapshot_table',
+    '202608130008_add_tax_code_sync_triggers',
   ]);
 });
 

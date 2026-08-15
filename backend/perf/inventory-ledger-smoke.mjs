@@ -117,11 +117,17 @@ try {
               name_en: 'Inventory ledger smoke',
             },
           }))
+        // WP-008 Phase C (BR-TAX-201): Product.tax_category_id is NOT NULL.
+        const ledgerTaxCategory = await tx.taxCategory.findFirstOrThrow({
+          where: { tenant_id: sourceBranch.tenant_id },
+          orderBy: { code: 'asc' },
+        })
         const product = await tx.product.create({
           data: {
             tenant_id: sourceBranch.tenant_id,
             name_en: `Ledger smoke product ${randomUUID().slice(0, 8)}`,
             name_ar: 'منتج اختبار دفتر المخزون',
+            tax_category_id: ledgerTaxCategory.id,
             has_variants: false,
           },
         })
