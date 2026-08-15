@@ -81,7 +81,6 @@ export class SyncService {
           is_active: true,
           ...(resetCatalog ? {} : { id: { in: [...requestedIds] } }),
         },
-        include: { product: true }, // TEMP-REVERT-FOR-RED-PROOF
       }),
       this.prisma.inventoryStock.findMany({
         where: {
@@ -93,7 +92,7 @@ export class SyncService {
       this.pricing.loadActiveRules(context),
       this.tax.loadActiveCodeIndex(context),
     ]);
-    const variants = variantRows; // TEMP-REVERT-FOR-RED-PROOF
+    const variants = await this.attachProducts(context, variantRows);
     const presentIds = new Set(variants.map((variant) => variant.id));
     const deletedVariantIds = resetCatalog ? [] : [...requestedIds].filter((id) => !presentIds.has(id));
     const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
@@ -129,7 +128,6 @@ export class SyncService {
           is_active: true,
           product: { is_active: true, tenant_id: context.tenantId },
         },
-        include: { product: true }, // TEMP-REVERT-FOR-RED-PROOF
       }),
       this.prisma.inventoryStock.findMany({
         where: { tenant_id: context.tenantId, branch_id: branchId },
@@ -138,7 +136,7 @@ export class SyncService {
       this.sellers(context, branchId),
       this.tax.loadActiveCodeIndex(context),
     ]);
-    const variants = variantRows; // TEMP-REVERT-FOR-RED-PROOF
+    const variants = await this.attachProducts(context, variantRows);
     const issuedAt = new Date().toISOString();
     const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
     const products = variants
