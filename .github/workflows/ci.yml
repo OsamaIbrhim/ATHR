@@ -532,16 +532,22 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
         working-directory: ${{ github.workspace }}
-      - name: TEMP diagnostic - verbose Postgres statement logging
-        run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "ALTER SYSTEM SET log_statement = 'all';"
-          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "ALTER SYSTEM SET log_min_error_statement = 'error';"
-          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "ALTER SYSTEM SET log_error_verbosity = 'verbose';"
-          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "SELECT pg_reload_conf();"
       - run: npx prisma migrate deploy
       - run: npm run prisma:seed
       - run: npm run perf:seed
       - run: npm run build
+      - name: TEMP diagnostic - EXPLAIN the snapshot query and test JIT off
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "
+            EXPLAIN SELECT \"public\".\"ProductVariant\".\"id\" FROM \"public\".\"ProductVariant\"
+            LEFT JOIN \"public\".\"Product\" AS \"j1\" ON (\"j1\".\"tenant_id\",\"j1\".\"id\") = (\"public\".\"ProductVariant\".\"tenant_id\",\"public\".\"ProductVariant\".\"product_id\")
+            WHERE (\"public\".\"ProductVariant\".\"tenant_id\" = '00000000-0000-0000-0000-000000000001'
+              AND \"public\".\"ProductVariant\".\"is_active\" = true
+              AND (\"j1\".\"is_active\" = true AND \"j1\".\"tenant_id\" = '00000000-0000-0000-0000-000000000001' AND (\"j1\".\"id\" IS NOT NULL)));
+          "
+          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "SHOW jit;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "SHOW jit_above_cost;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d athr_perf -c "ALTER DATABASE athr_perf SET jit = off;"
       - name: Start API
         run: |
           npm run start:prod > /tmp/athr-api.log 2>&1 &
@@ -552,3 +558,9 @@ jobs:
           cat /tmp/athr-api.log
           exit 1
       - run: npm run test:hard
+      - name: Print API log
+        if: always()
+        run: cat /tmp/athr-api.log
+      - name: Print API log
+        if: always()
+        run: cat /tmp/athr-api.log
