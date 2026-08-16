@@ -9,9 +9,9 @@
 --   - BR-CPN-204: "الاستخدام Idempotent" -- redeeming the same
 --     (coupon, idempotency_key) pair twice must produce the SAME redemption
 --     row, never a second one. `CouponRepository.redeem` relies on this being
---     a real constraint (an `INSERT ... ON CONFLICT DO NOTHING`), not a
---     read-then-write check that races -- see that method and
---     `verify-promotion-behaviour.cjs`.
+--     a real constraint -- the redemption `INSERT` is attempted directly and
+--     a `P2002` violation is what signals a replay, not a read-then-write
+--     check that races -- see that method and `verify-promotion-behaviour.cjs`.
 --
 -- Split into its own migration (rather than folded into the previous one) so
 -- "verify-promotion-behaviour.cjs" can be run against the schema state
