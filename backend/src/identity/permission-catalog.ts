@@ -56,7 +56,23 @@ import {
  * listed in the PR description as knowingly-open items, not silently skipped.
  */
 
-/** Matrix §16 Product Catalog, §19 Promotions. */
+/**
+ * Matrix §16 Product Catalog, §19 Promotions.
+ *
+ * WP-008 Phase D adds `catalog.bundle.manage` (§16, previously undeclared —
+ * `Bundle` did not exist as a code entity before this phase) and the six
+ * `promotion.*` keys the Matrix declares that Phase A did not need yet
+ * (`submit`, `schedule`, `activate`, `pause`, `resume`, `simulate`) —
+ * `view`/`create`/`update-draft`/`approve`/`end` were already here since
+ * Phase A, added early for `offers.controller.ts`'s (unrelated, pre-existing
+ * AI-suggested-pricing feature) reuse of the same keys. `promotion.simulate`
+ * is declared here but wired to no endpoint in this phase — see the Phase D
+ * PR description, same "declared-but-unwired" precedent Phase C used for
+ * `tax.calculation.override`/`tax.export`. Promotion evaluation is folded
+ * into the existing `pricing.price-book.view`-gated `POST /pricing/calculate`
+ * quote endpoint instead (see that controller), so no caller of today's quote
+ * endpoint needs a new key to keep seeing prices.
+ */
 const CATALOG_PERMISSIONS = [
   'catalog.product.view',
   'catalog.product.view-cost-sensitive',
@@ -74,11 +90,44 @@ const CATALOG_PERMISSIONS = [
   'catalog.uom-conversion.publish',
   'catalog.assortment.view',
   'catalog.assortment.manage',
+  // WP-008 Phase D: Bundle is catalog composition (Matrix §16), not a
+  // Promotion/Coupon key (Matrix §19) -- see `catalog/bundle.entity` note.
+  'catalog.bundle.manage',
   'promotion.view',
   'promotion.create',
   'promotion.update-draft',
+  'promotion.submit',
   'promotion.approve',
+  'promotion.schedule',
+  'promotion.activate',
+  'promotion.pause',
+  'promotion.resume',
   'promotion.end',
+  'promotion.simulate',
+] as const;
+
+/**
+ * Matrix §19 Coupon. All six keys are new in WP-008 Phase D (`Coupon` did not
+ * exist as a code entity before this phase). `coupon.export-codes` is
+ * declared here but wired to no endpoint in this phase (Matrix: "Raw coupon
+ * export C/A3/P2 ومشفّر ومؤقت" -- encrypted, time-limited access; building
+ * that safely needs a signing/encryption primitive that does not exist
+ * anywhere else in this codebase yet, and inventing one under this phase's
+ * scope was judged riskier than deferring it -- see the Phase D PR
+ * description). It is granted to `tenant_owner` via the blanket grant below
+ * rather than added to `DENY_BY_DEFAULT_PERMISSIONS`, matching the
+ * `tax.export` precedent (declared + granted + unwired), not the
+ * `tax.calculation.override` precedent (declared + actively withheld) --
+ * there is no endpoint for either role to reach yet, so the distinction is
+ * inert today but documented for whoever wires the endpoint next.
+ */
+const COUPON_PERMISSIONS = [
+  'coupon.campaign.create',
+  'coupon.code.generate',
+  'coupon.code.view-sensitive',
+  'coupon.usage.view',
+  'coupon.redemption.override',
+  'coupon.export-codes',
 ] as const;
 
 /**
@@ -239,6 +288,7 @@ const TENANT_STRUCTURE_PERMISSIONS = [
 
 export const BUSINESS_PERMISSIONS = [
   ...CATALOG_PERMISSIONS,
+  ...COUPON_PERMISSIONS,
   ...PRICING_PERMISSIONS,
   ...TAX_PERMISSIONS,
   ...SALES_PERMISSIONS,
@@ -315,6 +365,10 @@ const WAREHOUSE_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'catalog.uom-conversion.publish',
   'catalog.assortment.view',
   'catalog.assortment.manage',
+  // WP-008 Phase D (BR-BND-104: component availability determines
+  // sellability -- an inventory-facing concern, same grouping as the
+  // Assortment keys immediately above).
+  'catalog.bundle.manage',
   'inventory.position.view',
   'inventory.position.view-cost',
   'inventory.movement.view',
@@ -367,11 +421,31 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   // owner. `tax.calculation.override` is deny-by-default for every role
   // (BR-TAX-206) — see `DENY_BY_DEFAULT_PERMISSIONS`.
   'tax.code.view',
+  // WP-008 Phase D: full Promotion maker-checker lifecycle -- Store Manager
+  // is the location-scoped promotion authority, same grouping rationale as
+  // the full Pricing key set immediately above. Self-approval (creator ===
+  // approver) is blocked at the service layer regardless of holding both
+  // `promotion.submit` and `.approve`, same as Pricing/Tax (Matrix §19
+  // implies the same "Separation" pattern §17/§18 state explicitly).
   'promotion.view',
   'promotion.create',
   'promotion.update-draft',
+  'promotion.submit',
   'promotion.approve',
+  'promotion.schedule',
+  'promotion.activate',
+  'promotion.pause',
+  'promotion.resume',
   'promotion.end',
+  'promotion.simulate',
+  // WP-008 Phase D: day-to-day coupon campaign operations. `coupon.export-
+  // codes` is deliberately NOT granted here (Matrix: C/A3/P2 -- tenant-level
+  // only, via the blanket `tenant_owner` grant; see `COUPON_PERMISSIONS`).
+  'coupon.campaign.create',
+  'coupon.code.generate',
+  'coupon.code.view-sensitive',
+  'coupon.usage.view',
+  'coupon.redemption.override',
   'sales.sale.view',
   'sales.sale.view-all-in-scope',
   'sales.sale.create',
@@ -503,8 +577,27 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
  * owner. `warehouse_manager`, `cashier` and `seller` are unchanged: the POS
  * receives tax through the catalog sync snapshot, not through a tax endpoint,
  * so no till-side role needs a §18 key.
+ *
+ * v6 -> v7: WP-008 Phase D adds the remaining Matrix §19 Promotion keys
+ * (`promotion.submit/schedule/activate/pause/resume/simulate` -- `view/
+ * create/update-draft/approve/end` already existed from Phase A), all six
+ * §19 Coupon keys, and §16's `catalog.bundle.manage`. `location_manager`
+ * gains the full Promotion lifecycle (same "location-scoped authority"
+ * grouping as its full Pricing grant) and every Coupon key except
+ * `coupon.export-codes`; `warehouse_manager` (and by the existing spread,
+ * `location_manager`) gains `catalog.bundle.manage` (BR-BND-104: component
+ * availability is an inventory-facing concern). `tenant_owner` gains all of
+ * these via the blanket grant, including `coupon.export-codes` and
+ * `promotion.simulate` -- both declared-but-unwired in this phase (no
+ * endpoint exists yet for either), matching the `tax.export` precedent from
+ * v5 -> v6, not the `tax.calculation.override` one (that key is actively
+ * withheld via `DENY_BY_DEFAULT_PERMISSIONS`; these two are not, since
+ * nothing reaches them regardless). `cashier`/`seller` are unchanged: the POS
+ * quote path (`PricingController.calculate`) folds promotion evaluation into
+ * the existing `pricing.price-book.view` gate rather than requiring a new
+ * key, and neither role manages promotions/coupons/bundles.
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 6;
+export const PERMISSION_POLICY_CURRENT_VERSION = 7;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(

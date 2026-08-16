@@ -9,6 +9,7 @@ import { UomModule } from './uom/uom.module';
 import { AssortmentModule } from './assortment/assortment.module';
 import { PricingModule } from './pricing/pricing.module';
 import { TaxModule } from './tax/tax.module';
+import { PromotionsModule } from './promotions/promotions.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
@@ -44,6 +45,7 @@ import { PermissionGuard } from './identity/permission.guard';
     AssortmentModule,
     PricingModule,
     TaxModule,
+    PromotionsModule,
     InventoryModule,
     SuppliersModule,
     PurchasingModule,

@@ -160,6 +160,17 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
         run: node scripts/verify-tax-code-behaviour.cjs
+      # WP-008 Phase D: Coupon code uniqueness (BR-CPN-201) and idempotent
+      # redemption (BR-CPN-204) are both unique-constraint invariants proven
+      # under genuine concurrency (Promise.all racing writers on the same
+      # row), not sequential calls -- fakePrisma enforces no unique
+      # constraint at all (backlog item F7c), so a green jest suite proves
+      # neither. This is where that phase's central tests actually run.
+      - name: Verify Promotion/Coupon behaviour (WP-008 Phase D)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/verify-promotion-behaviour.cjs
       # hard-load stack-depth fix: SyncService's catalog snapshot used
       # Prisma's automatic include:{product:true} relation loader, which
       # exceeds Postgres's max_stack_depth once the parent ProductVariant

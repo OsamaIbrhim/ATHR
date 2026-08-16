@@ -14,6 +14,30 @@ import { apiGet, apiPost } from '@/lib/api'
  * (BR-CST-101, Permission Matrix §51: no cost/margin visibility for a
  * cashier — the floor can be cost-derived).
  */
+/**
+ * WP-008 Phase D: `promotion` is additive — `CostVisibilityService.
+ * projectQuote` spreads/strips known cost fields only, so it never touches
+ * this new field, and every field above stays unchanged in meaning
+ * (BR-PSL-100 remains the base-price resolution; `promotion.applied`, when
+ * present, is a discount layered on top of it, never a replacement of
+ * `unit_price`/`selling_price` themselves).
+ */
+type PromotionEvaluation = {
+  applied: {
+    promotion_id: string
+    name: string
+    benefit_type: 'percentage' | 'fixed_amount' | 'fixed_price' | 'bogo'
+    discounted_units: number
+    discount_amount: number
+    effective_unit_net_price: number
+    effective_tax_amount: number
+    effective_selling_price: number
+    coupon_id?: string
+  } | null
+  candidates: { promotion_id: string; name: string; eligible: boolean; reason: string }[]
+  evaluation_failed: boolean
+}
+
 type PriceQuote = {
   qty: number
   unit_price: number
@@ -29,6 +53,7 @@ type PriceQuote = {
     scope_id: string | null
     min_qty: number
   }
+  promotion?: PromotionEvaluation
 }
 
 type VariantOption = {
@@ -115,6 +140,18 @@ export default function Pricing() {
             {res.source && (
               <div className="col-span-2 md:col-span-4 text-sm text-gray-600">
                 مصدر السعر: {SCOPE_LABELS[res.source.scope_type]} — كمية لا تقل عن {res.source.min_qty}
+              </div>
+            )}
+            {res.promotion?.applied && (
+              <div className="col-span-2 md:col-span-4 text-sm text-green-700">
+                عرض مطبّق: {res.promotion.applied.name} — خصم {res.promotion.applied.discount_amount} ج على{' '}
+                {res.promotion.applied.discounted_units} وحدة (السعر بعد العرض:{' '}
+                {res.promotion.applied.effective_selling_price} ج)
+              </div>
+            )}
+            {res.promotion?.evaluation_failed && (
+              <div className="col-span-2 md:col-span-4 text-sm text-amber-700">
+                تعذّر تقييم العروض؛ السعر المعروض هو السعر الأساسي دون خصم (BR-CERR-202).
               </div>
             )}
           </div>

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TaxModule } from '../tax/tax.module';
+import { PromotionsModule } from '../promotions/promotions.module';
 import { PricingService } from './pricing.service';
 import { PricingController } from './pricing.controller';
 import { CostVisibilityService } from './cost-visibility.service';
@@ -11,7 +12,7 @@ import { OverridesService } from './overrides.service';
 import { OverridesController } from './overrides.controller';
 
 @Module({
-  imports: [TaxModule],
+  imports: [TaxModule, PromotionsModule],
   providers: [
     PricingService,
     CostVisibilityService,
