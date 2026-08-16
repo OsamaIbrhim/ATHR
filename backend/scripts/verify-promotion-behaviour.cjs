@@ -35,6 +35,12 @@
 //   P4  A replayed redemption (same idempotency key, resubmitted) does not
 //       increment `use_count` a second time — the counter reflects distinct
 //       successful redemptions only.
+//   P5  Independent-review follow-up on PR #76 (BR-CPN-202): a coupon shaped
+//       exactly like what `CouponService.create` now derives for
+//       `type: 'single_use'` (`max_total_uses: 1`) accepts a first
+//       redemption and rejects a SECOND, genuinely distinct one (a different
+//       idempotency key, not a replay — P2/P4 already cover the replay
+//       case), leaving no orphan row and no second `use_count` increment.
 //
 // Deliberate omission for THIS script (see the two-migration split in
 // 202608160001_add_promotion_coupon_bundle_tables /
@@ -264,6 +270,69 @@ async function verifyReplayDoesNotDoubleCount(tenant) {
   );
 }
 
+// --- P5: a single_use coupon rejects a genuinely SECOND redemption ----------
+//
+// Review follow-up on PR #76 (BR-CPN-202): before this fix, `CouponService.
+// create` never derived `max_total_uses` from `type` -- a "single_use"
+// coupon created without an explicit `max_total_uses` was persisted with
+// `max_total_uses: null` (unlimited), identical in DB-visible behaviour to
+// `public`. The fix makes `CouponService.create` set `max_total_uses: 1` for
+// `type: 'single_use'` -- a pure application-layer derivation, proven by a
+// jest unit test against a mocked repository (`coupon.service.spec.ts`,
+// "single_use enforcement"). What that unit test CANNOT prove is the
+// consequence: that a coupon actually shaped `max_total_uses: 1` really does
+// reject a second redemption. That is `CouponRepository.redeem`'s job, and
+// like P1-P4, it is real-Postgres-only. This check mirrors
+// `CouponRepository.redeem`'s exact two-phase sequence (insert the
+// redemption row, then an atomic conditional capacity claim, compensating
+// with a delete if capacity was not available) for two GENUINELY DISTINCT
+// redemption attempts (different idempotency keys -- this is not a replay,
+// which P2/P4 already cover) against a coupon shaped exactly like what
+// `CouponService.create` now derives for `type: 'single_use'`.
+async function redeemTwoPhase(tenant, coupon, idempotencyKey) {
+  const inserted = await prisma.couponRedemption.create({
+    data: { tenant_id: tenant.id, coupon_id: coupon.id, idempotency_key: idempotencyKey, redeemed_at: new Date() },
+  });
+  const capacity = await prisma.$executeRaw`
+    UPDATE "Coupon" SET "use_count" = "use_count" + 1, "updated_at" = CURRENT_TIMESTAMP
+    WHERE "id" = ${coupon.id}::uuid AND "tenant_id" = ${tenant.id}::uuid
+      AND "status" = 'active'::"CouponStatus"
+      AND ("max_total_uses" IS NULL OR "use_count" < "max_total_uses")
+  `;
+  if (Number(capacity) !== 1) {
+    await prisma.couponRedemption.delete({ where: { id: inserted.id } });
+    return { accepted: false };
+  }
+  return { accepted: true, redemptionId: inserted.id };
+}
+
+async function verifySingleUseCouponRejectsSecondRedemption(tenant) {
+  const promotion = await prisma.promotion.create({ data: promotionData(tenant.id, { name: 'P5' }) });
+  // Exactly what `CouponService.create` now derives for `type: 'single_use'`
+  // with no explicit `max_total_uses` -- see that method's BR-CPN-202 comment.
+  const coupon = await prisma.coupon.create({
+    data: couponData(tenant.id, promotion.id, 'P5-CODE', { type: 'single_use', max_total_uses: 1 }),
+  });
+
+  const first = await redeemTwoPhase(tenant, coupon, `p5-first-${randomUUID()}`);
+  expectEqual('P5 the first redemption of a single_use coupon is accepted', first.accepted, true);
+
+  const second = await redeemTwoPhase(tenant, coupon, `p5-second-${randomUUID()}`);
+  expectEqual(
+    'P5 a second, genuinely distinct redemption of the same single_use coupon is rejected',
+    second.accepted,
+    false,
+  );
+
+  const finalCoupon = await prisma.coupon.findUnique({ where: { id: coupon.id } });
+  expectEqual('P5 use_count reflects exactly the one accepted redemption', finalCoupon.use_count, 1);
+  expectEqual(
+    'P5 the rejected second attempt left no orphan CouponRedemption row behind',
+    await prisma.couponRedemption.count({ where: { tenant_id: tenant.id, coupon_id: coupon.id } }),
+    1,
+  );
+}
+
 async function main() {
   const tenantA = await createTenant('wp008d-verify-a');
   const tenantB = await createTenant('wp008d-verify-b');
@@ -272,6 +341,7 @@ async function main() {
   await verifyIdempotentRedemptionConcurrency(tenantA);
   await verifyCapacityGateConcurrency(tenantA);
   await verifyReplayDoesNotDoubleCount(tenantA);
+  await verifySingleUseCouponRejectsSecondRedemption(tenantA);
 
   process.stdout.write(failed ? `\n${failed} check(s) FAILED\n` : '\nAll Promotion/Coupon behaviour checks passed\n');
   if (failed) process.exitCode = 1;

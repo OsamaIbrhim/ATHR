@@ -2005,6 +2005,9 @@ model Coupon {
   // Required (service-enforced) when type = customer_bound; ignored otherwise.
   customer_id            String?        @db.Uuid
   // BR-CPN-205: centralized limits -- null means "no cap on this dimension".
+  // BR-CPN-202 (service-enforced): `type = single_use` forces this to
+  // exactly 1 in `CouponService.create` -- `type` alone has no effect on
+  // `CouponRepository.redeem`'s capacity gate, only this column does.
   max_total_uses         Int?
   max_uses_per_customer  Int?
   // Denormalized counter maintained ONLY by `CouponRepository.redeem`'s

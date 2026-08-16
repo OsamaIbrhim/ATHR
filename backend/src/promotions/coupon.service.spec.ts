@@ -136,3 +136,66 @@ describe('CouponService.redeem — eligibility pre-flight', () => {
     expect(result.replay).toBe(false);
   });
 });
+
+/**
+ * WP-008 Phase D review follow-up (independent review of PR #76) — BR-CPN-
+ * 202: `type` alone was previously a label with no effect on
+ * `CouponRepository.redeem`'s capacity gate; only `max_total_uses` governs
+ * that gate (proven against real Postgres by `verify-promotion-behaviour.
+ * cjs`'s P3). Before this fix, a "single_use" coupon created without an
+ * explicit `max_total_uses` was created with `max_total_uses: null` — i.e.
+ * unlimited, identical to `public`. `CouponService.create` now derives
+ * `max_total_uses = 1` for `type: 'single_use'`, and rejects a caller-
+ * supplied value other than 1 rather than silently overriding it.
+ */
+describe('CouponService.create — BR-CPN-202 single_use enforcement', () => {
+  function setupCreate() {
+    const promotionId = randomUUID();
+    const create = jest.fn().mockImplementation((_ctx, data) => Promise.resolve({ id: randomUUID(), ...data }));
+    const coupons = { create } as unknown as CouponRepository;
+    const promotions = {
+      assertInTenant: jest.fn().mockResolvedValue({ id: promotionId, tenant_id: TENANT_A, status: 'draft' }),
+    } as unknown as PromotionRepository;
+    return { service: new CouponService(coupons, promotions), create, ctx: contextFor(TENANT_A), promotionId };
+  }
+
+  it('derives max_total_uses = 1 when type is "single_use" and the caller omits it', async () => {
+    const { service, create, ctx, promotionId } = setupCreate();
+    await service.create(ctx, ACTOR, {
+      promotion_id: promotionId,
+      code: 'ONECODE',
+      type: 'single_use',
+    } as any);
+    expect(create).toHaveBeenCalledWith(ctx, expect.objectContaining({ maxTotalUses: 1 }));
+  });
+
+  it('accepts an explicit max_total_uses = 1 for "single_use" (no conflict)', async () => {
+    const { service, create, ctx, promotionId } = setupCreate();
+    await service.create(ctx, ACTOR, {
+      promotion_id: promotionId,
+      code: 'ONECODE',
+      type: 'single_use',
+      max_total_uses: 1,
+    } as any);
+    expect(create).toHaveBeenCalledWith(ctx, expect.objectContaining({ maxTotalUses: 1 }));
+  });
+
+  it('rejects a "single_use" coupon with an explicit max_total_uses other than 1, rather than silently overriding it', async () => {
+    const { service, create, ctx, promotionId } = setupCreate();
+    await expect(
+      service.create(ctx, ACTOR, {
+        promotion_id: promotionId,
+        code: 'ONECODE',
+        type: 'single_use',
+        max_total_uses: 5,
+      } as any),
+    ).rejects.toMatchObject({ code: 'REQUEST_FIELD_VALUE_INVALID' });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('leaves max_total_uses untouched (null, i.e. unlimited) for "public" coupons', async () => {
+    const { service, create, ctx, promotionId } = setupCreate();
+    await service.create(ctx, ACTOR, { promotion_id: promotionId, code: 'PUBCODE', type: 'public' } as any);
+    expect(create).toHaveBeenCalledWith(ctx, expect.objectContaining({ maxTotalUses: null }));
+  });
+});

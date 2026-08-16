@@ -59,12 +59,28 @@ export class CouponService {
       );
     }
 
+    // BR-CPN-202: "single_use" is a promised behaviour (redeemable exactly
+    // once total), not a display label — `type` alone has no effect on
+    // `CouponRepository.redeem`'s capacity gate, only `max_total_uses` does.
+    // Derive it here so a "single_use" coupon is actually single-use even if
+    // the caller never sets `max_total_uses`; reject a caller-supplied value
+    // other than 1 rather than silently overriding it (CLAUDE.md §4 — a
+    // silently overridden input is the same defect as a silently ignored
+    // one).
+    if (type === 'single_use' && dto.max_total_uses !== undefined && dto.max_total_uses !== 1) {
+      throw new AthrDomainError(
+        'REQUEST_FIELD_VALUE_INVALID',
+        'A "single_use" coupon must have max_total_uses = 1 (or omit it).',
+      );
+    }
+    const maxTotalUses = type === 'single_use' ? 1 : (dto.max_total_uses ?? null);
+
     return this.coupons.create(context, {
       promotionId: dto.promotion_id,
       codeDisplay: dto.code,
       type,
       customerId: type === 'customer_bound' ? (dto.customer_id ?? null) : null,
-      maxTotalUses: dto.max_total_uses ?? null,
+      maxTotalUses,
       maxUsesPerCustomer: dto.max_uses_per_customer ?? null,
       expiresAt: dto.expires_at ? new Date(dto.expires_at) : null,
       createdBy: actorId,
