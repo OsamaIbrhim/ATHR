@@ -553,7 +553,7 @@ jobs:
       # WP-P1 H1 measurement: baseline value under test. Changed commit-by-commit
       # (1 / 20 / 100) while gathering evidence; see the PR for the run IDs and
       # numbers at each value before this settles on its final default.
-      PERF_SALE_VARIANTS: 1
+      PERF_SALE_VARIANTS: 20
       # WP-P1 H2: env-gated event-loop-delay + CPU sampler (see
       # src/config/runtime-diagnostics.ts). No effect outside this job.
       PERF_DIAGNOSTICS: "1"

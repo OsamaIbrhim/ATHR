@@ -400,8 +400,16 @@ async function concurrencySweep(token) {
     const path = `/products?page=${page}&page_size=${PAGE_SIZE}`;
     process.stdout.write(`\n--- ${path} ---\n`);
     for (const concurrency of SWEEP_LEVELS) {
+      // WP-P1 H2: brackets this level in real wall-clock time so the API
+      // server's runtime_sample lines (PERF_DIAGNOSTICS=1) can be filtered to
+      // exactly this window -- the API log is printed in one batched `cat` at
+      // the end of the job, so log-ingestion timestamps can't do this.
+      const startedAt = new Date().toISOString();
       const result = await runSweepLevel(api, path, token, concurrency, SWEEP_REQUESTS_PER_WORKER);
-      process.stdout.write(`${JSON.stringify({ type: 'sweep', path, ...result })}\n`);
+      const endedAt = new Date().toISOString();
+      process.stdout.write(
+        `${JSON.stringify({ type: 'sweep', path, started_at: startedAt, ended_at: endedAt, ...result })}\n`,
+      );
     }
   }
 }

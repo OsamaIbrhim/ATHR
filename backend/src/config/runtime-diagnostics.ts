@@ -26,6 +26,13 @@ export function startRuntimeDiagnostics(intervalMs = 500): void {
     console.log(
       JSON.stringify({
         type: 'runtime_sample',
+        // Real wall-clock time, not the GitHub Actions log-ingestion
+        // timestamp -- the "Print API log" step dumps the whole captured
+        // server log in one `cat`, so every line gets nearly the same
+        // ingestion timestamp regardless of when it was actually written.
+        // This is what lets a reader correlate a sample to a specific sweep
+        // phase (see diagnose-product-pagination.cjs's sweep_phase markers).
+        sampled_at: new Date().toISOString(),
         event_loop_delay_mean_ms: Number((histogram.mean / 1e6).toFixed(2)),
         event_loop_delay_p50_ms: Number((histogram.percentile(50) / 1e6).toFixed(2)),
         event_loop_delay_p99_ms: Number((histogram.percentile(99) / 1e6).toFixed(2)),
