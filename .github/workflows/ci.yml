@@ -575,6 +575,14 @@ jobs:
           cat /tmp/athr-api.log
           exit 1
       - run: npm run test:hard
+      # WP-P1 Phase A: the query-plan evidence the WP requires, plus the
+      # concurrency-1 page=500 sample the harness never takes. Deliberately
+      # placed *after* test:hard and gated on `always()`: running it first
+      # would warm the very caches whose cost it is measuring, and it has to
+      # run even though test:hard exits non-zero on the p95 breach.
+      - name: WP-P1 diagnostic -- product pagination query plans (read-only)
+        if: always()
+        run: node scripts/diagnose-product-pagination.cjs
       - name: Print API log
         if: always()
         run: cat /tmp/athr-api.log
