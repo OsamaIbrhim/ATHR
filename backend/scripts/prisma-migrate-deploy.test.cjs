@@ -14,11 +14,15 @@ test('reports the repository migration history used by deployment', () => {
   // Phase B adds 7 more folders (202608070001-0007), so 153 -> 160.
   // Phase C adds 8 (202608130001-0008), so 160 -> 168, and the 202608130xxx
   // tax folders now sort last.
-  assert.equal(countMigrationFolders(), 168);
+  // Phase D adds 2 (202608160001_add_promotion_coupon_bundle_tables,
+  // 202608160002_add_promotion_coupon_uniqueness_constraints -- split in two
+  // deliberately, see that second migration's own header comment and the
+  // Phase D PR description), so 168 -> 170.
+  assert.equal(countMigrationFolders(), 170);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608130006_add_tax_exemption_table',
-    '202608130007_add_sales_tax_snapshot_table',
     '202608130008_add_tax_code_sync_triggers',
+    '202608160001_add_promotion_coupon_bundle_tables',
+    '202608160002_add_promotion_coupon_uniqueness_constraints',
   ]);
 });
 

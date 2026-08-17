@@ -546,6 +546,11 @@ model ProductVariant {
   assortments                Assortment[]
   price_overrides            PriceOverride[]
   discounts                  Discount[]
+  // WP-008 Phase D (BR-BND-101): a variant may be a component of one or more
+  // virtual Bundles. Real FK (unlike Promotion's polymorphic `scope_id`)
+  // because a bundle component always names a Variant specifically, never a
+  // product/brand/category, so there is no polymorphism to preserve.
+  bundle_components          BundleComponent[]
   tenant_id                  String                    @db.Uuid
 
   @@unique([tenant_id, sku])
@@ -867,9 +872,17 @@ model PriceOverride {
 
 // WP-008 Phase B (BR-DSC-200/205): a calculated adjustment, distinct from a
 // "PriceOverride" -- never mutates the Price Book. "source" is a plain
-// string (not an enum) so Phase D can add "promotion" without a migration;
-// only "manual" is produced in this phase (Promotions are explicitly out of
-// scope, WP doc §B.5).
+// string (not an enum) so a "promotion" value needs no migration when one is
+// produced.
+//
+// WP-008 Phase D update: `Promotion`/`Coupon`/`Bundle` now exist (below), but
+// still nothing writes `source: "promotion"` here. Phase D wires promotion
+// evaluation into the read-only `POST /pricing/calculate` quote endpoint only
+// (see `PromotionEvaluationService` and the Phase D PR description) -- it
+// does not touch `SalesService.createSale`, which is where a `Discount` row
+// would actually be persisted against a completed sale. That wiring is
+// WP-010's, per this WP document's own "Blocks" line. Still only "manual" is
+// produced by any code path today.
 enum DiscountBasis {
   percentage
   fixed_amount
@@ -1759,4 +1772,366 @@ model Shift {
   @@unique([tenant_id, id])
   @@index([branch_id, opened_at])
   @@index([tenant_id])
+}
+
+// ---------------------------------------------------------------------------
+// WP-008 Phase D — Promotions, Coupons, Bundles (MVP) (BR §20-25)
+//
+// MVP boundary per OD-CAT-007/008/009 (BR doc §35 numbering -- the WP document
+// and Task brief cite these as OD-CAT-008/009/010; see the Phase D PR
+// description for the off-by-one discrepancy, same pattern Phase C flagged for
+// OD-CAT-006/007 at `TaxCode` above): percentage/fixed-amount/fixed-price/BOGO
+// benefits only, single explicit priority order (no composite stacking),
+// online-first coupons (no offline redemption), virtual bundles only (no
+// stock-kit assembly/disassembly).
+// ---------------------------------------------------------------------------
+
+// BR-PMT-100 lists exactly these seven states -- no "submitted"/"approved"
+// state exists in the BR doc, even though the WP document's prose and
+// Permission Matrix §19 (`promotion.submit`/`.approve`) describe a
+// submit/approve gate. Per Task instructions ("the BR doc governs over the WP
+// document's summaries... follow the BR doc and FLAG the discrepancy"), this
+// enum is BR-PMT-100 verbatim. The submit/approve gate is represented as
+// `submitted_by/at` + `approved_by/at` fields that must both be set before
+// `schedule()` moves a `draft` promotion to `scheduled` -- the promotion's
+// visible `status` never becomes "submitted" or "approved" in its own right.
+// See `PromotionService.schedule` and the Phase D PR description.
+enum PromotionStatus {
+  draft
+  scheduled
+  active
+  paused
+  ended
+  cancelled
+  archived
+}
+
+// OD-CAT-007 / BR-BEN-100: the MVP benefit-type subset. BR-BEN-100 lists seven
+// candidate types (percentage/fixed/fixed-price/BOGO/free-item/quantity-tier/
+// order-level); OD-CAT-007 narrows the MVP to four. "free item" is expressed
+// as a `bogo` with `bogo_get_discount_percent = 100`, not a fifth type.
+enum PromotionBenefitType {
+  percentage
+  fixed_amount
+  fixed_price
+  bogo
+}
+
+// BR-STK-100: every Promotion declares its stackability. Modelled from day one
+// (compliance item 2.3 -- a later phase should not need new plumbing), but
+// MVP evaluation (`PromotionEvaluationService`) always applies at most ONE
+// promotion regardless of this value -- true multi-promotion combination is
+// exactly what OD-CAT-007/BR-STK-103 defers. See the Phase D PR description.
+enum PromotionStackability {
+  exclusive
+  stackable_group
+  stackable_manual
+}
+
+// BR-CND-100's eligibility list (products/variants/categories, customer/
+// group/tier, location/channel, date/time, min qty, min spend, payment
+// method, coupon, first-purchase-later) is wider than this MVP resolves.
+// `brand` is an extension beyond BR-CND-100's literal list, added for
+// consistency with the identical chain `PriceEntryScopeType` already walks
+// (variant -> product -> brand -> category -> global/all) -- flagged, not
+// silently assumed to be BR-mandated. Customer group/tier has no entity in
+// this codebase yet (no `CustomerGroup` model) and payment-method condition
+// are both deferred -- see the Phase D PR description.
+enum PromotionScopeType {
+  variant
+  product
+  brand
+  category
+  all
+}
+
+enum PromotionMinSpendBasis {
+  before_tax
+  after_tax
+}
+
+// OD-CAT-012 (BR doc §35 -- "القرار", a Decision, not a proposal, unlike its
+// neighbours): "every Promotion type must provide Allocation and Return
+// policy before activation." BR-BEN-104 independently requires this for BOGO
+// specifically ("Allocation... for partial-return and value/tax purposes").
+// No Sale/Return integration exists yet to consume this in this phase (same
+// caveat as `Bundle.return_policy` below) -- it is a declared, activation-
+// gating policy a later WP's Returns integration will read, not a value
+// anything evaluates today. Two values cover both this MVP's benefit shapes:
+// a per-line percentage/fixed/fixed-price discount naturally prorates with
+// the line it sits on, while a BOGO's "get" line is a separate, coupled line
+// that a partial return of either side can desynchronize -- `line_prorated`
+// says "reverse the benefit in proportion to what's returned",
+// `whole_promotion_only` says "any return of an affected line voids the
+// whole benefit for that transaction, no partial credit". See
+// `PromotionService.activate`, which rejects a null value here exactly as
+// `BundleService.activate` rejects a null `Bundle.return_policy`.
+enum PromotionReturnPolicy {
+  line_prorated
+  whole_promotion_only
+}
+
+/// BR-PMT-1xx / Permission Matrix §19: a single MVP benefit (OD-CAT-007) lives
+/// directly on the Promotion row rather than a child table, since composite
+/// multi-benefit promotions are explicitly deferred (BR-STK-103) -- there is
+/// exactly one benefit to model per promotion in this phase.
+///
+/// BR-PMT-101 ("substantive change after activation creates a new Version OR
+/// ends the old one") is satisfied here by `end` + a fresh `create` (no
+/// `supersedes_id` version chain like `TaxCode`/`PriceBookEntry`) -- no Sale
+/// yet snapshots which Promotion version applied (that wiring is WP-010's,
+/// per this WP doc's own "Blocks" line), so there is no historical document
+/// whose correctness depends on preserving an exact version chain today.
+/// Flagged as a scope decision, not silently the only reading of BR-PMT-101.
+model Promotion {
+  id             String                  @id @default(uuid()) @db.Uuid
+  tenant_id      String                  @db.Uuid
+  name           String
+  status         PromotionStatus         @default(draft)
+  // BR-PMT-102: the promotion's declared timezone. `starts_at`/`ends_at` are
+  // stored as absolute UTC instants (the timezone the operator entered them
+  // in is already baked into the instant); this column records which
+  // timezone that was, for display/audit, not for a per-request conversion.
+  // A full per-branch DST-aware evaluation matrix is BR §26/OD-CAT-011
+  // territory and is not built here -- see the offline-evaluability note in
+  // the Phase D PR description.
+  timezone       String                  @default("Africa/Cairo")
+  starts_at      DateTime
+  ends_at        DateTime?
+  // BR-PMT-105: explicit, not database row order. Lower number = higher
+  // priority (matches nothing implicit -- a tenant sets this deliberately).
+  priority       Int                     @default(100)
+  stackability   PromotionStackability   @default(exclusive)
+  stack_group    String?
+
+  benefit_type                PromotionBenefitType
+  // Meaning depends on benefit_type: percent (0-100) for `percentage`, a
+  // money amount for `fixed_amount`, the resulting unit price for
+  // `fixed_price`. Null for `bogo`, which uses the bogo_* columns instead.
+  benefit_value                Decimal?             @db.Decimal(12, 4)
+  bogo_buy_qty                 Int?
+  bogo_get_qty                 Int?
+  // BR-BEN-103: 100 = the "get" item(s) are free; a value below 100 is a
+  // partial discount on the "get" portion rather than a separate 5th type.
+  bogo_get_discount_percent    Decimal?             @db.Decimal(5, 2)
+  // BR-BEN-105: explicit tenant-configured caps.
+  max_discount_amount          Decimal?             @db.Decimal(12, 2)
+  max_units_per_order          Int?
+  max_uses_per_customer        Int?
+
+  // --- Eligibility (BR-CND-1xx), single condition set (no composite AND/OR
+  // per OD-CAT-007) ---------------------------------------------------------
+  scope_type       PromotionScopeType       @default(all)
+  // Polymorphic, no FK -- same reason `PriceBookEntry.scope_id` has none.
+  scope_id         String?                  @db.Uuid
+  min_qty          Decimal?                 @db.Decimal(12, 3)
+  min_spend        Decimal?                 @db.Decimal(12, 2)
+  min_spend_basis  PromotionMinSpendBasis?
+  // Location condition (BR-CND-100 "location/channel"). Polymorphic-style
+  // plain UUID kept nullable+unenforced-by-FK deliberately: a Branch delete
+  // must not be blocked by a promotion condition referencing it historically.
+  branch_id        String?                  @db.Uuid
+  // Customer-bound eligibility (distinct from a Coupon's own
+  // `customer_bound` type -- a promotion can target one customer with no
+  // coupon involved at all).
+  customer_id      String?                  @db.Uuid
+  // BR-CND-100 "coupon": true means this Promotion is reachable ONLY via a
+  // valid Coupon that references it; false means it applies automatically to
+  // any eligible line.
+  requires_coupon  Boolean                  @default(false)
+
+  // OD-CAT-012 / BR-BEN-104: deliberately NO database default -- see the enum
+  // comment above. `PromotionService.activate` rejects a null value here.
+  return_policy    PromotionReturnPolicy?
+
+  created_by     String?   @db.Uuid
+  submitted_by   String?   @db.Uuid
+  submitted_at   DateTime?
+  approved_by    String?   @db.Uuid
+  approved_at    DateTime?
+  scheduled_by   String?   @db.Uuid
+  scheduled_at   DateTime?
+  activated_by   String?   @db.Uuid
+  activated_at   DateTime?
+  paused_by      String?   @db.Uuid
+  paused_at      DateTime?
+  resumed_by     String?   @db.Uuid
+  resumed_at     DateTime?
+  // BR-PMT-103/104: ending/pausing never rewrites history -- these columns
+  // record WHEN the promotion stopped applying to NEW use; nothing about a
+  // sale that already applied it is touched (no Sale integration exists yet
+  // in this phase to touch regardless).
+  ended_by       String?   @db.Uuid
+  ended_at       DateTime?
+  cancelled_by   String?   @db.Uuid
+  cancelled_at   DateTime?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  coupons        Coupon[]
+
+  @@unique([tenant_id, id])
+  @@index([tenant_id])
+  @@index([tenant_id, status])
+  @@index([tenant_id, status, priority])
+  @@index([tenant_id, scope_type, scope_id])
+}
+
+enum CouponType {
+  public
+  single_use
+  customer_bound
+}
+
+enum CouponStatus {
+  active
+  disabled
+}
+
+/// BR-CPN-200: a Coupon is a distinct entity that references a Promotion --
+/// it owns its own code, status and usage limits (not the Promotion's).
+/// BR-CPN-201: `code_normalized` is the uniqueness key (OD-CAT-002's
+/// "normalized uppercase/trimmed form" pattern, already used for SKU),
+/// `code_display` preserves what the operator typed.
+model Coupon {
+  id                     String         @id @default(uuid()) @db.Uuid
+  tenant_id              String         @db.Uuid
+  promotion_id           String         @db.Uuid
+  promotion              Promotion      @relation(fields: [tenant_id, promotion_id], references: [tenant_id, id], onDelete: Restrict)
+  code_normalized        String
+  code_display           String
+  type                   CouponType     @default(public)
+  status                 CouponStatus   @default(active)
+  // Required (service-enforced) when type = customer_bound; ignored otherwise.
+  customer_id            String?        @db.Uuid
+  // BR-CPN-205: centralized limits -- null means "no cap on this dimension".
+  // BR-CPN-202 (service-enforced): `type = single_use` forces this to
+  // exactly 1 in `CouponService.create` -- `type` alone has no effect on
+  // `CouponRepository.redeem`'s capacity gate, only this column does.
+  max_total_uses         Int?
+  max_uses_per_customer  Int?
+  // Denormalized counter maintained ONLY by `CouponRepository.redeem`'s
+  // atomic conditional UPDATE (`use_count < max_total_uses`), never by a
+  // read-then-write service-layer check -- see that method and
+  // `verify-promotion-behaviour.cjs`.
+  use_count              Int            @default(0)
+  expires_at             DateTime?
+  created_by             String?        @db.Uuid
+  created_at             DateTime       @default(now())
+  updated_at             DateTime       @updatedAt
+
+  redemptions            CouponRedemption[]
+
+  @@unique([tenant_id, id])
+  // BR-CPN-201: normalized code uniqueness IS the tenant-scoped identity of a
+  // coupon. Proven against real Postgres in `verify-promotion-behaviour.cjs`
+  // -- `fakePrisma` enforces no unique constraint (backlog item F7c).
+  @@unique([tenant_id, code_normalized])
+  @@index([tenant_id])
+  @@index([tenant_id, promotion_id])
+}
+
+/// BR-CPN-204: the record of one idempotent use. `idempotency_key` is a
+/// caller-supplied opaque reference (intended to be a Sale id once WP-010
+/// wires a real caller -- there is none in this phase, so tests/callers pass
+/// their own key) -- the same "no FK to keep modules independent"
+/// justification `PriceOverride.reference` already uses (CLAUDE.md §2.2).
+/// The `(tenant_id, coupon_id, idempotency_key)` unique constraint is what
+/// makes redemption idempotent STRUCTURALLY: a second attempt with the same
+/// key hits P2002, not a second row.
+model CouponRedemption {
+  id               String    @id @default(uuid()) @db.Uuid
+  tenant_id        String    @db.Uuid
+  coupon_id        String    @db.Uuid
+  coupon           Coupon    @relation(fields: [tenant_id, coupon_id], references: [tenant_id, id], onDelete: Restrict)
+  idempotency_key  String
+  customer_id      String?   @db.Uuid
+  amount_applied   Decimal?  @db.Decimal(12, 2)
+  redeemed_by      String?   @db.Uuid
+  redeemed_at      DateTime  @default(now())
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, coupon_id, idempotency_key])
+  @@index([tenant_id])
+  @@index([tenant_id, coupon_id])
+}
+
+enum BundleStatus {
+  draft
+  active
+  ended
+}
+
+// BR-BND-103: "توزع بطريقة حتمية" (allocated deterministically) -- one method
+// in MVP. The enum exists so a later method is an added value, matching the
+// `TaxCalculationMethod` precedent.
+enum BundleAllocationMethod {
+  proportional_price
+}
+
+// BR-BND-105 (an Open Decision in the BR doc, resolved here for MVP, per
+// D.4.5's requirement that a return policy be "defined before activation" --
+// see `BundleService.activate`, which enforces this column is set before
+// allowing the transition, rather than defaulting it).
+enum BundleReturnPolicy {
+  whole_bundle_only
+  component_prorated
+}
+
+/// BR-BND-100/101: virtual sales bundle only (OD-CAT-009 in the BR doc's own
+/// §35 numbering) -- no stock-kit assembly/disassembly (§36, deferred
+/// indefinitely). Versioned like `TaxCode` (`supersedes_id` chain, never
+/// mutates an activated bundle's component list) so BR-BND-101 ("changing the
+/// composition does not change past sales") holds once a real Sale
+/// integration exists to reference a specific version.
+model Bundle {
+  id                 String                   @id @default(uuid()) @db.Uuid
+  tenant_id          String                   @db.Uuid
+  name               String
+  status             BundleStatus             @default(draft)
+  allocation_method  BundleAllocationMethod   @default(proportional_price)
+  // Deliberately NO database default (mirrors `PriceBookEntry.tax_mode`'s
+  // reasoning) -- BR-BND-105 requires this decided before activation, and a
+  // silent default here would be exactly the kind of un-evidenced policy
+  // choice CLAUDE.md §6 forbids. `BundleService.activate` rejects a null value.
+  return_policy      BundleReturnPolicy?
+  version            Int                      @default(1)
+  supersedes_id      String?                  @db.Uuid
+  supersedes         Bundle?                  @relation("BundleVersion", fields: [tenant_id, supersedes_id], references: [tenant_id, id], onDelete: Restrict)
+  superseded_by      Bundle[]                 @relation("BundleVersion")
+  superseded_at      DateTime?
+  superseded_by_id   String?                  @db.Uuid
+  created_by         String?                  @db.Uuid
+  activated_by       String?                  @db.Uuid
+  activated_at       DateTime?
+  ended_by           String?                  @db.Uuid
+  ended_at           DateTime?
+  created_at         DateTime                 @default(now())
+  updated_at         DateTime                 @updatedAt
+
+  components         BundleComponent[]
+
+  @@unique([tenant_id, id])
+  @@index([tenant_id])
+  @@index([tenant_id, status])
+}
+
+/// BR-BND-101: components and quantities fixed by the owning Bundle's
+/// version -- mutable only while the parent `Bundle.status = 'draft'`
+/// (enforced in `BundleService`, mirroring `PriceBookService
+/// .assertEntriesManageable`'s draft/active distinction, simplified since a
+/// Bundle has no maker-checker lifecycle, just `catalog.bundle.manage`).
+model BundleComponent {
+  id          String          @id @default(uuid()) @db.Uuid
+  tenant_id   String          @db.Uuid
+  bundle_id   String          @db.Uuid
+  bundle      Bundle          @relation(fields: [tenant_id, bundle_id], references: [tenant_id, id], onDelete: Restrict)
+  variant_id  String          @db.Uuid
+  variant     ProductVariant  @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  qty         Decimal         @db.Decimal(12, 3)
+  created_at  DateTime        @default(now())
+
+  @@unique([tenant_id, id])
+  @@index([tenant_id])
+  @@index([tenant_id, bundle_id])
 }

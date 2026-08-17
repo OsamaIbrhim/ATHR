@@ -14,6 +14,7 @@ export { IDENTITY_ERROR_CODES } from './codes/identity';
 export { CATALOG_ERROR_CODES } from './codes/catalog';
 export { PRICING_ERROR_CODES } from './codes/pricing';
 export { TAX_ERROR_CODES } from './codes/tax';
+export { PROMOTION_ERROR_CODES } from './codes/promotion';
 
 export { ERROR_SEVERITIES, ERROR_REGISTRY, getErrorMetadata } from './registry';
 export type { ErrorSeverity, ErrorMetadata, ErrorCode } from './registry';
