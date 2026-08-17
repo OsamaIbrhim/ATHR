@@ -550,6 +550,13 @@ jobs:
       PERF_MUTATIONS: 1
       PERF_SALES: 100
       PERF_SALE_P95_MS: 500
+      # WP-P1 H1 measurement: baseline value under test. Changed commit-by-commit
+      # (1 / 20 / 100) while gathering evidence; see the PR for the run IDs and
+      # numbers at each value before this settles on its final default.
+      PERF_SALE_VARIANTS: 1
+      # WP-P1 H2: env-gated event-loop-delay + CPU sampler (see
+      # src/config/runtime-diagnostics.ts). No effect outside this job.
+      PERF_DIAGNOSTICS: "1"
       PERF_CASHIER_PHONE: "+200100000002"
       PERF_CASHIER_PASSWORD: Bold1234
     steps:

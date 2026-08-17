@@ -10,10 +10,13 @@ import compression from 'compression';
 import { apiJsonReplacer } from './common/json-serialization';
 import { validateRuntimeEnvironment } from './config/environment';
 import { configureDatabaseConnection } from './config/database-connection';
+import { startRuntimeDiagnostics } from './config/runtime-diagnostics';
 
 async function bootstrap() {
   // Bound and normalize the Prisma pool before PrismaClient reads DATABASE_URL.
   configureDatabaseConnection();
+  // WP-P1 H2: inert unless PERF_DIAGNOSTICS=1 (set only in the hard-load CI job).
+  startRuntimeDiagnostics();
   // Validate every security-critical setting before Nest constructs providers or
   // opens a database connection. Configuration errors must fail the deployment.
   const environment = validateRuntimeEnvironment();
