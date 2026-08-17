@@ -69,6 +69,51 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
 }
 process.stdout.write('\n')
 
+// WP-P1 H1: none of the bulk PERF-* variants above have a resolvable selling
+// price -- PricingService.quoteMany() only resolves entries in the tenant's
+// *default* PriceBook, and this script never touched pricing, so /sync/pull's
+// snapshot (which filters to `quotes.has(variant.id)`) silently excludes all
+// 10,000 of them. Every sale-mutation-load candidate before this was drawn
+// from the small pre-existing dev-seed catalog only, regardless of
+// PERF_PRODUCTS. One 'global'-scope entry in the default book is the lowest
+// priority in BR-PSL-100's variant->product->brand->category->global order,
+// so it prices every PERF-* variant as a fallback without changing what any
+// more-specifically-priced dev-seed product resolves to.
+const defaultPriceBook = await prisma.priceBook.findFirst({
+  where: { tenant_id: branch.tenant_id, status: 'active', is_default: true },
+})
+if (defaultPriceBook) {
+  const existingGlobalEntry = await prisma.priceBookEntry.findFirst({
+    where: {
+      tenant_id: branch.tenant_id,
+      price_book_id: defaultPriceBook.id,
+      scope_type: 'global',
+      status: 'active',
+    },
+  })
+  if (!existingGlobalEntry) {
+    await prisma.priceBookEntry.create({
+      data: {
+        tenant_id: branch.tenant_id,
+        price_book_id: defaultPriceBook.id,
+        scope_type: 'global',
+        scope_id: null,
+        min_qty: 1,
+        unit_price: 150,
+        allow_zero_price: false,
+        tax_mode: 'exclusive',
+        effective_from: new Date(0),
+        effective_to: null,
+        status: 'active',
+      },
+    })
+  }
+} else {
+  process.stdout.write(
+    'volume-seed: no active default PriceBook found for the tenant; PERF-* variants remain unpriced.\n',
+  )
+}
+
 // InventoryStock is a materialized balance. Every newly seeded non-zero row must
 // receive an opening movement before historical invoice fixtures are inserted.
 await ensureSeededInventoryLedger(prisma, 'volume-seed')
