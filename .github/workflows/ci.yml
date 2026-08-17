@@ -536,7 +536,13 @@ jobs:
       run:
         working-directory: backend
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_perf
+      # WP-P1 follow-up (PR #77 accepted finding): connection_limit=5 (the
+      # code's own default -- see database-connection.ts) pins under
+      # PERF_CONCURRENCY=25. This raises it to 10, Supavisor's documented
+      # ceiling and the code's own boundedInteger maximum, as a controlled,
+      # CI-only measurement -- not a claim that 10 is the right production
+      # value. Nothing outside this job's env is touched.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_perf?connection_limit=10
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_perf
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
       ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
