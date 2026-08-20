@@ -1,27 +1,48 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 
 describe('migration CI database isolation', () => {
-  const workflow = readFileSync(
-    resolve(process.cwd(), '../.github/workflows/ci.yml'),
-    'utf8',
-  );
+  const workflowsDir = resolve(process.cwd(), '../.github/workflows');
+  // ci.yml specifically, for the assertions below that are about its own
+  // structure (migration-gate's isolated databases, the workflow-level
+  // concurrency group) rather than about locating a job that could live in
+  // any workflow file.
+  const workflow = readFileSync(join(workflowsDir, 'ci.yml'), 'utf8');
   const railwayConfig = readFileSync(
     resolve(process.cwd(), 'railway.toml'),
     'utf8',
   );
 
+  // Jobs move between workflow files (hard-load was extracted out of ci.yml
+  // into its own file so it could be dispatched without the other 9 jobs --
+  // see WP-P1). Scanning every file under .github/workflows/ means this
+  // contract survives the next such move instead of re-breaking on it.
+  const workflowContents = readdirSync(workflowsDir)
+    .filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'))
+    .map((file) => readFileSync(join(workflowsDir, file), 'utf8'));
+
   const getJob = (jobName: string): string => {
-    const jobStart = workflow.search(new RegExp(`^  ${jobName}:\\r?$`, 'm'));
+    for (const contents of workflowContents) {
+      const jobStart = contents.search(new RegExp(`^  ${jobName}:\\r?$`, 'm'));
 
-    expect(jobStart).toBeGreaterThanOrEqual(0);
+      if (jobStart === -1) {
+        continue;
+      }
 
-    const remainingJobs = workflow.slice(jobStart + 1);
-    const nextJob = remainingJobs.search(/^  [a-z0-9-]+:\r?$/m);
+      const remainingJobs = contents.slice(jobStart + 1);
+      const nextJob = remainingJobs.search(/^  [a-z0-9-]+:\r?$/m);
 
-    return nextJob === -1
-      ? workflow.slice(jobStart)
-      : workflow.slice(jobStart, jobStart + 1 + nextJob);
+      return nextJob === -1
+        ? contents.slice(jobStart)
+        : contents.slice(jobStart, jobStart + 1 + nextJob);
+    }
+
+    // Not found anywhere under .github/workflows/ -- fail loud. A job that
+    // silently disappeared (renamed, deleted, moved without updating this
+    // spec) is exactly the case this contract exists to catch.
+    throw new Error(
+      `job "${jobName}" not found in any .github/workflows/*.yml file`,
+    );
   };
 
   it('uses a separate PostgreSQL database for each migration target and shadow', () => {
