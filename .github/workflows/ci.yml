@@ -19,6 +19,13 @@ jobs:
   workspace:
     name: workspace-foundation
     runs-on: ubuntu-latest
+    # Root `npm ci` installs pos-electron's `electron` dependency too, whose
+    # postinstall downloads a ~100MB platform binary over the network. This
+    # job never touches Electron, so that download is pure failure surface
+    # (see admin's run 32367936824, `TypeError: fetch failed` from
+    # @electron/get) with no coverage behind it -- skip it here.
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,6 +47,8 @@ jobs:
       DATABASE_URL: postgresql://user:password@localhost:5432/bold
       DIRECT_URL: postgresql://user:password@localhost:5432/bold
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      # See workspace job above: this job never touches Electron.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -81,6 +90,10 @@ jobs:
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
       ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
       ALLOW_REMOTE_DEVELOPMENT_ACCOUNTING_RESET: 1
+      # See workspace job above: this job never touches Electron. Applies to
+      # both `npm ci` invocations below, including the one against the
+      # release-baseline checkout in migration-base/.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -239,6 +252,11 @@ jobs:
     defaults:
       run:
         working-directory: admin-web
+    # See workspace job above: this job never touches Electron. This is the
+    # job from admin's run 32367936824 that actually hit the transient
+    # `TypeError: fetch failed` and failed release-gate as a consequence.
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -276,6 +294,8 @@ jobs:
       ATHR_API_INTERNAL_BASE: http://localhost:3000/api/v1
       ADMIN_SMOKE_PHONE: "+200100000000"
       ADMIN_SMOKE_PASSWORD: Bold1234
+      # See workspace job above: this job never touches Electron.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -356,6 +376,8 @@ jobs:
       PERF_SMOKE: 1
       PERF_MUTATIONS: 1
       PERF_SALES: 2
+      # See workspace job above: this job never touches Electron.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -451,6 +473,8 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_docker_smoke
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_docker_smoke
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      # See workspace job above: this job never touches Electron.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

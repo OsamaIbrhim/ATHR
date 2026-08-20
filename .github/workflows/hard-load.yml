@@ -61,6 +61,10 @@ jobs:
       PERF_DIAGNOSTICS: "1"
       PERF_CASHIER_PHONE: "+200100000002"
       PERF_CASHIER_PASSWORD: Bold1234
+      # Root `npm ci` installs pos-electron's `electron` dependency too, whose
+      # postinstall downloads a ~100MB platform binary over the network. This
+      # job never touches Electron -- skip it.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
