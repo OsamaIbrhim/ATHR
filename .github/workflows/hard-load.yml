@@ -9,14 +9,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '30 1 * * *'
-  # TEMPORARY, for this PR only: workflow_dispatch/schedule both require the
-  # workflow file to already exist on the default branch, so a brand-new
-  # file can't be dispatched from a feature branch to prove it actually
-  # works standalone. pull_request runs the head-branch copy of the file
-  # instead, which is the only way to get a real GitHub Actions run of this
-  # extraction before merge. Removed in a follow-up commit once the "after"
-  # numbers are captured -- see the PR description.
-  pull_request:
 
 concurrency:
   group: hard-load-${{ github.event_name }}-${{ github.ref }}
