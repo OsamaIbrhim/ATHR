@@ -343,6 +343,48 @@ async function createPerformanceTerminal(
   }
 }
 
+/**
+ * WP-P1 H1: distinguishes lock-wait serialization from pool-wait queueing
+ * directly. `wait_event_type='Lock'` (specifically `transactionid`, Postgres's
+ * label for a row lock held by another in-flight transaction) rises only when
+ * concurrent writers contend on the same row -- a saturated connection pool
+ * with no row contention shows connections busy running queries, not blocked
+ * on a lock. Polled live while `workPromise` (the sale dispatch) is in
+ * flight, same pattern as the read-sweep's `pg_stat_activity` sampler.
+ */
+async function sampleLockActivityWhile(prisma, workPromise) {
+  const samples = []
+  let done = false
+  workPromise.finally(() => {
+    done = true
+  })
+  while (!done) {
+    try {
+      const rows = await prisma.$queryRawUnsafe(
+        `SELECT state, wait_event_type, wait_event, COUNT(*)::int AS count
+           FROM pg_stat_activity
+          WHERE datname = current_database() AND pid <> pg_backend_pid()
+          GROUP BY state, wait_event_type, wait_event`,
+      )
+      samples.push(rows)
+    } catch {
+      // Best-effort: one missed sample does not invalidate the run.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40))
+  }
+  return samples
+}
+
+function maxLockWaiters(samples) {
+  return samples.reduce((max, rows) => {
+    const lockRows = rows.filter(
+      (row) => row.wait_event_type === 'Lock' && row.wait_event === 'transactionid',
+    )
+    const total = lockRows.reduce((sum, row) => sum + row.count, 0)
+    return Math.max(max, total)
+  }, 0)
+}
+
 async function mutationIntegrityLoad(adminToken) {
   if (process.env.PERF_MUTATIONS !== '1') return null
   const { PrismaClient, Prisma } = await import('@prisma/client')
@@ -350,6 +392,12 @@ async function mutationIntegrityLoad(adminToken) {
   try {
     const salesCount = numericEnv('PERF_SALES', 100, 1)
     const saleBudget = numericEnv('PERF_SALE_P95_MS', 500, 1)
+    // WP-P1 H1: every sale used to target the single `stockBefore.variant_id`
+    // -- 100 concurrent sales serializing on one InventoryStock row's lock,
+    // not on the connection pool. Default stays 1 so nothing changes until a
+    // measurement says otherwise; PERF_SALE_VARIANTS spreads sales across N
+    // distinct variants the way real concurrent tills actually sell.
+    const variantCount = numericEnv('PERF_SALE_VARIANTS', 1, 1)
     const cashier = await json('/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -412,41 +460,69 @@ async function mutationIntegrityLoad(adminToken) {
     const mutationProductIds = [...catalogProducts.values()]
       .filter((product) => product.selling_price >= 0.01)
       .map((product) => product.id)
-    const stockBefore = await prisma.inventoryStock.findFirst({
+    // Each variant needs enough stock for its share of salesCount, spread
+    // as evenly as possible; ceil so the last variant is never short.
+    const perVariantSales = Math.ceil(salesCount / variantCount)
+    const stockRows = await prisma.inventoryStock.findMany({
       where: {
         branch_id: branchId,
-        qty_on_hand: { gte: salesCount + 10 },
+        qty_on_hand: { gte: perVariantSales + 10 },
         variant_id: { in: mutationProductIds },
       },
       include: { variant: true },
       orderBy: { variant_id: 'asc' },
+      take: variantCount,
     })
-    if (!stockBefore) {
+    if (stockRows.length < variantCount) {
       throw new Error(
-        `No catalog variant has at least ${salesCount + 10} units for the mutation load`,
+        `Only ${stockRows.length} catalog variant(s) have at least ${perVariantSales + 10} units; ` +
+          `PERF_SALE_VARIANTS=${variantCount} requires that many distinct variants for the mutation load.`,
       )
     }
-    const product = catalogProducts.get(stockBefore.variant_id)
-    if (!product) {
-      throw new Error(
-        `Selected mutation variant ${stockBefore.variant_id} is absent from the catalog contract`,
-      )
-    }
+    const variantProducts = stockRows.map((stock) => {
+      const product = catalogProducts.get(stock.variant_id)
+      if (!product) {
+        throw new Error(
+          `Selected mutation variant ${stock.variant_id} is absent from the catalog contract`,
+        )
+      }
+      return product
+    })
+    const localTotalByVariant = variantProducts.map((product) =>
+      new Prisma.Decimal(product.selling_price)
+        .plus(product.unit_tax)
+        .toDecimalPlaces(2)
+        .toNumber(),
+    )
     const baseWorkerSales = Math.floor(salesCount / workerCount)
     const remainder = salesCount % workerCount
+    // Precomputed, not a runtime counter shared across concurrent closures:
+    // which variant a given (worker, localIndex) sale targets is decided
+    // before dispatch, so the invariant checks below can trust it regardless
+    // of actual HTTP completion order.
+    const workerSaleCounts = terminals.map(
+      (_terminal, workerIndex) => baseWorkerSales + (workerIndex < remainder ? 1 : 0),
+    )
+    const workerStartIndex = []
+    {
+      let running = 0
+      for (const count of workerSaleCounts) {
+        workerStartIndex.push(running)
+        running += count
+      }
+    }
     const latencies = []
     const commands = []
-    const localTotal = new Prisma.Decimal(product.selling_price)
-      .plus(product.unit_tax)
-      .toDecimalPlaces(2)
-      .toNumber()
 
-    await Promise.all(
+    const saleDispatch = Promise.all(
       terminals.map(async (terminal, workerIndex) => {
-        const count = baseWorkerSales + (workerIndex < remainder ? 1 : 0)
+        const count = workerSaleCounts[workerIndex]
         const initialSequence = BigInt(terminal.context.server_last_sale_sequence)
         for (let localIndex = 0; localIndex < count; localIndex += 1) {
           const terminalSequence = (initialSequence + BigInt(localIndex + 1)).toString()
+          const variantIndex = (workerStartIndex[workerIndex] + localIndex) % variantCount
+          const product = variantProducts[variantIndex]
+          const stock = stockRows[variantIndex]
           const command = {
             event_version: 2,
             sync_id: randomUUID(),
@@ -461,10 +537,10 @@ async function mutationIntegrityLoad(adminToken) {
             occurred_at: new Date().toISOString(),
             payment_method: 'cash',
             language: 'ar',
-            local_total: localTotal,
+            local_total: localTotalByVariant[variantIndex],
             items: [
               {
-                variant_id: stockBefore.variant_id,
+                variant_id: stock.variant_id,
                 qty: 1,
                 unit_price: Number(product.selling_price),
                 unit_tax: Number(product.unit_tax),
@@ -490,11 +566,13 @@ async function mutationIntegrityLoad(adminToken) {
             command.sync_id,
             'Performance sale acknowledgement',
           )
-          commands.push({ command, terminal, acknowledgement })
+          commands.push({ command, terminal, acknowledgement, variantIndex })
           latencies.push(performance.now() - started)
         }
       }),
     )
+    const lockActivity = await sampleLockActivityWhile(prisma, saleDispatch)
+    await saleDispatch
 
     const duplicate = commands[0]
     const duplicateResponse = await json('/pos/sale', {
@@ -594,23 +672,32 @@ async function mutationIntegrityLoad(adminToken) {
       }
     }
 
-    const stockAfter = await prisma.inventoryStock.findUnique({
+    const saleCountByVariantIndex = new Array(variantCount).fill(0)
+    for (const entry of commands) saleCountByVariantIndex[entry.variantIndex] += 1
+
+    const stockAfterRows = await prisma.inventoryStock.findMany({
       where: {
-        branch_id_variant_id: {
-          branch_id: branchId,
-          variant_id: stockBefore.variant_id,
-        },
+        branch_id: branchId,
+        variant_id: { in: stockRows.map((stock) => stock.variant_id) },
       },
     })
-    if (
-      !stockAfter ||
-      stockAfter.qty_on_hand !== stockBefore.qty_on_hand - salesCount ||
-      stockAfter.qty_on_hand < 0
-    ) {
-      throw new Error(
-        `Stock invariant failed: before ${stockBefore.qty_on_hand}, after ${stockAfter?.qty_on_hand}`,
-      )
+    const stockAfterByVariant = new Map(
+      stockAfterRows.map((row) => [row.variant_id, row]),
+    )
+    for (let variantIndex = 0; variantIndex < variantCount; variantIndex += 1) {
+      const before = stockRows[variantIndex]
+      const after = stockAfterByVariant.get(before.variant_id)
+      const expected = before.qty_on_hand - saleCountByVariantIndex[variantIndex]
+      if (!after || after.qty_on_hand !== expected || after.qty_on_hand < 0) {
+        throw new Error(
+          `Stock invariant failed for variant ${before.variant_id}: expected ${expected}, ` +
+            `before ${before.qty_on_hand}, after ${after?.qty_on_hand}`,
+        )
+      }
     }
+    // The negative-stock/deficit probe below is scoped to a single named
+    // variant (index 0) so its arithmetic stays exact regardless of spread.
+    const stockAfter = stockAfterByVariant.get(stockRows[0].variant_id)
 
     const deficitTerminal = terminals[0]
     const deficitTerminalRow = terminalRows.find(
@@ -635,21 +722,21 @@ async function mutationIntegrityLoad(adminToken) {
       occurred_at: new Date().toISOString(),
       payment_method: 'cash',
       language: 'ar',
-      local_total: new Prisma.Decimal(localTotal)
+      local_total: new Prisma.Decimal(localTotalByVariant[0])
         .mul(deficitQuantity)
         .toDecimalPlaces(2)
         .toNumber(),
       items: [
         {
-          variant_id: stockBefore.variant_id,
+          variant_id: stockRows[0].variant_id,
           qty: deficitQuantity,
-          unit_price: Number(product.selling_price),
-          unit_tax: Number(product.unit_tax),
-          sku_snapshot: product.sku,
-          name_ar_snapshot: product.name_ar || product.name_en,
-          name_en_snapshot: product.name_en || undefined,
-          size_snapshot: product.size || undefined,
-          color_snapshot: product.color || undefined,
+          unit_price: Number(variantProducts[0].selling_price),
+          unit_tax: Number(variantProducts[0].unit_tax),
+          sku_snapshot: variantProducts[0].sku,
+          name_ar_snapshot: variantProducts[0].name_ar || variantProducts[0].name_en,
+          name_en_snapshot: variantProducts[0].name_en || undefined,
+          size_snapshot: variantProducts[0].size || undefined,
+          color_snapshot: variantProducts[0].color || undefined,
         },
       ],
     }
@@ -677,14 +764,14 @@ async function mutationIntegrityLoad(adminToken) {
         prisma.salesInvoice.count({ where: { sync_id: deficitSyncId } }),
         prisma.inventoryMovement.count({
           where: {
-            idempotency_key: `sale:${deficitSyncId}:${stockBefore.variant_id}`,
+            idempotency_key: `sale:${deficitSyncId}:${stockRows[0].variant_id}`,
           },
         }),
         prisma.inventoryStock.findUnique({
           where: {
             branch_id_variant_id: {
               branch_id: branchId,
-              variant_id: stockBefore.variant_id,
+              variant_id: stockRows[0].variant_id,
             },
           },
         }),
@@ -800,12 +887,15 @@ async function mutationIntegrityLoad(adminToken) {
       suite: 'concurrent-offline-sales-accounting-integrity',
       sales: salesCount,
       terminals: terminals.length,
+      variant_count: variantCount,
       duplicate_retries: 1,
       negative_stock_sale: true,
       p95_ms: Math.round(percentile(latencies, 0.95)),
       p99_ms: Math.round(percentile(latencies, 0.99)),
-      stock_before: stockBefore.qty_on_hand,
+      stock_before: stockRows[0].qty_on_hand,
       stock_after: deficitStock.qty_on_hand,
+      max_lock_waiters: maxLockWaiters(lockActivity),
+      lock_activity_samples_taken: lockActivity.length,
     }
     process.stdout.write(`${JSON.stringify(result)}\n`)
     if (result.p95_ms > saleBudget) {
