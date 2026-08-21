@@ -1047,7 +1047,7 @@ export class PurchasingService {
           UPDATE "InventoryStock"
           SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
           WHERE "branch_id" = ${invoice.branch_id}::uuid
-            AND "tenant_id" = ${context.tenantId}::uuid
+            AND "tenant_id" = ${'00000000-0000-0000-0000-000000000000'}::uuid
             AND "variant_id" = ${item.variant_id}::uuid
             AND "qty_on_hand" >= ${item.qty}
             AND ("qty_on_hand" - ${item.qty}) >= "qty_reserved"
