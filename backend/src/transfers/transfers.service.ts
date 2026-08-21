@@ -515,7 +515,12 @@ export class TransfersService {
           item."shipped_qty" - item."received_qty" -
             item."damaged_qty" - item."missing_qty" AS expected_in_transit
         FROM "TransferItem" item
-        WHERE item."tenant_id" = ${context.tenantId}::uuid
+        -- DRILL BREAK (scratch/wp-t2-f4-guard-drill, R2 positive-direction):
+        -- tenant predicate over-scoped on purpose (compared against a fixed
+        -- nonexistent tenant instead of the calling tenant) to prove R2's
+        -- "includes tenant A's own mismatched item" check actually fails
+        -- when it should. Restored in the very next commit on this branch.
+        WHERE item."tenant_id" = '00000000-0000-0000-0000-000000000000'::uuid
       ),
       ledger AS (
         SELECT
