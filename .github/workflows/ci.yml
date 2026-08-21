@@ -202,6 +202,16 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
         run: node scripts/verify-sync-snapshot-behaviour.cjs
+      # WP-T2/F4: fakePrisma's $queryRaw/$executeRaw now fail loud on any
+      # statement not on the declared allowlist (raw-sql-allowlist.ts) --
+      # every remaining raw-SQL path a jest spec only proved by asserting on
+      # captured SQL text (not by executing it) still needs a real proof.
+      # Reuses the dist/ build from the step above.
+      - name: Verify raw-SQL tenant scoping (WP-T2/F4)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/verify-raw-sql-tenant-scoping.cjs
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.policy.outputs.upgrade_ref }}
