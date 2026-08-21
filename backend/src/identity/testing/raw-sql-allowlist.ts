@@ -5,10 +5,12 @@
  * WHY THIS FILE EXISTS
  * --------------------
  * `fakePrisma`'s `$queryRaw`/`$queryRawUnsafe`/`$executeRaw`/`$executeRawUnsafe`
- * throw by default (`cross-tenant-harness.ts`). Nine production files contain
- * raw SQL that a hand-written in-memory fake cannot honestly execute — before
- * this file existed, every one of them silently returned `[]`/`0`, so every
- * spec covering them was green while testing nothing. See
+ * throw by default (`cross-tenant-harness.ts`). Ten production files contain
+ * raw SQL that a hand-written in-memory fake cannot honestly execute (the
+ * original F4 analysis counted nine; `promotions/coupon.repository.ts` was
+ * added by WP-008 Phase D afterward) — before this file existed, every one
+ * of them silently returned `[]`/`0`, so every spec covering them was green
+ * while testing nothing. See
  * `docs/testing/test-fragility-analysis-2026-08-10.md` item F4.
  *
  * A statement belongs on this list ONLY if it neither writes nor locks a real
