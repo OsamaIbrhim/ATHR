@@ -93,7 +93,11 @@ export class InventoryRepository {
           ledger."last_movement_at"
         FROM (
           SELECT * FROM "InventoryStock"
-          WHERE "tenant_id" = ${context.tenantId}::uuid
+          -- DRILL BREAK (scratch/wp-t2-f4-guard-drill, R3 negative-direction):
+          -- tenant predicate removed on purpose to prove R3's "does not
+          -- include tenant B's mismatch" check actually fails when it
+          -- should. Restored in the very next commit on this branch.
+          WHERE TRUE
         ) stock
         FULL OUTER JOIN ledger
           ON ledger."branch_id" = stock."branch_id"
