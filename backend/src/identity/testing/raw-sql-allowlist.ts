@@ -60,57 +60,7 @@ export interface RawSqlAllowlistEntry {
   readonly reason: string;
 }
 
-export const RAW_SQL_ALLOWLIST: readonly RawSqlAllowlistEntry[] = [
-  {
-    method: 'queryRaw',
-    marker: 'pg_advisory_xact_lock(hashtext(',
-    stub: [],
-    reason:
-      "offers.service.ts:66 — advisory lock guarding idempotent OfferSuggestion " +
-      "creation, keyed on branch_id+variant_id. No row is read or written by " +
-      "this statement and the lock key carries no tenant component; the " +
-      "tenant predicate that actually matters is the ORM findFirst/create " +
-      "immediately after it, inside the same transaction.",
-  },
-  {
-    method: 'executeRaw',
-    marker: 'pg_advisory_xact_lock(hashtext(',
-    stub: 0,
-    reason:
-      "shifts.service.ts:31 — advisory lock guarding concurrent shift-open " +
-      "for a branch, keyed on branch_id alone. No row is read or written; " +
-      "same shape as offers.service.ts:66, distinguished from it here only by " +
-      "method ($executeRaw vs $queryRaw) because the rendered SQL text is " +
-      "identical (the interpolated branch_id never appears in it).",
-  },
-  {
-    method: 'queryRaw',
-    // Starts at the string literal, not `set_config(` — the production
-    // statement wraps across lines (`set_config(\n  'bold...'`), so a marker
-    // spanning the paren would depend on exactly how many lines the source
-    // happens to use and break on a purely cosmetic reformat.
-    marker: "'bold.purchase_accounting_document_write', 'on'",
-    stub: [],
-    reason:
-      "purchasing.service.ts:1106 — session-level flag purchasing.service.ts " +
-      "sets immediately before the plain purchaseInvoice.update() in reverse() " +
-      "so a real Postgres trigger recognizes the write as accounting-document " +
-      "traffic. No row effect of its own; the trigger's behavior itself is " +
-      "unprovable against the fake either way and is not claimed proven here.",
-  },
-  {
-    method: 'queryRaw',
-    marker: "'bold.purchase_accounting_document_write', 'off'",
-    stub: [],
-    reason: 'purchasing.service.ts:1124 — same flag, cleared immediately after the update. See the :1106 entry.',
-  },
-  {
-    method: 'queryRaw',
-    marker: "'bold.transfer_command', 'on'",
-    stub: [],
-    reason:
-      "transfers.service.ts:575 (enableTransferCommand) — same session-flag " +
-      "pattern as the purchasing.service.ts pair above, gating a trigger on " +
-      "TransferCommand writes. No row effect of its own.",
-  },
-];
+// DRILL BREAK (scratch/wp-t2-f4-guard-drill) — allowlist emptied on purpose
+// to reproduce the fail-loud-default RED state under a real, fetchable SHA.
+// Restored in the very next commit on this branch.
+export const RAW_SQL_ALLOWLIST: readonly RawSqlAllowlistEntry[] = [];
