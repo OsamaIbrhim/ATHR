@@ -515,11 +515,7 @@ export class TransfersService {
           item."shipped_qty" - item."received_qty" -
             item."damaged_qty" - item."missing_qty" AS expected_in_transit
         FROM "TransferItem" item
-        -- DRILL BREAK (scratch/wp-t2-f4-guard-drill, R2 negative-direction):
-        -- tenant predicate removed on purpose to prove R2's "does not
-        -- include tenant B's mismatched item" check actually fails when it
-        -- should. Restored in the very next commit on this branch.
-        WHERE TRUE
+        WHERE item."tenant_id" = ${context.tenantId}::uuid
       ),
       ledger AS (
         SELECT
