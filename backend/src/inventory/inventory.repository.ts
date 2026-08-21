@@ -93,7 +93,12 @@ export class InventoryRepository {
           ledger."last_movement_at"
         FROM (
           SELECT * FROM "InventoryStock"
-          WHERE "tenant_id" = ${context.tenantId}::uuid
+          -- DRILL BREAK (scratch/wp-t2-f4-guard-drill, R3 positive-direction):
+          -- tenant predicate over-scoped on purpose (compared against a
+          -- fixed nonexistent tenant instead of the calling tenant) to
+          -- prove R3's "includes tenant A's own mismatch" check actually
+          -- fails when it should. Restored in the very next commit.
+          WHERE "tenant_id" = '00000000-0000-0000-0000-000000000000'::uuid
         ) stock
         FULL OUTER JOIN ledger
           ON ledger."branch_id" = stock."branch_id"
