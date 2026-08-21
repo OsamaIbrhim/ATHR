@@ -1253,12 +1253,10 @@ export class PurchasingService {
         ON latest."variant_id" = variant."id"
       LEFT JOIN stock
         ON stock."variant_id" = variant."id"
-      WHERE (${variantId || null}::uuid IS NULL
+      WHERE variant."tenant_id" = ${context.tenantId}::uuid
+        AND product."tenant_id" = ${context.tenantId}::uuid
+        AND (${variantId || null}::uuid IS NULL
           OR variant."id" = ${variantId || null}::uuid)
-      -- DRILL BREAK (scratch/wp-t2-f4-guard-drill, R1 negative-direction):
-      -- tenant predicate removed on purpose to prove R1's "does not include
-      -- tenant B's variant" check actually fails when it should. Restored
-      -- in the very next commit on this branch.
       ORDER BY "reconciled" ASC, variant."sku" ASC
     `
   }
