@@ -715,14 +715,17 @@ export class PurchasingService {
             UPDATE "InventoryStock"
             SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
             WHERE "branch_id" = ${invoice.branch_id}::uuid
+              AND "tenant_id" = ${context.tenantId}::uuid
               AND "variant_id" = ${item.purchaseItem.variant_id}::uuid
               AND "qty_on_hand" >= ${item.qty}
               AND ("qty_on_hand" - ${item.qty}) >= "qty_reserved"
           `
           if (stockChanged !== 1) {
-            throw new ConflictException(
-              `Insufficient unreserved stock to return variant ${item.purchaseItem.variant_id}`,
-            )
+            throw new ConflictException({
+              code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+              message: `Insufficient unreserved stock to return variant ${item.purchaseItem.variant_id}`,
+              message_ar: 'الكمية غير المحجوزة من المخزون غير كافية لإتمام مرتجع المورد.',
+            })
           }
 
           await tx.$queryRaw`
@@ -1044,14 +1047,17 @@ export class PurchasingService {
           UPDATE "InventoryStock"
           SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
           WHERE "branch_id" = ${invoice.branch_id}::uuid
+            AND "tenant_id" = ${context.tenantId}::uuid
             AND "variant_id" = ${item.variant_id}::uuid
             AND "qty_on_hand" >= ${item.qty}
             AND ("qty_on_hand" - ${item.qty}) >= "qty_reserved"
         `
         if (stockChanged !== 1) {
-          throw new ConflictException(
-            `Insufficient unreserved stock to reverse variant ${item.variant_id}`,
-          )
+          throw new ConflictException({
+            code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+            message: `Insufficient unreserved stock to reverse variant ${item.variant_id}`,
+            message_ar: 'الكمية غير المحجوزة من المخزون غير كافية لعكس عملية الشراء.',
+          })
         }
 
         await tx.$queryRaw`

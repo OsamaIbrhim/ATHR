@@ -59,4 +59,58 @@ describe('friendly API errors', () => {
       retry_after_ms: 2_000,
     });
   });
+
+  // WP-009 Phase 0, defect 2. Before this fix, these three sites threw a
+  // plain-string ConflictException. ConflictException already sets HTTP 409
+  // at construction, so they never reached the 500 the read-from-source
+  // hypothesis predicted -- but `structuredHttpError` requires a `code` on
+  // the response payload, so a bare string falls through every substring
+  // rule below (none of these messages contain "insufficient stock") to the
+  // GENERIC[409] fallback: 409 CONFLICT, not 409 INVENTORY_INSUFFICIENT_
+  // AVAILABLE_QUANTITY. Measured with a throwaway repro before this diff:
+  // {status:409, code:"CONFLICT"} for all three. The fix throws a structured
+  // ConflictException instead, matching the sales.service.ts /
+  // terminals.service.ts convention for codes that error-registry does not
+  // (yet) carry.
+  describe('inventory insufficient-quantity sites carry their catalog code', () => {
+    it('purchasing supplier-return (purchasing.service.ts ~722)', () => {
+      expect(toFriendlyError(new ConflictException({
+        code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+        message: 'Insufficient unreserved stock to return variant abc-123',
+        message_ar: 'الكمية غير المحجوزة من المخزون غير كافية لإتمام مرتجع المورد.',
+      }))).toMatchObject({
+        status: 409,
+        code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+      });
+    });
+
+    it('purchasing purchase-reversal (purchasing.service.ts ~1051)', () => {
+      expect(toFriendlyError(new ConflictException({
+        code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+        message: 'Insufficient unreserved stock to reverse variant abc-123',
+        message_ar: 'الكمية غير المحجوزة من المخزون غير كافية لعكس عملية الشراء.',
+      }))).toMatchObject({
+        status: 409,
+        code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+      });
+    });
+
+    it('transfers ship (transfers.service.ts ~244)', () => {
+      expect(toFriendlyError(new ConflictException({
+        code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+        message: 'Insufficient available stock for variant abc-123',
+        message_ar: 'الكمية المتاحة من المخزون غير كافية لإتمام الشحن.',
+      }))).toMatchObject({
+        status: 409,
+        code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+      });
+    });
+
+    it('a plain-string version of these messages would NOT get this code (documents the bug this fix closes)', () => {
+      const result = toFriendlyError(new ConflictException('Insufficient available stock for variant abc-123'));
+      expect(result.status).toBe(409);
+      expect(result.code).not.toBe('INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY');
+      expect(result.code).toBe('CONFLICT');
+    });
+  });
 });
