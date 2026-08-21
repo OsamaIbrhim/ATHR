@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { fakePrisma, TENANT_A, TENANT_B } from './cross-tenant-harness';
+import { RAW_SQL_ALLOWLIST } from './raw-sql-allowlist';
 
 /**
  * Tests for the test harness itself.
@@ -150,6 +151,76 @@ describe('FakeTable harness', () => {
       await expect(
         prisma.transfer.findUniqueOrThrow({ where: { id: 'missing' } }),
       ).rejects.toMatchObject({ code: 'P2025' });
+    });
+  });
+
+  /**
+   * WP-T2 / F4. `$queryRaw`/`$executeRaw` used to return `[]`/`0` for every
+   * call, silently — nine production files' raw-SQL paths were unverified by
+   * any cross-tenant spec while those specs stayed green. These pin the
+   * fail-loud default and the narrow allowlist that replaces it.
+   */
+  describe('raw SQL fails loud by default', () => {
+    it('rejects $queryRaw for a statement with no allowlist entry', async () => {
+      const prisma = fakePrisma({});
+      await expect(prisma.$queryRaw`SELECT 1`).rejects.toThrow(
+        /RAW_SQL_ALLOWLIST/,
+      );
+    });
+
+    it('rejects $executeRaw for a statement with no allowlist entry', async () => {
+      const prisma = fakePrisma({});
+      await expect(prisma.$executeRaw`UPDATE "X" SET "y" = 1`).rejects.toThrow(
+        /RAW_SQL_ALLOWLIST/,
+      );
+    });
+
+    it('rejects $queryRawUnsafe and $executeRawUnsafe the same way', async () => {
+      const prisma = fakePrisma({});
+      await expect(prisma.$queryRawUnsafe('SELECT 1')).rejects.toThrow(/RAW_SQL_ALLOWLIST/);
+      await expect(prisma.$executeRawUnsafe('SELECT 1')).rejects.toThrow(/RAW_SQL_ALLOWLIST/);
+    });
+
+    it('includes the offending statement text in the error, for debuggability', async () => {
+      const prisma = fakePrisma({});
+      await expect(prisma.$queryRaw`SELECT "id" FROM "Widget"`).rejects.toThrow(
+        /SELECT "id" FROM "Widget"/,
+      );
+    });
+
+    it('resolves every currently-declared allowlist entry with its stub', async () => {
+      const prisma = fakePrisma({});
+      for (const entry of RAW_SQL_ALLOWLIST) {
+        const method = `$${entry.method}` as '$queryRaw' | '$executeRaw';
+        await expect(prisma[method](entry.marker)).resolves.toEqual(entry.stub);
+      }
+    });
+
+    it('does not let an allowlisted marker match under the wrong method', async () => {
+      // offers.service.ts:66 and shifts.service.ts:31 render to identical SQL
+      // text (`pg_advisory_xact_lock(hashtext(...))` — the interpolated value
+      // never appears); only the method used ($queryRaw vs $executeRaw)
+      // distinguishes the two entries. Calling the lock text through a third,
+      // unlisted method must still fail loud.
+      const prisma = fakePrisma({});
+      await expect(prisma.$queryRawUnsafe('SELECT pg_advisory_xact_lock(hashtext(1))')).rejects.toThrow(
+        /RAW_SQL_ALLOWLIST/,
+      );
+    });
+
+    it('distinguishes the two purchasing set_config entries by their on/off value', async () => {
+      // A marker of bare `set_config(` would silently authorize both — and
+      // every future set_config call anywhere. Each entry must require its
+      // own on/off value.
+      const prisma = fakePrisma({});
+      const onOnly = RAW_SQL_ALLOWLIST.find((entry) => entry.marker.includes("'on'"));
+      expect(onOnly).toBeDefined();
+      await expect(
+        prisma.$queryRaw`SELECT set_config('bold.purchase_accounting_document_write', 'off', true)`,
+      ).resolves.toEqual([]); // matches the :1124 "off" entry specifically, not :1106's "on"
+      await expect(
+        prisma.$queryRaw`SELECT set_config('bold.some_other_flag', 'on', true)`,
+      ).rejects.toThrow(/RAW_SQL_ALLOWLIST/);
     });
   });
 });
