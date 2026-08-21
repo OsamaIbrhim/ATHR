@@ -1253,13 +1253,8 @@ export class PurchasingService {
         ON latest."variant_id" = variant."id"
       LEFT JOIN stock
         ON stock."variant_id" = variant."id"
-      -- DRILL BREAK (scratch/wp-t2-f4-guard-drill, R1 positive-direction):
-      -- tenant predicate over-scoped on purpose (compared against a
-      -- fixed nonexistent tenant instead of the calling tenant) to prove
-      -- R1's "includes tenant A's own variant" check actually fails when
-      -- it should. Restored in the very next commit on this branch.
-      WHERE variant."tenant_id" = '00000000-0000-0000-0000-000000000000'::uuid
-        AND product."tenant_id" = '00000000-0000-0000-0000-000000000000'::uuid
+      WHERE variant."tenant_id" = ${context.tenantId}::uuid
+        AND product."tenant_id" = ${context.tenantId}::uuid
         AND (${variantId || null}::uuid IS NULL
           OR variant."id" = ${variantId || null}::uuid)
       ORDER BY "reconciled" ASC, variant."sku" ASC
