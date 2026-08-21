@@ -144,10 +144,24 @@ describe('transfers — cross-tenant isolation', () => {
     expect(sql).toMatch(/FROM "TransferTransitMovement" movement[\s\S]*WHERE movement\."tenant_id"/);
   });
 
+  /**
+   * WP-T2/F4 audit finding: this override returns `[]` unconditionally for
+   * every `$queryRaw` call, regardless of which tenant/id was queried — so
+   * the rejection below would pass identically even if `lockTransfer()`'s
+   * raw SQL carried no tenant predicate at all. That made the original
+   * version of this test vacuous on the one thing its name claims to prove.
+   * The rejection itself is still a real, correct assertion (ship() has no
+   * other gate before this lock), so the fix is not to delete it but to
+   * additionally pin, by SQL text, that the statement `ship()` actually sent
+   * is the tenant-scoped one — the same technique the two tests above use.
+   */
   it('does not ship another tenant\'s transfer', async () => {
-    const { service } = setup();
+    const { service, captured } = setup();
     await expect(
       service.ship(contextFor(TENANT_B), TRANSFER_A, {} as any, actorFor(BRANCH_B1)),
     ).rejects.toThrow('Transfer not found');
+
+    const lockQuery = captured.find((sql) => sql.includes('FROM "Transfer"') && sql.includes('FOR UPDATE'));
+    expect(lockQuery).toMatch(/"tenant_id" =/);
   });
 });

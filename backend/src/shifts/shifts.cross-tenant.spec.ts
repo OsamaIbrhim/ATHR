@@ -46,7 +46,13 @@ function setup() {
     ],
     return: [],
   });
-  prisma.$executeRaw = async () => 0;
+  // WP-T2/F4 audit: this file's only raw-SQL-reaching test ("stamps a new
+  // shift with the calling tenant") exercises open()'s advisory lock
+  // (shifts.service.ts:31). That call site is now centrally allowlisted in
+  // raw-sql-allowlist.ts (a pure pg_advisory_xact_lock, no row read or
+  // written), so fakePrisma's default already resolves it correctly — the
+  // local `$executeRaw = async () => 0` override this file used to carry was
+  // a redundant re-declaration of exactly that stub and has been removed.
   const repository = new ShiftsRepository(prisma);
   return { prisma, repository, service: new ShiftsService(prisma, repository) };
 }

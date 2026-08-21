@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { parseTenantId } from '@athr/domain-core';
 import type { TenantContext } from '../tenant-context.type';
+import { RAW_SQL_ALLOWLIST, type RawSqlAllowlistEntry } from './raw-sql-allowlist';
 
 /** Reported on thrown Prisma errors; the value itself is never asserted on. */
 const PRISMA_CLIENT_VERSION = '5.x';
@@ -322,6 +323,69 @@ export class FakeTable {
 }
 
 /**
+ * Renders whatever a raw-SQL call's first argument is into one string, for
+ * allowlist matching only — never used to decide query *results*, since that
+ * would mean re-implementing a SQL engine (see F4 in
+ * `docs/testing/test-fragility-analysis-2026-08-10.md` for why that's the
+ * wrong direction). Handles the two shapes production code actually uses:
+ * a tagged-template strings array (`tx.$queryRaw\`...${x}...\``) and a
+ * `Prisma.sql`-composed object (`tx.$queryRaw(Prisma.sql\`...\`)`), plus the
+ * plain-string form `$queryRawUnsafe`/`$executeRawUnsafe` take. Interpolated
+ * values never appear in the tagged-template case — the strings array holds
+ * only the literal segments — which is why allowlist markers key on the
+ * surrounding SQL text, never on a bound value.
+ */
+function renderRawSqlText(args: readonly unknown[]): string {
+  const [first] = args;
+  if (typeof first === 'string') return first;
+  if (Array.isArray(first)) return first.join(' ');
+  if (first && typeof first === 'object') {
+    const candidate = first as { sql?: unknown; text?: unknown; strings?: readonly unknown[] };
+    if (typeof candidate.sql === 'string') return candidate.sql;
+    if (typeof candidate.text === 'string') return candidate.text;
+    if (Array.isArray(candidate.strings)) return candidate.strings.join(' ');
+  }
+  return String(first);
+}
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function findAllowlistEntry(
+  method: RawSqlAllowlistEntry['method'],
+  args: readonly unknown[],
+): { entry: RawSqlAllowlistEntry | undefined; text: string } {
+  const text = collapseWhitespace(renderRawSqlText(args));
+  return { entry: RAW_SQL_ALLOWLIST.find((candidate) => candidate.method === method && text.includes(candidate.marker)), text };
+}
+
+/**
+ * `fakePrisma` cannot execute SQL — it fails loud on any raw statement that
+ * is not on the declared allowlist (`raw-sql-allowlist.ts`), rather than
+ * silently returning an empty result. A silent `[]`/`0` here is exactly F4:
+ * nine production files' raw-SQL paths were unverified by any cross-tenant
+ * spec while every one of those specs stayed green.
+ */
+function rawSqlMethod(method: RawSqlAllowlistEntry['method']) {
+  return (...args: readonly unknown[]) => {
+    const { entry, text } = findAllowlistEntry(method, args);
+    if (entry) return Promise.resolve(entry.stub);
+    return Promise.reject(
+      new Error(
+        `fakePrisma: $${method} called with no matching entry in RAW_SQL_ALLOWLIST ` +
+          `(backend/src/identity/testing/raw-sql-allowlist.ts). Raw SQL cannot be ` +
+          `executed by this in-memory fake — either add a narrowly-scoped allowlist ` +
+          `entry (only if the statement neither writes nor locks a real row), or ` +
+          `cover this path with a real-Postgres integration test ` +
+          `(see backend/scripts/verify-*-behaviour.cjs). ` +
+          `Statement (whitespace-collapsed, first 200 chars): "${text.slice(0, 200)}"`,
+      ),
+    );
+  };
+}
+
+/**
  * Builds a fake `PrismaService` exposing the named model delegates.
  *
  * `relations` declares to-one relations so nested `where` clauses like
@@ -333,8 +397,10 @@ export function fakePrisma(models: Record<string, Row[]>, relations: RelationMap
   const prisma: any = {
     $transaction: async (arg: any) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg),
-    $queryRaw: async () => [],
-    $executeRaw: async () => 0,
+    $queryRaw: rawSqlMethod('queryRaw'),
+    $queryRawUnsafe: rawSqlMethod('queryRawUnsafe'),
+    $executeRaw: rawSqlMethod('executeRaw'),
+    $executeRawUnsafe: rawSqlMethod('executeRawUnsafe'),
   };
   for (const [name, rows] of Object.entries(models)) {
     prisma[name] = new FakeTable(rows);
