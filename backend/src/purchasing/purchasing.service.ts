@@ -193,7 +193,6 @@ export class PurchasingService {
               // it from the parent. Passing it explicitly throws
               // PrismaClientValidationError: Unknown argument tenant_id.
               create: prepared.lines.map((line) => ({
-                tenant_id: context.tenantId,
                 variant_id: line.variant_id,
                 qty: line.qty,
                 unit_cost: line.unit_cost,
