@@ -242,9 +242,11 @@ export class TransfersService {
             AND ("qty_on_hand" - "qty_reserved") >= ${item.qty}
         `;
         if (changed !== 1) {
-          throw new ConflictException(
-            `Insufficient available stock for variant ${item.variant_id}`,
-          );
+          throw new ConflictException({
+            code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
+            message: `Insufficient available stock for variant ${item.variant_id}`,
+            message_ar: 'الكمية المتاحة من المخزون غير كافية لإتمام الشحن.',
+          });
         }
         await tx.$executeRaw`
           UPDATE "TransferItem"
