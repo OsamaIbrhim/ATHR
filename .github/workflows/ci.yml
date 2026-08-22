@@ -155,16 +155,20 @@ jobs:
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \
             --shadow-database-url "$SHADOW_DATABASE_URL"
-      - name: Verify tenant database constraints (WP-007 Phase B)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/verify-tenant-constraints.cjs
       # WP-009 Phase A: a clean database has zero InventoryStock/Movement
-      # rows, so this is mostly a symmetry/robustness check (the WP's own
-      # acceptance criterion is that migration-gate covers clean AND
-      # populated) -- it proves the validator does not crash on an empty
-      # database, which the populated-path run alone would not prove.
+      # rows at this point, so this is mostly a symmetry/robustness check
+      # (the WP's own acceptance criterion is that migration-gate covers
+      # clean AND populated) -- it proves the validator does not crash on an
+      # empty database, which the populated-path run alone would not prove.
+      # MUST run here, immediately after `prisma migrate deploy` -- every
+      # step below this one (verify-tenant-constraints.cjs and friends)
+      # creates its own throwaway Branch/InventoryStock rows via direct
+      # Prisma calls to prove unrelated invariants, and those rows are
+      # legitimately unbackfilled: this PR makes zero application-code
+      # changes, so anything created *after* the migration ran has
+      # warehouse_id NULL by construction, same as production will between
+      # this PR landing and PR2's cutover. Asserting zero NULLs after those
+      # steps would be asserting an invariant this PR never claimed to hold.
       - name: Verify warehouse_id backfill accounting on a clean database (WP-009 Phase A)
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
@@ -172,6 +176,11 @@ jobs:
         run: |
           node scripts/validate-warehouse-backfill.cjs
           node scripts/validate-warehouse-backfill.cjs --post-check
+      - name: Verify tenant database constraints (WP-007 Phase B)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/verify-tenant-constraints.cjs
       # WP-008 Phase B: POS sync emission, default-Price-Book replacement and
       # the PricingRule tie-break are all enforced by the database, not by
       # application code -- they can only be proven against a real one.
