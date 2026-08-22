@@ -180,7 +180,6 @@ export class SellersService {
         // Passing tenant_id explicitly throws PrismaClientValidationError:
         // Unknown argument tenant_id.
         create: report.rows.map((row) => ({
-          tenant_id: context.tenantId,
           seller_id: row.seller.id,
           seller_name: row.seller.name,
           branch_id: row.seller.branch_id,
