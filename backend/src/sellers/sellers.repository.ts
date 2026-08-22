@@ -206,7 +206,7 @@ export class SellersRepository {
     },
   ) {
     return this.prisma.sellerCommissionPeriod.create({
-      data: { ...data, tenant_id: context.tenantId },
+      data: { ...(data as any), tenant_id: context.tenantId },
       include: { rows: true },
     });
   }
