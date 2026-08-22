@@ -721,11 +721,9 @@ export class PurchasingService {
               AND ("qty_on_hand" - ${item.qty}) >= "qty_reserved"
           `
           if (stockChanged !== 1) {
-            throw new ConflictException({
-              code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
-              message: `Insufficient unreserved stock to return variant ${item.purchaseItem.variant_id}`,
-              message_ar: 'الكمية غير المحجوزة من المخزون غير كافية لإتمام مرتجع المورد.',
-            })
+            throw new ConflictException(
+              `Insufficient unreserved stock to return variant ${item.purchaseItem.variant_id}`,
+            )
           }
 
           await tx.$queryRaw`
