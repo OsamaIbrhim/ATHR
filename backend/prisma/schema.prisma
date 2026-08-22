@@ -193,7 +193,14 @@ model Warehouse {
   is_centralized Boolean   @default(false)
   created_at     DateTime  @default(now())
   updated_at     DateTime  @updatedAt
+  // WP-009 Phase A: InventoryStock/InventoryMovement/InventoryCostMovement
+  // reference (tenant_id, id) as a composite FK, mirroring the same pattern
+  // already used on Branch/ProductVariant.
+  inventory                InventoryStock[]
+  inventory_movements      InventoryMovement[]
+  inventory_cost_movements InventoryCostMovement[]
 
+  @@unique([tenant_id, id])
   @@index([tenant_id])
   @@index([location_id])
 }
@@ -1128,18 +1135,32 @@ model SalesTaxSnapshot {
 }
 
 model InventoryStock {
-  branch_id    String         @db.Uuid
-  variant_id   String         @db.Uuid
-  branch       Branch         @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
-  variant      ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  qty_on_hand  Int            @default(0)
-  qty_reserved Int            @default(0)
+  // WP-009 Phase A (expand/backfill only — this PR does not yet constrain):
+  // warehouse_id is nullable until every row is backfilled and the
+  // (branch_id, variant_id) primary key is swapped for (warehouse_id,
+  // variant_id) in a later PR. branch_id stays a real, stored, NOT NULL
+  // column after that swap too — it is not derived from warehouse_id at read
+  // time. That is safe ONLY because no code path can repoint a Warehouse's
+  // location_id after creation (no warehouses.service.ts/controller exists
+  // as of 2026-08-22). If a warehouse-reassignment feature is ever added,
+  // this column must be kept in sync at write time or retired then — do not
+  // assume it still tracks warehouse_id's location by construction.
+  branch_id    String          @db.Uuid
+  variant_id   String          @db.Uuid
+  warehouse_id String?         @db.Uuid
+  branch       Branch          @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  variant      ProductVariant  @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse    Warehouse?      @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  qty_on_hand  Int             @default(0)
+  qty_reserved Int             @default(0)
   last_sold_at DateTime?
-  tenant_id    String         @db.Uuid
+  tenant_id    String          @db.Uuid
 
   @@id([branch_id, variant_id])
   @@index([variant_id])
   @@index([tenant_id])
+  @@index([tenant_id, branch_id])
+  @@index([tenant_id, warehouse_id])
 }
 
 enum InventoryMovementType {
@@ -1160,8 +1181,13 @@ enum InventoryMovementType {
 model InventoryMovement {
   id                String                @id @default(uuid()) @db.Uuid
   sequence          BigInt                @unique @default(autoincrement())
+  // WP-009 Phase A: same denormalization contract as InventoryStock.branch_id
+  // (see the comment there) — branch_id stays stored and authoritative for
+  // display/filtering; it is not derived from warehouse_id.
   branch_id         String                @db.Uuid
+  warehouse_id      String?               @db.Uuid
   branch            Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse         Warehouse?            @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
   variant_id        String                @db.Uuid
   variant           ProductVariant        @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type     InventoryMovementType
@@ -1181,6 +1207,7 @@ model InventoryMovement {
   tenant_id         String                @db.Uuid
 
   @@index([branch_id, variant_id, occurred_at])
+  @@index([warehouse_id, variant_id, occurred_at])
   @@index([variant_id, sequence], map: "InventoryMovement_variant_sequence_idx")
   @@index([reference_type, reference_id])
   @@index([movement_type, occurred_at])
@@ -1203,8 +1230,15 @@ model InventoryCostMovement {
   sequence                 BigInt                    @unique @default(autoincrement())
   variant_id               String                    @db.Uuid
   variant                  ProductVariant            @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  // WP-009 Phase A: warehouse_id mirrors branch_id's existing optionality —
+  // populated only where branch_id is populated, both denormalized (see
+  // InventoryStock.branch_id's comment). Costing stays global per variant
+  // (global_quantity_before/after); this is an added dimension, not a change
+  // to costing semantics.
   branch_id                String?                   @db.Uuid
   branch                   Branch?                   @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse_id             String?                   @db.Uuid
+  warehouse                Warehouse?                @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type            InventoryCostMovementType
   quantity_delta           Int
   global_quantity_before   Int

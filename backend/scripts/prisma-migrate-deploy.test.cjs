@@ -18,11 +18,16 @@ test('reports the repository migration history used by deployment', () => {
   // 202608160002_add_promotion_coupon_uniqueness_constraints -- split in two
   // deliberately, see that second migration's own header comment and the
   // Phase D PR description), so 168 -> 170.
-  assert.equal(countMigrationFolders(), 170);
+  // WP-009 Phase A PR1 adds 3 (202608220001 expand, 202608220002 catch-up
+  // Location/Warehouse backfill, 202608220003 InventoryStock/Movement/
+  // CostMovement warehouse_id backfill -- deliberately three separate
+  // migrations, see the PR description for why each is its own step), so
+  // 170 -> 173.
+  assert.equal(countMigrationFolders(), 173);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608130008_add_tax_code_sync_triggers',
-    '202608160001_add_promotion_coupon_bundle_tables',
-    '202608160002_add_promotion_coupon_uniqueness_constraints',
+    '202608220001_wp009_phasea_expand_warehouse_dimension',
+    '202608220002_wp009_phasea_backfill_location_warehouse_for_orphan_branches',
+    '202608220003_wp009_phasea_backfill_inventory_warehouse_id',
   ]);
 });
 

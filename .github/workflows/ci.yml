@@ -160,6 +160,18 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
         run: node scripts/verify-tenant-constraints.cjs
+      # WP-009 Phase A: a clean database has zero InventoryStock/Movement
+      # rows, so this is mostly a symmetry/robustness check (the WP's own
+      # acceptance criterion is that migration-gate covers clean AND
+      # populated) -- it proves the validator does not crash on an empty
+      # database, which the populated-path run alone would not prove.
+      - name: Verify warehouse_id backfill accounting on a clean database (WP-009 Phase A)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: |
+          node scripts/validate-warehouse-backfill.cjs
+          node scripts/validate-warehouse-backfill.cjs --post-check
       # WP-008 Phase B: POS sync emission, default-Price-Book replacement and
       # the PricingRule tie-break are all enforced by the database, not by
       # application code -- they can only be proven against a real one.
@@ -247,6 +259,19 @@ jobs:
           npx prisma generate
           npx prisma migrate deploy
           npm run prisma:seed
+      # WP-009 Phase A: the baseline seed above only ever creates BOLD-01/
+      # BOLD-02, both of which already have a Location from the one-time
+      # 202608020002 backfill -- this step can never otherwise exercise the
+      # catch-up-backfill migration for a Branch with no Location, which is
+      # the exact case 90 of 92 branches are in on the live demo database
+      # today. See scripts/ci-seed-warehouse-less-branch.cjs for why this is
+      # inserted directly rather than via the application.
+      - name: Seed a warehouse-less branch into the populated database (WP-009 Phase A)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+        run: node scripts/ci-seed-warehouse-less-branch.cjs
       - name: Upgrade populated release data with current migrations
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
@@ -263,15 +288,32 @@ jobs:
           # invariant, which exits non-zero and fails this job.
           node scripts/validate-pricing-rule-migration.cjs
           node scripts/validate-tax-code-migration.cjs
+          # WP-009 Phase A: same discipline for the warehouse_id backfill --
+          # pre-check reports the state about to be migrated (including the
+          # warehouse-less branch seeded above), post-check is the hard stop.
+          node scripts/validate-warehouse-backfill.cjs
           npx prisma migrate deploy
           npx prisma migrate deploy
           npx prisma migrate status
           node scripts/validate-pricing-rule-migration.cjs --post-check
           node scripts/validate-tax-code-migration.cjs --post-check
+          node scripts/validate-warehouse-backfill.cjs --post-check
           npx prisma migrate diff --exit-code \
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \
             --shadow-database-url "$SHADOW_DATABASE_URL"
+      # WP-009 Phase A / WP-P0: WP-P0 broke sync on realistic row counts and
+      # that class of gap was never closed -- this is that proof, run
+      # explicitly against the populated-and-upgraded database rather than
+      # just the empty clean one. verify-sync-snapshot-behaviour.cjs seeds
+      # its own isolated tenant/catalog at volume, so it is unaffected by
+      # (and does not affect) the WP-009 fixture/backfill data already in
+      # this database. Reuses the dist/ build from the clean-DB steps above.
+      - name: Verify sync snapshot behaviour against the upgraded populated database (WP-009 Phase A)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+        run: node scripts/verify-sync-snapshot-behaviour.cjs
 
   admin:
     runs-on: ubuntu-latest
