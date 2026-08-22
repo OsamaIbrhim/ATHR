@@ -268,13 +268,16 @@ jobs:
           npx prisma generate
           npx prisma migrate deploy
           npm run prisma:seed
-      # WP-009 Phase A: the baseline seed above only ever creates BOLD-01/
-      # BOLD-02, both of which already have a Location from the one-time
-      # 202608020002 backfill -- this step can never otherwise exercise the
-      # catch-up-backfill migration for a Branch with no Location, which is
-      # the exact case 90 of 92 branches are in on the live demo database
-      # today. See scripts/ci-seed-warehouse-less-branch.cjs for why this is
-      # inserted directly rather than via the application.
+      # WP-009 Phase A: 90 of 92 Branch rows have no Location on the live
+      # demo database today (measured 2026-08-22) -- BranchesRepository
+      # .save() never creates one, so 202608020002's backfill only ever
+      # covered whatever branches existed the moment it ran. This step
+      # inserts one more such branch directly (see
+      # scripts/ci-seed-warehouse-less-branch.cjs's header for why, and for
+      # why BOLD-01/BOLD-02 above are not actually a reliable source of a
+      # Location-having branch in THIS flow either -- migrate deploy runs
+      # before prisma:seed here, so the backfill has nothing to act on until
+      # migration 202608220002 runs, later, on data seed already created).
       - name: Seed a warehouse-less branch into the populated database (WP-009 Phase A)
         working-directory: backend
         env:
