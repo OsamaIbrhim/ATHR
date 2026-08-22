@@ -134,7 +134,7 @@ export class SellersService {
     if (actor.role !== 'owner') throw new ForbiddenException('Only the owner can change seller commissions');
     const seller = await this.repository.findSeller(context, sellerId);
     if (!seller) throw new NotFoundException('Seller not found');
-    return this.repository.saveOverride(context, sellerId, dto as any);
+    return this.repository.saveOverride(context, sellerId, dto);
   }
 
   periods(context: TenantContext, actor: AuthenticatedUser) {
@@ -173,11 +173,13 @@ export class SellersService {
       default_bonus: settings.default_bonus,
       closed_by: actor.sub,
       rows: {
+        // tenant_id is deliberately omitted: SellerCommissionPeriodRow.period
+        // is a composite FK on (tenant_id, period_id) (schema.prisma:390), so
+        // Prisma's nested-create input for this relation excludes both
+        // tenant_id and period_id and auto-fills them from the parent.
+        // Passing tenant_id explicitly throws PrismaClientValidationError:
+        // Unknown argument tenant_id.
         create: report.rows.map((row) => ({
-          // Snapshot rows carry the tenant explicitly: Prisma nested creates
-          // do not inherit the parent's scalars, and there is no composite
-          // foreign key to enforce it until Phase B.
-          tenant_id: context.tenantId,
           seller_id: row.seller.id,
           seller_name: row.seller.name,
           branch_id: row.seller.branch_id,
@@ -195,6 +197,6 @@ export class SellersService {
           estimated_total: row.estimated_total,
         })),
       },
-    } as any);
+    });
   }
 }

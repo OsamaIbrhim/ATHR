@@ -123,10 +123,17 @@ describe('SellersService', () => {
             net_sales_before_tax: 1000,
             commission_rate: 3,
             estimated_total: 230,
-            tenant_id: ctx.tenantId,
           })],
         },
       }),
     }));
+    // SellerCommissionPeriodRow.period is a composite FK on (tenant_id,
+    // period_id) (schema.prisma:390): Prisma's nested-create input excludes
+    // tenant_id and auto-fills it from the parent, so passing it explicitly
+    // throws PrismaClientValidationError against real Postgres. This asserts
+    // the negative directly rather than relying on objectContaining to miss
+    // an extra key.
+    const passedRow = create.mock.calls[0][0].data.rows.create[0];
+    expect(passedRow).not.toHaveProperty('tenant_id');
   });
 });
