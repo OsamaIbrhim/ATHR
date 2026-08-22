@@ -280,7 +280,14 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-        run: node scripts/ci-seed-warehouse-less-branch.cjs
+        # TEMP DRILL (WP-009 Phase A guard drill -- reverted in the very next
+        # commit): --ambiguous also creates a SECOND is_default=true
+        # Warehouse on an existing Location, which migration 202608220003's
+        # pre-check must refuse. This commit is expected to turn this job
+        # RED at "Upgrade populated release data with current migrations",
+        # naming the offending branch/warehouse ids in the RAISE EXCEPTION
+        # message. Do not merge this commit as-is.
+        run: node scripts/ci-seed-warehouse-less-branch.cjs --ambiguous
       - name: Upgrade populated release data with current migrations
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
