@@ -201,9 +201,7 @@ export class SellersRepository {
 
   async savePeriod(
     context: TenantScope,
-    data: Omit<Prisma.SellerCommissionPeriodUncheckedCreateInput, 'tenant_id' | 'rows'> & {
-      rows: { create: Prisma.SellerCommissionPeriodRowUncheckedCreateWithoutPeriodInput[] };
-    },
+    data: Omit<Prisma.SellerCommissionPeriodUncheckedCreateInput, 'tenant_id'> & { rows: any },
   ) {
     return this.prisma.sellerCommissionPeriod.create({
       data: { ...data, tenant_id: context.tenantId },
