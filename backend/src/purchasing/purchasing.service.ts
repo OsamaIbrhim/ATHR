@@ -187,8 +187,12 @@ export class PurchasingService {
             received_at: receivedAt,
             created_by: actor.sub,
             items: {
+              // tenant_id is deliberately omitted: PurchaseInvoiceItem.purchase_invoice
+              // is a composite FK on (tenant_id, purchase_invoice_id), so Prisma's
+              // nested-create input for this relation excludes tenant_id and auto-fills
+              // it from the parent. Passing it explicitly throws
+              // PrismaClientValidationError: Unknown argument tenant_id.
               create: prepared.lines.map((line) => ({
-                tenant_id: context.tenantId,
                 variant_id: line.variant_id,
                 qty: line.qty,
                 unit_cost: line.unit_cost,

@@ -158,11 +158,11 @@ export class SellersRepository {
   async saveOverride(
     context: TenantScope,
     sellerId: string,
-    data: Prisma.SellerCommissionOverrideUncheckedUpdateInput,
+    data: Pick<Prisma.SellerCommissionOverrideUncheckedCreateInput, 'rate' | 'target' | 'bonus'>,
   ) {
     return this.prisma.sellerCommissionOverride.upsert({
       where: { seller_id: sellerId },
-      create: { seller_id: sellerId, tenant_id: context.tenantId, ...(data as any) },
+      create: { seller_id: sellerId, tenant_id: context.tenantId, ...data },
       update: data,
     });
   }
@@ -201,10 +201,12 @@ export class SellersRepository {
 
   async savePeriod(
     context: TenantScope,
-    data: Omit<Prisma.SellerCommissionPeriodUncheckedCreateInput, 'tenant_id'> & { rows: any },
+    data: Omit<Prisma.SellerCommissionPeriodUncheckedCreateInput, 'tenant_id' | 'rows'> & {
+      rows: { create: Prisma.SellerCommissionPeriodRowUncheckedCreateWithoutPeriodInput[] };
+    },
   ) {
     return this.prisma.sellerCommissionPeriod.create({
-      data: { ...(data as any), tenant_id: context.tenantId },
+      data: { ...data, tenant_id: context.tenantId },
       include: { rows: true },
     });
   }

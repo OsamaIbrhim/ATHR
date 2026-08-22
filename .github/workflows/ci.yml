@@ -59,6 +59,11 @@ jobs:
       - run: npm ci
         working-directory: ${{ github.workspace }}
       - run: npx prisma validate
+      # WP-009 Phase 0.5: static guard against nested `create`s that pass a
+      # composite-FK-shared column explicitly (the receive()/savePeriod()
+      # bug class), and against `as any` on any Prisma write argument. Pure
+      # AST/schema parsing, no database needed.
+      - run: node scripts/check-nested-create-composite-fk.cjs
       - run: npm run test:soft
       - run: npm audit --audit-level=high
       - name: Build production API container from the workspace root
@@ -212,6 +217,17 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
         run: node scripts/verify-raw-sql-tenant-scoping.cjs
+      # WP-009 Phase 0.5: nested `create`s under a parent whose child shares
+      # a composite tenant_id FK (PurchaseInvoice.items, SellerCommission
+      # Period.rows) were never called against a real database by anything
+      # -- fakePrisma-backed jest specs never validate argument shape, so
+      # both were broken unconditionally against real Postgres. Reuses the
+      # dist/ build from the steps above.
+      - name: Verify nested-create composite-FK real-Postgres path (WP-009 P0.5)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/verify-nested-create-real-postgres.cjs
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.policy.outputs.upgrade_ref }}
