@@ -155,6 +155,27 @@ jobs:
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \
             --shadow-database-url "$SHADOW_DATABASE_URL"
+      # WP-009 Phase A: a clean database has zero InventoryStock/Movement
+      # rows at this point, so this is mostly a symmetry/robustness check
+      # (the WP's own acceptance criterion is that migration-gate covers
+      # clean AND populated) -- it proves the validator does not crash on an
+      # empty database, which the populated-path run alone would not prove.
+      # MUST run here, immediately after `prisma migrate deploy` -- every
+      # step below this one (verify-tenant-constraints.cjs and friends)
+      # creates its own throwaway Branch/InventoryStock rows via direct
+      # Prisma calls to prove unrelated invariants, and those rows are
+      # legitimately unbackfilled: this PR makes zero application-code
+      # changes, so anything created *after* the migration ran has
+      # warehouse_id NULL by construction, same as production will between
+      # this PR landing and PR2's cutover. Asserting zero NULLs after those
+      # steps would be asserting an invariant this PR never claimed to hold.
+      - name: Verify warehouse_id backfill accounting on a clean database (WP-009 Phase A)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: |
+          node scripts/validate-warehouse-backfill.cjs
+          node scripts/validate-warehouse-backfill.cjs --post-check
       - name: Verify tenant database constraints (WP-007 Phase B)
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
@@ -247,6 +268,22 @@ jobs:
           npx prisma generate
           npx prisma migrate deploy
           npm run prisma:seed
+      # WP-009 Phase A: 90 of 92 Branch rows have no Location on the live
+      # demo database today (measured 2026-08-22) -- BranchesRepository
+      # .save() never creates one, so 202608020002's backfill only ever
+      # covered whatever branches existed the moment it ran. This step
+      # inserts one more such branch directly (see
+      # scripts/ci-seed-warehouse-less-branch.cjs's header for why, and for
+      # why BOLD-01/BOLD-02 above are not actually a reliable source of a
+      # Location-having branch in THIS flow either -- migrate deploy runs
+      # before prisma:seed here, so the backfill has nothing to act on until
+      # migration 202608220002 runs, later, on data seed already created).
+      - name: Seed a warehouse-less branch into the populated database (WP-009 Phase A)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+        run: node scripts/ci-seed-warehouse-less-branch.cjs
       - name: Upgrade populated release data with current migrations
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
@@ -263,15 +300,32 @@ jobs:
           # invariant, which exits non-zero and fails this job.
           node scripts/validate-pricing-rule-migration.cjs
           node scripts/validate-tax-code-migration.cjs
+          # WP-009 Phase A: same discipline for the warehouse_id backfill --
+          # pre-check reports the state about to be migrated (including the
+          # warehouse-less branch seeded above), post-check is the hard stop.
+          node scripts/validate-warehouse-backfill.cjs
           npx prisma migrate deploy
           npx prisma migrate deploy
           npx prisma migrate status
           node scripts/validate-pricing-rule-migration.cjs --post-check
           node scripts/validate-tax-code-migration.cjs --post-check
+          node scripts/validate-warehouse-backfill.cjs --post-check
           npx prisma migrate diff --exit-code \
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \
             --shadow-database-url "$SHADOW_DATABASE_URL"
+      # WP-009 Phase A / WP-P0: WP-P0 broke sync on realistic row counts and
+      # that class of gap was never closed -- this is that proof, run
+      # explicitly against the populated-and-upgraded database rather than
+      # just the empty clean one. verify-sync-snapshot-behaviour.cjs seeds
+      # its own isolated tenant/catalog at volume, so it is unaffected by
+      # (and does not affect) the WP-009 fixture/backfill data already in
+      # this database. Reuses the dist/ build from the clean-DB steps above.
+      - name: Verify sync snapshot behaviour against the upgraded populated database (WP-009 Phase A)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
+        run: node scripts/verify-sync-snapshot-behaviour.cjs
 
   admin:
     runs-on: ubuntu-latest
