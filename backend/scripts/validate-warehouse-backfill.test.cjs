@@ -26,20 +26,18 @@ test('runPreCheck reports per-tenant qty_on_hand totals and orphan/ambiguous cou
   assert.deepEqual(result.ambiguousLocations, []);
 });
 
-test('runPostCheck passes when every row resolves 1:1 and no nullness diverges', async () => {
+// totalsByWarehouse is the JOIN-based query (contains `JOIN "Warehouse"`);
+// totalsByBranch is the plain GROUP BY with no JOIN. Every mock below
+// matches the JOIN variant FIRST -- both contain "GROUP BY" and
+// "variant_id", so an unordered match would misroute.
+
+test('runPostCheck passes when every row resolves 1:1, round-trips to its own branch, and no nullness diverges', async () => {
   const runQuery = async (sql) => {
     if (sql.includes('"InventoryStock" WHERE "warehouse_id" IS NULL')) return [{ count: 0 }];
     if (sql.includes('"InventoryMovement" WHERE "warehouse_id" IS NULL')) return [{ count: 0 }];
     if (sql.includes('InventoryCostMovement')) return [{ count: 0 }];
-    // totalsByWarehouse aliases the table as `s` (`s."tenant_id"`); check
-    // that BEFORE the unaliased totalsByBranch match, since both contain
-    // "GROUP BY" and "variant_id".
-    if (sql.includes('s."tenant_id"') && sql.includes('GROUP BY s."tenant_id"')) {
-      return [{ tenant_id: 't1', variant_id: 'v1', total: 10n }];
-    }
-    if (sql.includes('GROUP BY "tenant_id", "variant_id"')) {
-      return [{ tenant_id: 't1', variant_id: 'v1', total: 10n }];
-    }
+    if (sql.includes('JOIN "Warehouse"')) return [{ tenant_id: 't1', variant_id: 'v1', total: 10n }];
+    if (sql.includes('GROUP BY "tenant_id", "variant_id"')) return [{ tenant_id: 't1', variant_id: 'v1', total: 10n }];
     if (sql.trim() === 'SELECT count(*)::int AS count FROM "InventoryStock"') {
       return [{ count: 1 }];
     }
@@ -56,6 +54,7 @@ test('runPostCheck fails loud when InventoryStock has NULL warehouse_id rows', a
     if (sql.includes('"InventoryStock" WHERE "warehouse_id" IS NULL')) return [{ count: 3 }];
     if (sql.includes('"InventoryMovement" WHERE "warehouse_id" IS NULL')) return [{ count: 0 }];
     if (sql.includes('InventoryCostMovement')) return [{ count: 0 }];
+    if (sql.includes('JOIN "Warehouse"')) return [];
     if (sql.includes('GROUP BY "tenant_id", "variant_id"')) return [];
     if (sql.includes('count(DISTINCT ("warehouse_id", "variant_id"))')) return [{ count: 0 }];
     return [{ count: 0 }];
@@ -70,6 +69,7 @@ test('runPostCheck fails loud when the backfill fans a row out (row count vs dis
     if (sql.includes('"InventoryStock" WHERE "warehouse_id" IS NULL')) return [{ count: 0 }];
     if (sql.includes('"InventoryMovement" WHERE "warehouse_id" IS NULL')) return [{ count: 0 }];
     if (sql.includes('InventoryCostMovement')) return [{ count: 0 }];
+    if (sql.includes('JOIN "Warehouse"')) return [{ tenant_id: 't1', variant_id: 'v1', total: 10n }];
     if (sql.includes('GROUP BY "tenant_id", "variant_id"')) return [{ tenant_id: 't1', variant_id: 'v1', total: 10n }];
     if (sql === 'SELECT count(*)::int AS count FROM "InventoryStock"') return [{ count: 2 }];
     if (sql.includes('count(DISTINCT ("warehouse_id", "variant_id"))')) return [{ count: 1 }];
@@ -79,6 +79,34 @@ test('runPostCheck fails loud when the backfill fans a row out (row count vs dis
   assert.equal(result.ok, false);
   assert.equal(result.stockRowCount, 2);
   assert.equal(result.stockDistinctWarehouseVariant, 1);
+});
+
+// This is the check PR review flagged as a tautology: a prior version of
+// this file built totalsByBranch and totalsByWarehouse from the identical
+// query (no reference to branch_id or warehouse_id in either), so this
+// exact scenario -- a row whose warehouse_id resolves to a WAREHOUSE that
+// belongs to a DIFFERENT branch than the row's own branch_id -- could never
+// be represented by a mock, let alone caught in real Postgres. Proves the
+// failure path is reachable: totalsByBranch counts the row (branch_id is
+// always populated and untouched), totalsByWarehouse's JOIN condition
+// `w.location_id = s.branch_id` excludes it, so the two totals genuinely
+// diverge.
+test('runPostCheck fails loud when a row\'s warehouse_id does not resolve back to its own branch', async () => {
+  const runQuery = async (sql) => {
+    if (sql.includes('"InventoryStock" WHERE "warehouse_id" IS NULL')) return [{ count: 0 }];
+    if (sql.includes('"InventoryMovement" WHERE "warehouse_id" IS NULL')) return [{ count: 0 }];
+    if (sql.includes('InventoryCostMovement')) return [{ count: 0 }];
+    // The misattributed row (qty 6) drops out of the JOIN-based total,
+    // leaving only the other, correctly-attributed row (qty 4) visible.
+    if (sql.includes('JOIN "Warehouse"')) return [{ tenant_id: 't1', variant_id: 'v1', total: 4n }];
+    if (sql.includes('GROUP BY "tenant_id", "variant_id"')) return [{ tenant_id: 't1', variant_id: 'v1', total: 10n }];
+    if (sql.trim() === 'SELECT count(*)::int AS count FROM "InventoryStock"') return [{ count: 2 }];
+    if (sql.includes('count(DISTINCT ("warehouse_id", "variant_id"))')) return [{ count: 2 }];
+    return [{ count: 0 }];
+  };
+  const result = await runPostCheck(runQuery, noopLog, noopLog);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.diverging, ['t1:v1']);
 });
 
 // The accounting above is worthless if nothing runs it -- same discipline as
