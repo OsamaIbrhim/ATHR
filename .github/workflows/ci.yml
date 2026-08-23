@@ -314,19 +314,6 @@ jobs:
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \
             --shadow-database-url "$SHADOW_DATABASE_URL"
-      # TEMP DRILL (WP-009 Phase A): validate-warehouse-backfill.cjs's
-      # post-check must actually be able to fail. Corrupts one InventoryStock
-      # row's warehouse_id to NULL directly against the real upgraded
-      # populated database (the normal post-check above already passed on
-      # the real backfill), then re-runs --post-check expecting it to name
-      # exactly 1 NULL warehouse_id row. Expected RED. Reverted next commit.
-      - name: "TEMP DRILL: null-warehouse (WP-009 Phase A)"
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-        run: |
-          node scripts/ci-corrupt-warehouse-backfill.cjs --mode=null-warehouse
-          node scripts/validate-warehouse-backfill.cjs --post-check
       # WP-009 Phase A / WP-P0: WP-P0 broke sync on realistic row counts and
       # that class of gap was never closed -- this is that proof, run
       # explicitly against the populated-and-upgraded database rather than
