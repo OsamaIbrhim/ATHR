@@ -314,22 +314,6 @@ jobs:
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \
             --shadow-database-url "$SHADOW_DATABASE_URL"
-      # TEMP DRILL (WP-009 Phase A): drills the branch/warehouse round-trip
-      # divergence check in ISOLATION from the row-count/distinct-pairs
-      # check (see ci-corrupt-warehouse-backfill.cjs's --mode=misattribute
-      # header comment for why the target row is chosen to avoid also
-      # tripping that other check). Points one InventoryStock row's
-      # warehouse_id at another branch's default warehouse against the real
-      # upgraded populated database, then re-runs --post-check expecting it
-      # to report ONLY a round-trip divergence, naming the (tenant, variant).
-      # Expected RED. Reverted next commit.
-      - name: "TEMP DRILL: misattribute (WP-009 Phase A)"
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-        run: |
-          node scripts/ci-corrupt-warehouse-backfill.cjs --mode=misattribute
-          node scripts/validate-warehouse-backfill.cjs --post-check
       # WP-009 Phase A / WP-P0: WP-P0 broke sync on realistic row counts and
       # that class of gap was never closed -- this is that proof, run
       # explicitly against the populated-and-upgraded database rather than
