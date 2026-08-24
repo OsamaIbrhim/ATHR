@@ -16,6 +16,7 @@ export async function ensureSeededInventoryLedger(
   const inserted = await prisma.$executeRawUnsafe(`
     INSERT INTO "InventoryMovement" (
       "branch_id",
+      "warehouse_id",
       "variant_id",
       "movement_type",
       "on_hand_delta",
@@ -31,6 +32,7 @@ export async function ensureSeededInventoryLedger(
     )
     SELECT
       stock."branch_id",
+      stock."warehouse_id",
       stock."variant_id",
       'opening_balance'::"InventoryMovementType",
       stock."qty_on_hand",

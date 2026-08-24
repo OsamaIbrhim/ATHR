@@ -36,6 +36,12 @@ const taxCategory = await prisma.taxCategory.findFirst({
   where: { tenant_id: branch?.tenant_id, code: 'STANDARD' },
 })
 if (!branch || !category || !taxCategory) throw new Error('Run the normal development seed before volume-seed.mjs')
+// WP-009 Phase A: InventoryStock.warehouse_id is nullable only until PR2's
+// primary-key swap makes it NOT NULL -- resolve the branch's default
+// Warehouse now (the normal development seed gives every branch one) rather
+// than let this script start failing the moment that constraint lands.
+const warehouse = await prisma.warehouse.findFirst({ where: { tenant_id: branch.tenant_id, location_id: branch.id, is_default: true } })
+if (!warehouse) throw new Error(`Branch ${branch.id} has no default Warehouse -- run the normal development seed before volume-seed.mjs`)
 
 const variantIds = []
 for (let offset = 0; offset < productCount; offset += batchSize) {
@@ -63,7 +69,7 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
   await prisma.$transaction([
     prisma.product.createMany({ data: products, skipDuplicates: true }),
     prisma.productVariant.createMany({ data: variants, skipDuplicates: true }),
-    prisma.inventoryStock.createMany({ data: batchVariantIds.map((variantId) => ({ tenant_id: branch.tenant_id, branch_id: branch.id, variant_id: variantId, qty_on_hand: 100_000 })), skipDuplicates: true }),
+    prisma.inventoryStock.createMany({ data: batchVariantIds.map((variantId) => ({ tenant_id: branch.tenant_id, branch_id: branch.id, warehouse_id: warehouse.id, variant_id: variantId, qty_on_hand: 100_000 })), skipDuplicates: true }),
   ])
   process.stdout.write(`\rproducts ${Math.min(offset + size, productCount)}/${productCount}`)
 }
