@@ -367,7 +367,7 @@ function run(argv = process.argv.slice(2)) {
     );
   }
 
-  const upgradeRef = result.upgradeFromRef || POPULATED_PROOF_BASELINE_REF;
+  const upgradeRef = result.upgradeFromRef || args.base; // TEMP DRILL: revert to the pre-fix fallback
   git(repositoryRoot, ['cat-file', '-e', `${upgradeRef}^{commit}`]);
   appendGitHubOutput(args.githubOutput, 'upgrade_ref', upgradeRef);
 
