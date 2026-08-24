@@ -12,6 +12,40 @@ const REPAIR_RECORD_PATH_PATTERN =
 const INITIAL_REPAIR_MANIFEST_SHA256 =
   'de096ebbd167eec1c0ed08fb0dbddfa77aad79043db74cc32c0e8c526d43d120';
 
+// `migration-base/` (ci.yml's "populated" scenario) checks out this ref and
+// seeds against ITS migrations/schema, so this defines the oldest
+// pre-existing-data shape the populated path still proves an upgrade
+// against. This used to default to `--base` (the PR's own target-branch
+// commit): correct for the PR that adds a migration, since --base is then
+// still whatever master looked like before that migration existed -- but
+// only for as long as the migration stays unmerged. The instant it merges,
+// every later run's --base also contains it, migration-base pre-applies it
+// against an empty database before seed ever runs, "new migrations" against
+// that baseline drops to zero, and the populated-path proof for that
+// migration silently stops running -- while still reporting green, because
+// nothing failed. Confirmed 2026-08-23: a docs-only PR (touching no
+// migrations at all) tripped WP-009 Phase A's populated-path post-check,
+// because `--base` had, by then, quietly become a post-Phase-A commit.
+//
+// Pinning here to a fixed pre-existing commit fixes that, and is the only
+// one of the two workable fixes: the other candidate -- seed against
+// whatever HEAD's own seed.ts produces before HEAD's migrations apply --
+// stops working the moment seed.ts itself is fixed not to leave legacy-shape
+// (pre-backfill) rows lying around, which this same incident's fix #2
+// required doing regardless. Only a checkout frozen from before both that
+// migration AND that seed.ts fix can still hand the populated path genuinely
+// unmigrated, legacy-shaped data to prove a backfill against.
+//
+// ceb40e75 = the commit immediately before WP-009 Phase A's first migration
+// (80da5a8) landed -- "Merge pull request #81 from
+// OsamaIbrhim/fix/wp-009-p0.5-receive-composite-fk". Bump this pin (and this
+// comment) only when a later phase's own populated-path proof needs a newer
+// floor -- an older pin never invalidates a newer migration's proof, it just
+// makes the populated path apply more history before seeding, which is
+// strictly more coverage, not less.
+const POPULATED_PROOF_BASELINE_REF =
+  'ceb40e751e773417d8cbc828649263a687b9fa1d';
+
 function sha256(content) {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -333,7 +367,7 @@ function run(argv = process.argv.slice(2)) {
     );
   }
 
-  const upgradeRef = result.upgradeFromRef || args.base;
+  const upgradeRef = result.upgradeFromRef || POPULATED_PROOF_BASELINE_REF;
   git(repositoryRoot, ['cat-file', '-e', `${upgradeRef}^{commit}`]);
   appendGitHubOutput(args.githubOutput, 'upgrade_ref', upgradeRef);
 

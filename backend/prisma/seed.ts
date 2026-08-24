@@ -60,9 +60,48 @@ async function main() {
 
   const password_hash = await bcryptjs.hash('Bold1234', 10);
 
+  // WP-009 Phase A: BranchesRepository.save() never creates a matching
+  // Location/Warehouse (tracked as a follow-up, not fixed by Phase A), so a
+  // freshly seeded Branch is exactly as warehouse-less as one created
+  // through the live app. Give every seeded Branch its own Location +
+  // default Warehouse here so InventoryStock/InventoryMovement/
+  // InventoryCostMovement rows below never need a NULL warehouse_id — that
+  // column is nullable only until PR2's cutover, and a seed script that
+  // relies on nullability breaks the moment it stops being true.
+  const primaryLegalEntity =
+    (await prisma.legalEntity.findFirst({ where: { tenant_id, is_primary: true } })) ??
+    (await prisma.legalEntity.create({ data: { tenant_id, legal_name: tenant.name, is_primary: true } }));
+
+  async function createBranchWithWarehouse(data: {
+    code: string; name_ar: string; name_en: string; address?: string; phone?: string; cash_drawer_enabled: boolean;
+  }) {
+    const branch = await prisma.branch.create({ data: { tenant_id, ...data } });
+    const location = await prisma.location.create({
+      data: {
+        id: branch.id,
+        tenantId: tenant_id,
+        legal_entity_id: primaryLegalEntity.id,
+        code: branch.code,
+        name_ar: branch.name_ar,
+        name_en: branch.name_en,
+        address: branch.address,
+        phone: branch.phone,
+      },
+    });
+    const warehouse = await prisma.warehouse.create({
+      data: {
+        tenant_id,
+        location_id: location.id,
+        name: `${branch.name_ar} — Default Warehouse`,
+        is_default: true,
+      },
+    });
+    return { branch, warehouse };
+  }
+
   // Branches
-  const b1 = await prisma.branch.create({ data: { tenant_id, code: 'BOLD-01', name_ar: 'بولد – الفرع الرئيسي', name_en: 'Bold Main', address: 'طنطا', phone: '0400000000', cash_drawer_enabled: false }});
-  const b2 = await prisma.branch.create({ data: { tenant_id, code: 'BOLD-02', name_ar: 'بولد – القاهرة الجديدة', name_en: 'Bold New Cairo', cash_drawer_enabled: true }});
+  const { branch: b1, warehouse: w1 } = await createBranchWithWarehouse({ code: 'BOLD-01', name_ar: 'بولد – الفرع الرئيسي', name_en: 'Bold Main', address: 'طنطا', phone: '0400000000', cash_drawer_enabled: false });
+  const { branch: b2, warehouse: w2 } = await createBranchWithWarehouse({ code: 'BOLD-02', name_ar: 'بولد – القاهرة الجديدة', name_en: 'Bold New Cairo', cash_drawer_enabled: true });
 
   // Users
   const owner = await prisma.user.create({ data: { name: 'Owner – أسامة', phone: '+200100000000', email: 'owner@bold.eg', password_hash, role: 'owner', branch_id: b1.id }});
@@ -223,8 +262,8 @@ async function main() {
   for (const [variantIndex, v] of allVariants.entries()) {
     const primaryQuantity =
       variantIndex === 0 ? 250 : Math.floor(deterministicRandom()*20)+2;
-    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b1.id, variant_id: v.id, qty_on_hand: primaryQuantity, last_sold_at: deterministicRandom() > 0.3 ? new Date(Date.now() - deterministicRandom()*60*86400000) : null }});
-    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b2.id, variant_id: v.id, qty_on_hand: Math.floor(deterministicRandom()*12), last_sold_at: deterministicRandom() > 0.5 ? new Date(Date.now() - deterministicRandom()*90*86400000) : null }});
+    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b1.id, warehouse_id: w1.id, variant_id: v.id, qty_on_hand: primaryQuantity, last_sold_at: deterministicRandom() > 0.3 ? new Date(Date.now() - deterministicRandom()*60*86400000) : null }});
+    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b2.id, warehouse_id: w2.id, variant_id: v.id, qty_on_hand: Math.floor(deterministicRandom()*12), last_sold_at: deterministicRandom() > 0.5 ? new Date(Date.now() - deterministicRandom()*90*86400000) : null }});
   }
 
   // Pricing rules -- WP-008 Phase B: deprecated, PricingService no longer
