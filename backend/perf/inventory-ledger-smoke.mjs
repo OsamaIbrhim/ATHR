@@ -5,6 +5,7 @@ import {
   markTransferFixtureShipped,
   resolveTransferFixtureReceipt,
 } from './support/transfer-command-context.mjs'
+import { resolveDefaultWarehouse } from '../prisma/resolve-default-warehouse.mjs'
 
 const prisma = new PrismaClient()
 
@@ -140,10 +141,12 @@ try {
             cost_price: 10,
           },
         })
+        const sourceWarehouse = await resolveDefaultWarehouse(tx, sourceBranch.tenant_id, sourceBranch)
         sourceStock = await tx.inventoryStock.create({
           data: {
             tenant_id: sourceBranch.tenant_id,
             branch_id: sourceBranch.id,
+            warehouse_id: sourceWarehouse.id,
             variant_id: variant.id,
             qty_on_hand: 20,
           },
@@ -186,6 +189,7 @@ try {
           },
         }))
 
+      const destinationWarehouse = await resolveDefaultWarehouse(tx, tenantId, destinationBranch)
       await tx.inventoryStock.upsert({
         where: {
           branch_id_variant_id: {
@@ -197,6 +201,7 @@ try {
         create: {
           tenant_id: tenantId,
           branch_id: destinationBranch.id,
+          warehouse_id: destinationWarehouse.id,
           variant_id: variant.id,
           qty_on_hand: 0,
         },

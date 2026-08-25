@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
+import { resolveDefaultWarehouse } from '../prisma/resolve-default-warehouse.mjs'
 
 const prisma = new PrismaClient()
 
@@ -37,6 +38,7 @@ try {
           },
         }))
       const tenantId = branch.tenant_id
+      const warehouse = await resolveDefaultWarehouse(tx, tenantId, branch)
       const actor =
         (await tx.user.findFirst()) ||
         (await tx.user.create({
@@ -84,6 +86,7 @@ try {
         data: {
           tenant_id: tenantId,
           branch_id: branch.id,
+          warehouse_id: warehouse.id,
           variant_id: variant.id,
           qty_on_hand: 0,
         },

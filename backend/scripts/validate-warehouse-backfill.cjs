@@ -135,14 +135,48 @@ async function runPostCheck(runQuery, log = console.log, logError = console.erro
   return { ok: true, stockNullWarehouse, movementNullWarehouse, costMismatch, stockRowCount, stockDistinctWarehouseVariant, diverging };
 }
 
+// Guards the six fixture/smoke scripts swept for warehouse_id after WP-009
+// Phase A landed (perf/hard-load.mjs, perf/purchasing-accounting-smoke.mjs,
+// perf/inventory-ledger-smoke.mjs, perf/transfer-state-smoke.mjs,
+// scripts/verify-tenant-constraints.cjs, scripts/verify-raw-sql-tenant-scoping.cjs)
+// -- none of those are covered by runPostCheck above, which only runs once,
+// immediately after `prisma:seed` finishes.
+//
+// This intentionally checks InventoryStock ONLY, not InventoryMovement.
+// InventoryMovement rows created through record_inventory_movement() (the
+// raw-SQL function `verify-raw-sql-tenant-scoping.cjs`'s W1/W2 cases and the
+// perf/*.mjs smoke scripts call) legitimately keep warehouse_id NULL --
+// that function has no warehouse_id parameter, and giving it one is PR2's
+// scope, not this guard's. Checking InventoryMovement here would fail on
+// rows that are correctly NULL. InventoryStock has no such write path: every
+// InventoryStock row these scripts create goes through a direct Prisma
+// create/upsert, so zero NULLs is a real invariant, not an approximation.
+async function runFixtureStockCheck(runQuery, log = console.log, logError = console.error) {
+  log('WP-009 Phase A warehouse_id fixture-script guard (InventoryStock only)');
+
+  const [{ count: stockNullWarehouse }] = await runQuery(
+    `SELECT count(*)::int AS count FROM "InventoryStock" WHERE "warehouse_id" IS NULL`,
+  );
+
+  if (stockNullWarehouse !== 0) {
+    logError(`FAILED: ${stockNullWarehouse} InventoryStock row(s) with warehouse_id IS NULL.`);
+    return { ok: false, stockNullWarehouse };
+  }
+
+  log('PASSED: 0 NULL warehouse_id on InventoryStock.');
+  return { ok: true, stockNullWarehouse };
+}
+
 async function main() {
   const { PrismaClient } = require('@prisma/client');
   const prisma = new PrismaClient();
   const runQuery = (sql) => prisma.$queryRawUnsafe(sql);
   try {
-    const result = process.argv.includes('--post-check')
-      ? await runPostCheck(runQuery)
-      : await runPreCheck(runQuery);
+    const result = process.argv.includes('--post-check-fixture-stock')
+      ? await runFixtureStockCheck(runQuery)
+      : process.argv.includes('--post-check')
+        ? await runPostCheck(runQuery)
+        : await runPreCheck(runQuery);
     if (!result.ok) process.exitCode = 1;
   } finally {
     await prisma.$disconnect();
@@ -156,4 +190,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runPreCheck, runPostCheck };
+module.exports = { runPreCheck, runPostCheck, runFixtureStockCheck };
