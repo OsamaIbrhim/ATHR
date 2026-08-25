@@ -36,22 +36,22 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-async function assertReconciled(tx, branchId, variantId) {
+async function assertReconciled(tx, warehouseId, variantId) {
   const [stock, totals] = await Promise.all([
     tx.inventoryStock.findUnique({
       where: {
-        branch_id_variant_id: {
-          branch_id: branchId,
+        warehouse_id_variant_id: {
+          warehouse_id: warehouseId,
           variant_id: variantId,
         },
       },
     }),
     tx.inventoryMovement.aggregate({
-      where: { branch_id: branchId, variant_id: variantId },
+      where: { warehouse_id: warehouseId, variant_id: variantId },
       _sum: { on_hand_delta: true, reserved_delta: true },
     }),
   ])
-  invariant(stock, `Missing stock row for ${branchId}/${variantId}`)
+  invariant(stock, `Missing stock row for ${warehouseId}/${variantId}`)
   invariant(
     stock.qty_on_hand === Number(totals._sum.on_hand_delta || 0),
     `On-hand reconciliation failed for ${branchId}/${variantId}`,
@@ -155,6 +155,7 @@ try {
 
       invariant(sourceBranch && variant && sourceStock, 'Unable to prepare source inventory')
       const tenantId = sourceBranch.tenant_id
+      const sourceWarehouseId = sourceStock.warehouse_id
 
       const destinationBranch =
         (await tx.branch.findFirst({
@@ -192,8 +193,8 @@ try {
       const destinationWarehouse = await resolveDefaultWarehouse(tx, tenantId, destinationBranch)
       await tx.inventoryStock.upsert({
         where: {
-          branch_id_variant_id: {
-            branch_id: destinationBranch.id,
+          warehouse_id_variant_id: {
+            warehouse_id: destinationWarehouse.id,
             variant_id: variant.id,
           },
         },
@@ -252,6 +253,7 @@ try {
       await tx.$queryRaw`
         SELECT "record_inventory_movement"(
           ${sourceBranch.id}::uuid,
+          ${sourceWarehouseId}::uuid,
           ${variant.id}::uuid,
           'sale'::"InventoryMovementType",
           -1::integer,
@@ -304,8 +306,8 @@ try {
       })
       await tx.inventoryStock.update({
         where: {
-          branch_id_variant_id: {
-            branch_id: sourceBranch.id,
+          warehouse_id_variant_id: {
+            warehouse_id: sourceWarehouseId,
             variant_id: variant.id,
           },
         },
@@ -336,8 +338,8 @@ try {
       })
       await tx.inventoryStock.update({
         where: {
-          branch_id_variant_id: {
-            branch_id: sourceBranch.id,
+          warehouse_id_variant_id: {
+            warehouse_id: sourceWarehouseId,
             variant_id: variant.id,
           },
         },
@@ -346,6 +348,7 @@ try {
       await tx.$queryRaw`
         SELECT "record_inventory_movement"(
           ${sourceBranch.id}::uuid,
+          ${sourceWarehouseId}::uuid,
           ${variant.id}::uuid,
           'purchase_receipt'::"InventoryMovementType",
           2::integer,
@@ -410,8 +413,8 @@ try {
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED')
       await tx.inventoryStock.update({
         where: {
-          branch_id_variant_id: {
-            branch_id: destinationBranch.id,
+          warehouse_id_variant_id: {
+            warehouse_id: destinationWarehouse.id,
             variant_id: variant.id,
           },
         },
@@ -433,8 +436,8 @@ try {
         'Transfer-in movement was not recorded',
       )
 
-      await assertReconciled(tx, sourceBranch.id, variant.id)
-      await assertReconciled(tx, destinationBranch.id, variant.id)
+      await assertReconciled(tx, sourceWarehouseId, variant.id)
+      await assertReconciled(tx, destinationWarehouse.id, variant.id)
 
       summary = {
         suite: 'inventory-movement-ledger',

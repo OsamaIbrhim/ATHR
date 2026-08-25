@@ -43,8 +43,8 @@ try {
       const destinationWarehouse = await resolveDefaultWarehouse(tx, source.tenant_id, destination)
       await tx.inventoryStock.upsert({
         where: {
-          branch_id_variant_id: {
-            branch_id: destination.id,
+          warehouse_id_variant_id: {
+            warehouse_id: destinationWarehouse.id,
             variant_id: stock.variant_id,
           },
         },

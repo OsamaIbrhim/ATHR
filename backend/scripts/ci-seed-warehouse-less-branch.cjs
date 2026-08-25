@@ -2,16 +2,21 @@
 // WP-009 Phase A, PR1 -- CI-only fixture for `migration-gate`'s populated-
 // database scenario.
 //
-// The populated step's baseline seed (`prisma/seed.ts`) creates its own
-// Location + default Warehouse for BOLD-01/BOLD-02 directly (it no longer
-// depends on 202608020002's one-time Location/Warehouse backfill, or on
-// migrate-deploy/seed ordering) -- so those two branches are never the
-// warehouse-less case this job needs. `BranchesRepository.save()` (live
-// behind `POST /branches`) still doesn't create a Location/Warehouse for a
-// branch created through the app (see the WP-009 Phase A PR description for
-// why that gap is tracked as a separate follow-up, not fixed in this PR), so
-// this script inserts one more branch directly, bypassing the app, to keep
-// giving migration 202608220002's catch-up guard a real case to close.
+// `ci.yml`'s populated-path step runs `npm run prisma:seed` against the
+// `migration-base` checkout -- the pinned pre-Phase-A baseline ref (see
+// check-migration-policy.cjs's POPULATED_PROOF_BASELINE_REF), not HEAD. That
+// commit's `prisma/seed.ts` predates the Location + default Warehouse
+// creation logic entirely, so BOLD-01/BOLD-02 come out of that seed run
+// Location-less, same as every other Branch created before 202608020002's
+// one-time backfill or through `POST /branches` today (`BranchesRepository
+// .save()` still doesn't create a Location/Warehouse for a branch created
+// through the app -- see the WP-009 Phase A PR description for why that gap
+// is tracked as a separate follow-up, not fixed here). BOLD-01/BOLD-02 are
+// therefore already a warehouse-less case in this scenario, not the only
+// one -- this script inserts one FURTHER branch directly, bypassing the
+// app, so the scenario has a deterministic, named case to assert against
+// regardless of which baseline commit is pinned, keeping migration
+// 202608220002's catch-up guard proven against a real case it can name.
 // Wired into `ci.yml` right after the populated database's baseline seed
 // runs and before this PR's migrations apply.
 //

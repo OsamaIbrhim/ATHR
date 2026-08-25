@@ -16,6 +16,7 @@ import {
 } from './dto/transfer.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { assertBranchAccess } from '../auth/branch-access';
+import { resolveWarehouseIdForBranch } from '../inventory/resolve-warehouse-for-branch';
 import {
   commandFingerprint,
   resolveCommandId,
@@ -231,12 +232,17 @@ export class TransfersService {
         throw new ConflictException('Only a pending transfer can be shipped');
       }
 
+      const fromWarehouseId = await resolveWarehouseIdForBranch(
+        tx,
+        context.tenantId,
+        transfer.from_branch_id,
+      );
       const items = await this.lockItems(tx, context, id);
       for (const item of items) {
         const changed = await tx.$executeRaw`
           UPDATE "InventoryStock"
           SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
-          WHERE "branch_id" = ${transfer.from_branch_id}::uuid
+          WHERE "warehouse_id" = ${fromWarehouseId}::uuid
             AND "tenant_id" = ${context.tenantId}::uuid
             AND "variant_id" = ${item.variant_id}::uuid
             AND ("qty_on_hand" - "qty_reserved") >= ${item.qty}
@@ -320,6 +326,11 @@ export class TransfersService {
         );
       }
 
+      const toWarehouseId = await resolveWarehouseIdForBranch(
+        tx,
+        context.tenantId,
+        transfer.to_branch_id,
+      );
       const items = await this.lockItems(tx, context, id);
       const requested = normalizedItems.length
         ? normalizedItems
@@ -363,8 +374,8 @@ export class TransfersService {
         if (receipt.received_qty > 0) {
           await tx.inventoryStock.upsert({
             where: {
-              branch_id_variant_id: {
-                branch_id: transfer.to_branch_id,
+              warehouse_id_variant_id: {
+                warehouse_id: toWarehouseId,
                 variant_id: item.variant_id,
               },
             },
@@ -372,6 +383,7 @@ export class TransfersService {
             create: {
               tenant_id: context.tenantId,
               branch_id: transfer.to_branch_id,
+              warehouse_id: toWarehouseId,
               variant_id: item.variant_id,
               qty_on_hand: receipt.received_qty,
             },
@@ -379,8 +391,8 @@ export class TransfersService {
         } else {
           await tx.inventoryStock.upsert({
             where: {
-              branch_id_variant_id: {
-                branch_id: transfer.to_branch_id,
+              warehouse_id_variant_id: {
+                warehouse_id: toWarehouseId,
                 variant_id: item.variant_id,
               },
             },
@@ -388,6 +400,7 @@ export class TransfersService {
             create: {
               tenant_id: context.tenantId,
               branch_id: transfer.to_branch_id,
+              warehouse_id: toWarehouseId,
               variant_id: item.variant_id,
               qty_on_hand: 0,
             },

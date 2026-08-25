@@ -17,6 +17,7 @@ import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
+import { resolveWarehouseIdForBranch } from '../inventory/resolve-warehouse-for-branch';
 import { createHash, randomUUID } from 'crypto';
 import { assertBranchAccess } from '../auth/branch-access';
 import { ListSalesDto } from './dto/list-sales.dto';
@@ -392,6 +393,11 @@ export class SalesService {
         }),
       ]);
       if (!branch) throw new NotFoundException('Branch not found');
+      const warehouseId = await resolveWarehouseIdForBranch(
+        tx,
+        context.tenantId,
+        dto.branch_id,
+      );
       const linkedCashier =
         originCashier?.branch_id === dto.branch_id ? originCashier : null;
       if (!linkedCashier) {
@@ -507,8 +513,8 @@ export class SalesService {
       for (const item of saleItems) {
         const stock = await tx.inventoryStock.upsert({
           where: {
-            branch_id_variant_id: {
-              branch_id: dto.branch_id,
+            warehouse_id_variant_id: {
+              warehouse_id: warehouseId,
               variant_id: item.variant_id,
             },
           },
@@ -519,6 +525,7 @@ export class SalesService {
           create: {
             tenant_id: context.tenantId,
             branch_id: dto.branch_id,
+            warehouse_id: warehouseId,
             variant_id: item.variant_id,
             qty_on_hand: -item.qty,
             last_sold_at: receivedAt,
@@ -651,6 +658,7 @@ export class SalesService {
         await tx.$queryRaw`
           SELECT "record_inventory_movement"(
             ${dto.branch_id}::uuid,
+            ${warehouseId}::uuid,
             ${item.variant_id}::uuid,
             'sale'::"InventoryMovementType",
             ${-item.qty}::integer,
@@ -782,6 +790,11 @@ export class SalesService {
       if (actor.role !== 'owner' && actor.branch_id !== original.branch_id) {
         throw new ForbiddenException('You cannot return a sale from another branch');
       }
+      const warehouseId = await resolveWarehouseIdForBranch(
+        tx,
+        context.tenantId,
+        original.branch_id,
+      );
 
       let shiftId: string | null = null;
       if (actor.role !== 'owner') {
@@ -898,8 +911,8 @@ export class SalesService {
       for (const item of returnItems) {
         await tx.inventoryStock.upsert({
           where: {
-            branch_id_variant_id: {
-              branch_id: original.branch_id,
+            warehouse_id_variant_id: {
+              warehouse_id: warehouseId,
               variant_id: item.variant_id,
             },
           },
@@ -907,6 +920,7 @@ export class SalesService {
           create: {
             tenant_id: context.tenantId,
             branch_id: original.branch_id,
+            warehouse_id: warehouseId,
             variant_id: item.variant_id,
             qty_on_hand: item.qty,
           },

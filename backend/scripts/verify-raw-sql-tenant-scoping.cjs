@@ -239,27 +239,16 @@ async function receiveStock(tenant, fixture, variant, qty) {
   });
   const receivedAt = new Date();
   await prisma.inventoryStock.upsert({
-    where: { branch_id_variant_id: { branch_id: fixture.branch.id, variant_id: variant.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: fixture.warehouse.id, variant_id: variant.id } },
     update: { qty_on_hand: { increment: qty } },
     create: { tenant_id: tenant.id, branch_id: fixture.branch.id, warehouse_id: fixture.warehouse.id, variant_id: variant.id, qty_on_hand: qty },
   });
-  // WP-009 Phase A: unlike the InventoryStock upsert above, record_inventory_
-  // movement()/record_inventory_cost_movement() have no warehouse_id
-  // parameter at all -- Phase A's own PR1 description scopes that function
-  // signature change to PR2's "application-code cutover", alongside the same
-  // function's other 8 call sites in real write paths (transfers.service.ts,
-  // sales.service.ts, purchasing.service.ts). The InventoryMovement/
-  // InventoryCostMovement rows these calls create keep warehouse_id NULL
-  // until then. ci.yml's clean-scenario comment calls rows like this
-  // "legitimately unbackfilled" -- true today (the column is nullable), but
-  // that framing does not survive PR2's NOT NULL constraint on
-  // InventoryMovement: these two calls will start raising a NOT NULL
-  // violation, not just leaving a null column, unless PR2 updates this
-  // function's signature (InventoryCostMovement stays nullable there,
-  // mirroring branch_id, so it is unaffected).
+  // WP-009 Phase A PR2: record_inventory_movement() now takes p_warehouse_id
+  // (record_inventory_cost_movement() is unaffected -- InventoryCostMovement
+  // stays nullable, mirroring branch_id).
   await prisma.$queryRaw`
     SELECT "record_inventory_movement"(
-      ${fixture.branch.id}::uuid, ${variant.id}::uuid, 'purchase_receipt'::"InventoryMovementType",
+      ${fixture.branch.id}::uuid, ${fixture.warehouse.id}::uuid, ${variant.id}::uuid, 'purchase_receipt'::"InventoryMovementType",
       ${qty}::integer, 0::integer, 'PurchaseInvoice'::text, ${invoice.id}::text, ${item.id}::text,
       ${`purchase-receipt:${item.id}`}::text, ${receivedAt}::timestamp, ${ownerActor.sub}::uuid, '{}'::jsonb
     )
@@ -275,7 +264,7 @@ async function receiveStock(tenant, fixture, variant, qty) {
   return prisma.purchaseInvoice.findFirstOrThrow({ where: { id: invoice.id }, include: { items: true } });
 }
 
-async function forceInsufficientUnreservedStock(branchId, variantId) {
+async function forceInsufficientUnreservedStock(warehouseId, variantId) {
   // Bumps qty_reserved without touching qty_on_hand, so
   // InventoryStock_reserved_not_above_available_on_hand stays satisfied
   // (qty_reserved=1 <= qty_on_hand) while the raw UPDATE's own
@@ -286,7 +275,7 @@ async function forceInsufficientUnreservedStock(branchId, variantId) {
   // ever reaches the raw UPDATE -- reducing qty_on_hand out of band would
   // trip that unrelated guard instead of the one this check targets.
   await prisma.inventoryStock.update({
-    where: { branch_id_variant_id: { branch_id: branchId, variant_id: variantId } },
+    where: { warehouse_id_variant_id: { warehouse_id: warehouseId, variant_id: variantId } },
     data: { qty_reserved: 1 },
   });
 }
@@ -302,7 +291,7 @@ async function verifySupplierReturnScoping() {
   const invoiceA = await receiveStock(a.tenant, a, a.variantOk, 5);
   await receiveStock(b.tenant, b, b.variantOk, 5);
   const bStockBefore = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: b.branch.id, variant_id: b.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: b.warehouse.id, variant_id: b.variantOk.id } },
   });
 
   await service.returnToSupplier(
@@ -313,10 +302,10 @@ async function verifySupplierReturnScoping() {
   );
 
   const aStockAfter = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: a.branch.id, variant_id: a.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: a.warehouse.id, variant_id: a.variantOk.id } },
   });
   const bStockAfter = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: b.branch.id, variant_id: b.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: b.warehouse.id, variant_id: b.variantOk.id } },
   });
 
   expectTrue(
@@ -331,7 +320,7 @@ async function verifySupplierReturnScoping() {
   );
 
   const invoiceA2 = await receiveStock(a.tenant, a, a.variantShort, 5);
-  await forceInsufficientUnreservedStock(a.branch.id, a.variantShort.id);
+  await forceInsufficientUnreservedStock(a.warehouse.id, a.variantShort.id);
 
   let caught = null;
   try {
@@ -366,16 +355,16 @@ async function verifyPurchaseReversalScoping() {
   const invoiceA = await receiveStock(a.tenant, a, a.variantOk, 5);
   await receiveStock(b.tenant, b, b.variantOk, 5);
   const bStockBefore = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: b.branch.id, variant_id: b.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: b.warehouse.id, variant_id: b.variantOk.id } },
   });
 
   await service.reverse(contextA, invoiceA.id, { reason: 'verify tenant scoping' }, ownerActor);
 
   const aStockAfter = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: a.branch.id, variant_id: a.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: a.warehouse.id, variant_id: a.variantOk.id } },
   });
   const bStockAfter = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: b.branch.id, variant_id: b.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: b.warehouse.id, variant_id: b.variantOk.id } },
   });
 
   expectTrue(
@@ -390,7 +379,7 @@ async function verifyPurchaseReversalScoping() {
   );
 
   const invoiceA2 = await receiveStock(a.tenant, a, a.variantShort, 5);
-  await forceInsufficientUnreservedStock(a.branch.id, a.variantShort.id);
+  await forceInsufficientUnreservedStock(a.warehouse.id, a.variantShort.id);
 
   let caught = null;
   try {

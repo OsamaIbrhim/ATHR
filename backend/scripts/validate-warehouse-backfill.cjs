@@ -142,29 +142,40 @@ async function runPostCheck(runQuery, log = console.log, logError = console.erro
 // -- none of those are covered by runPostCheck above, which only runs once,
 // immediately after `prisma:seed` finishes.
 //
-// This intentionally checks InventoryStock ONLY, not InventoryMovement.
-// InventoryMovement rows created through record_inventory_movement() (the
-// raw-SQL function `verify-raw-sql-tenant-scoping.cjs`'s W1/W2 cases and the
-// perf/*.mjs smoke scripts call) legitimately keep warehouse_id NULL --
-// that function has no warehouse_id parameter, and giving it one is PR2's
-// scope, not this guard's. Checking InventoryMovement here would fail on
-// rows that are correctly NULL. InventoryStock has no such write path: every
-// InventoryStock row these scripts create goes through a direct Prisma
-// create/upsert, so zero NULLs is a real invariant, not an approximation.
+// WP-009 Phase A PR2: this now checks InventoryMovement too, not just
+// InventoryStock. Before PR2, InventoryMovement rows created through
+// record_inventory_movement() (the raw-SQL function `verify-raw-sql-tenant-
+// scoping.cjs`'s W1/W2 cases and the perf/*.mjs smoke scripts call)
+// legitimately kept warehouse_id NULL -- that function had no warehouse_id
+// parameter. PR2 gave it one (no DEFAULT, old 12-arg signature dropped in
+// the same migration), so every one of those call sites now supplies a real
+// warehouse_id or the INSERT fails a NOT NULL violation outright -- there is
+// no longer a "correctly NULL" InventoryMovement row for this guard to avoid
+// flagging. `runPostCheck` above already asserts this once, immediately
+// after seed; this fixture-stock check re-asserts it after every later
+// script that writes InventoryStock/InventoryMovement runs, the same
+// coverage gap runPostCheck alone could not close on its own.
 async function runFixtureStockCheck(runQuery, log = console.log, logError = console.error) {
-  log('WP-009 Phase A warehouse_id fixture-script guard (InventoryStock only)');
+  log('WP-009 Phase A warehouse_id fixture-script guard (InventoryStock and InventoryMovement)');
 
   const [{ count: stockNullWarehouse }] = await runQuery(
     `SELECT count(*)::int AS count FROM "InventoryStock" WHERE "warehouse_id" IS NULL`,
   );
+  const [{ count: movementNullWarehouse }] = await runQuery(
+    `SELECT count(*)::int AS count FROM "InventoryMovement" WHERE "warehouse_id" IS NULL`,
+  );
 
-  if (stockNullWarehouse !== 0) {
-    logError(`FAILED: ${stockNullWarehouse} InventoryStock row(s) with warehouse_id IS NULL.`);
-    return { ok: false, stockNullWarehouse };
+  const problems = [];
+  if (stockNullWarehouse !== 0) problems.push(`${stockNullWarehouse} InventoryStock row(s) with warehouse_id IS NULL`);
+  if (movementNullWarehouse !== 0) problems.push(`${movementNullWarehouse} InventoryMovement row(s) with warehouse_id IS NULL`);
+
+  if (problems.length > 0) {
+    logError(`FAILED: ${problems.join('; ')}.`);
+    return { ok: false, stockNullWarehouse, movementNullWarehouse };
   }
 
-  log('PASSED: 0 NULL warehouse_id on InventoryStock.');
-  return { ok: true, stockNullWarehouse };
+  log('PASSED: 0 NULL warehouse_id on InventoryStock and InventoryMovement.');
+  return { ok: true, stockNullWarehouse, movementNullWarehouse };
 }
 
 async function main() {

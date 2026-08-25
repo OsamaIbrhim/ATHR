@@ -12,6 +12,8 @@ const ctx = contextFor(TENANT_A);
 const SOURCE_BRANCH_ID = '11111111-1111-4111-8111-111111111111';
 const DESTINATION_BRANCH_ID = '22222222-2222-4222-8222-222222222222';
 const OTHER_BRANCH_ID = '33333333-3333-4333-8333-333333333333';
+const SOURCE_WAREHOUSE_ID = '11111111-1111-4111-8111-1111111111aa';
+const DESTINATION_WAREHOUSE_ID = '22222222-2222-4222-8222-2222222222aa';
 const TRANSFER_ID = '44444444-4444-4444-8444-444444444444';
 const TRANSFER_ITEM_ID = '55555555-5555-4555-8555-555555555555';
 const VARIANT_ID = '66666666-6666-4666-8666-666666666666';
@@ -73,6 +75,17 @@ function setup() {
     },
     inventoryStock: {
       upsert: jest.fn().mockResolvedValue({}),
+    },
+    warehouse: {
+      findFirst: jest.fn().mockImplementation(({ where }: any) => {
+        if (where.location_id === SOURCE_BRANCH_ID) {
+          return Promise.resolve({ id: SOURCE_WAREHOUSE_ID });
+        }
+        if (where.location_id === DESTINATION_BRANCH_ID) {
+          return Promise.resolve({ id: DESTINATION_WAREHOUSE_ID });
+        }
+        return Promise.resolve(null);
+      }),
     },
     auditLog: {
       create: jest.fn().mockResolvedValue({}),
@@ -232,8 +245,8 @@ describe('TransfersService', () => {
 
     expect(tx.inventoryStock.upsert).toHaveBeenCalledWith({
       where: {
-        branch_id_variant_id: {
-          branch_id: DESTINATION_BRANCH_ID,
+        warehouse_id_variant_id: {
+          warehouse_id: DESTINATION_WAREHOUSE_ID,
           variant_id: VARIANT_ID,
         },
       },
@@ -244,6 +257,7 @@ describe('TransfersService', () => {
         // there is no composite foreign key to enforce it until Phase B.
         tenant_id: ctx.tenantId,
         branch_id: DESTINATION_BRANCH_ID,
+        warehouse_id: DESTINATION_WAREHOUSE_ID,
         variant_id: VARIANT_ID,
         qty_on_hand: 3,
       },

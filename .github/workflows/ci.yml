@@ -164,18 +164,16 @@ jobs:
       #
       # verify-tenant-constraints.cjs and verify-raw-sql-tenant-scoping.cjs's
       # own throwaway Branch/InventoryStock/InventoryMovement rows (created
-      # via direct Prisma calls, to prove unrelated invariants) now resolve a
+      # via direct Prisma calls, to prove unrelated invariants) resolve a
       # real Warehouse for the branch they seed, the same way prisma/seed.ts
-      # does -- they no longer produce a NULL warehouse_id. What still does:
-      # every row those two scripts (and the perf/*.mjs smoke scripts) create
-      # through the record_inventory_movement()/record_inventory_cost_
-      # movement() SQL functions, because that function signature has no
-      # warehouse_id parameter at all -- a change Phase A's own PR1
-      # description scopes to PR2's application-code cutover, alongside that
-      # function's other real write-path call sites. Those specific rows stay
-      # NULL by construction, same as production will between this PR landing
-      # and PR2's cutover; asserting zero NULLs after this step would still be
-      # asserting an invariant this PR never claimed to hold for them.
+      # does. WP-009 Phase A PR2: record_inventory_movement()/record_
+      # inventory_cost_movement() calls used to be the one exception --
+      # that function had no warehouse_id parameter, so rows it created
+      # legitimately kept warehouse_id NULL. PR2 gave it one (required, no
+      # DEFAULT, old 12-arg signature dropped in the same migration), so
+      # every InventoryMovement row any of these scripts create now carries
+      # a real warehouse_id or the write fails a NOT NULL violation outright.
+      # There is no remaining case where a NULL here is correct.
       - name: Verify warehouse_id backfill accounting on a clean database (WP-009 Phase A)
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
@@ -249,12 +247,14 @@ jobs:
       # verify-raw-sql-tenant-scoping.cjs above (plus the perf/*.mjs hard-smoke
       # scripts) were swept to resolve a real warehouse_id for every
       # InventoryStock row they create, closing the gap where the column's
-      # current nullability let them slip through unnoticed. This is the
-      # regression guard for that sweep: InventoryStock only, not
-      # InventoryMovement -- rows record_inventory_movement() creates
+      # current nullability let them slip through unnoticed. WP-009 Phase A
+      # PR2: this guard now checks InventoryMovement too. Before PR2,
+      # InventoryMovement rows record_inventory_movement() creates
       # (verify-raw-sql-tenant-scoping.cjs's W1/W2, and the perf smoke
-      # scripts) legitimately still have a NULL warehouse_id, since that
-      # function has no warehouse_id parameter (PR2's scope, not this one's).
+      # scripts) legitimately still had a NULL warehouse_id, since that
+      # function had no warehouse_id parameter. PR2 gave it one and updated
+      # every one of those call sites to supply it -- InventoryMovement has
+      # no remaining legitimately-NULL case for this guard to avoid flagging.
       - name: Verify fixture/smoke scripts resolve a real warehouse_id (WP-009 Phase A follow-up)
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
@@ -292,13 +292,17 @@ jobs:
           npm run prisma:seed
       # WP-009 Phase A: 90 of 92 Branch rows have no Location on the live
       # demo database today (measured 2026-08-22) -- BranchesRepository
-      # .save() never creates one for a branch created through the app.
-      # prisma/seed.ts's own BOLD-01/BOLD-02 above always get a Location +
-      # default Warehouse directly (it does not depend on 202608020002's
-      # backfill or on migrate-deploy/seed ordering), so they are not a
-      # source of the warehouse-less case this migration's catch-up guard
-      # needs to keep proving. This step inserts one more branch directly,
-      # bypassing the app, for that -- see
+      # .save() never creates one for a branch created through the app. The
+      # `npm run prisma:seed` above runs against the migration-base checkout
+      # -- the pinned pre-Phase-A baseline ref (see
+      # check-migration-policy.cjs's POPULATED_PROOF_BASELINE_REF) -- not
+      # HEAD, so it runs THAT commit's seed.ts, which predates the Location +
+      # default Warehouse creation logic entirely. BOLD-01/BOLD-02 come out
+      # of this step Location-less, the same as every other Branch here, not
+      # as an exception to it. This step inserts one further branch directly,
+      # bypassing the app, so the scenario has a deterministic, named
+      # warehouse-less branch to assert against regardless of which baseline
+      # is pinned (and to drive the `--ambiguous` drill) -- see
       # scripts/ci-seed-warehouse-less-branch.cjs's header for the full
       # reasoning.
       - name: Seed a warehouse-less branch into the populated database (WP-009 Phase A)

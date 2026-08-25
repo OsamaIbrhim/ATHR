@@ -1135,28 +1135,26 @@ model SalesTaxSnapshot {
 }
 
 model InventoryStock {
-  // WP-009 Phase A (expand/backfill only — this PR does not yet constrain):
-  // warehouse_id is nullable until every row is backfilled and the
-  // (branch_id, variant_id) primary key is swapped for (warehouse_id,
-  // variant_id) in a later PR. branch_id stays a real, stored, NOT NULL
-  // column after that swap too — it is not derived from warehouse_id at read
-  // time. That is safe ONLY because no code path can repoint a Warehouse's
-  // location_id after creation (no warehouses.service.ts/controller exists
-  // as of 2026-08-22). If a warehouse-reassignment feature is ever added,
-  // this column must be kept in sync at write time or retired then — do not
-  // assume it still tracks warehouse_id's location by construction.
+  // WP-009 Phase A PR2: identity is (warehouse_id, variant_id). branch_id
+  // stays a real, stored, NOT NULL column -- it is not derived from
+  // warehouse_id at read time. That is safe ONLY because no code path can
+  // repoint a Warehouse's location_id after creation (no
+  // warehouses.service.ts/controller exists as of 2026-08-25). If a
+  // warehouse-reassignment feature is ever added, this column must be kept
+  // in sync at write time or retired then — do not assume it still tracks
+  // warehouse_id's location by construction.
   branch_id    String          @db.Uuid
   variant_id   String          @db.Uuid
-  warehouse_id String?         @db.Uuid
+  warehouse_id String          @db.Uuid
   branch       Branch          @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   variant      ProductVariant  @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  warehouse    Warehouse?      @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse    Warehouse       @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
   qty_on_hand  Int             @default(0)
   qty_reserved Int             @default(0)
   last_sold_at DateTime?
   tenant_id    String          @db.Uuid
 
-  @@id([branch_id, variant_id])
+  @@id([warehouse_id, variant_id])
   @@index([variant_id])
   @@index([tenant_id])
   @@index([tenant_id, branch_id])
@@ -1181,13 +1179,14 @@ enum InventoryMovementType {
 model InventoryMovement {
   id                String                @id @default(uuid()) @db.Uuid
   sequence          BigInt                @unique @default(autoincrement())
-  // WP-009 Phase A: same denormalization contract as InventoryStock.branch_id
-  // (see the comment there) — branch_id stays stored and authoritative for
-  // display/filtering; it is not derived from warehouse_id.
+  // WP-009 Phase A PR2: same denormalization contract as
+  // InventoryStock.branch_id (see the comment there) — branch_id stays
+  // stored and authoritative for display/filtering; it is not derived from
+  // warehouse_id.
   branch_id         String                @db.Uuid
-  warehouse_id      String?               @db.Uuid
+  warehouse_id      String                @db.Uuid
   branch            Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
-  warehouse         Warehouse?            @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse         Warehouse             @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
   variant_id        String                @db.Uuid
   variant           ProductVariant        @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type     InventoryMovementType
