@@ -245,6 +245,21 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
         run: node scripts/verify-raw-sql-tenant-scoping.cjs
+      # WP-009 Phase A follow-up: verify-tenant-constraints.cjs and
+      # verify-raw-sql-tenant-scoping.cjs above (plus the perf/*.mjs hard-smoke
+      # scripts) were swept to resolve a real warehouse_id for every
+      # InventoryStock row they create, closing the gap where the column's
+      # current nullability let them slip through unnoticed. This is the
+      # regression guard for that sweep: InventoryStock only, not
+      # InventoryMovement -- rows record_inventory_movement() creates
+      # (verify-raw-sql-tenant-scoping.cjs's W1/W2, and the perf smoke
+      # scripts) legitimately still have a NULL warehouse_id, since that
+      # function has no warehouse_id parameter (PR2's scope, not this one's).
+      - name: Verify fixture/smoke scripts resolve a real warehouse_id (WP-009 Phase A follow-up)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/validate-warehouse-backfill.cjs --post-check-fixture-stock
       # WP-009 Phase 0.5: nested `create`s under a parent whose child shares
       # a composite tenant_id FK (PurchaseInvoice.items, SellerCommission
       # Period.rows) were never called against a real database by anything

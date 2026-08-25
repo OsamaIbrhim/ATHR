@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
-const { runPreCheck, runPostCheck } = require('./validate-warehouse-backfill.cjs');
+const { runPreCheck, runPostCheck, runFixtureStockCheck } = require('./validate-warehouse-backfill.cjs');
 
 function noopLog() {}
 
@@ -109,6 +109,26 @@ test('runPostCheck fails loud when a row\'s warehouse_id does not resolve back t
   assert.deepEqual(result.diverging, ['t1:v1']);
 });
 
+test('runFixtureStockCheck passes when InventoryStock has no NULL warehouse_id rows', async () => {
+  const runQuery = async (sql) => {
+    if (sql.includes('"InventoryStock" WHERE "warehouse_id" IS NULL')) return [{ count: 0 }];
+    return [{ count: 0 }];
+  };
+  const result = await runFixtureStockCheck(runQuery, noopLog, noopLog);
+  assert.equal(result.ok, true);
+  assert.equal(result.stockNullWarehouse, 0);
+});
+
+test('runFixtureStockCheck fails loud when a fixture/smoke script leaves InventoryStock warehouse_id NULL', async () => {
+  const runQuery = async (sql) => {
+    if (sql.includes('"InventoryStock" WHERE "warehouse_id" IS NULL')) return [{ count: 1 }];
+    return [{ count: 0 }];
+  };
+  const result = await runFixtureStockCheck(runQuery, noopLog, noopLog);
+  assert.equal(result.ok, false);
+  assert.equal(result.stockNullWarehouse, 1);
+});
+
 // The accounting above is worthless if nothing runs it -- same discipline as
 // validate-pricing-rule-migration.test.cjs's own CI-wiring pin, for the same
 // reason (a migration's own RAISE NOTICE never surfaces in `prisma migrate
@@ -163,4 +183,14 @@ test('the migration-gate CI job also runs the warehouse_id backfill accounting o
   const cleanSection = migrationGate.slice(0, migrationGate.indexOf('Build a populated database from the release baseline'));
   assert.ok(cleanSection.includes('node scripts/validate-warehouse-backfill.cjs'));
   assert.ok(cleanSection.includes('node scripts/validate-warehouse-backfill.cjs --post-check'));
+});
+
+test('the migration-gate CI job guards the fixture/smoke-script warehouse_id sweep, after both scripts it covers have run', () => {
+  const cleanSection = migrationGate.slice(0, migrationGate.indexOf('Build a populated database from the release baseline'));
+  const rawSqlCheck = cleanSection.indexOf('node scripts/verify-raw-sql-tenant-scoping.cjs');
+  const guardCheck = cleanSection.indexOf('node scripts/validate-warehouse-backfill.cjs --post-check-fixture-stock');
+  const tenantConstraintsCheck = cleanSection.indexOf('node scripts/verify-tenant-constraints.cjs');
+  assert.ok(rawSqlCheck > -1 && guardCheck > -1 && tenantConstraintsCheck > -1);
+  assert.ok(guardCheck > rawSqlCheck);
+  assert.ok(guardCheck > tenantConstraintsCheck);
 });
