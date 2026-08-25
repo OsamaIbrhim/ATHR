@@ -112,6 +112,15 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
   const variant = await prisma.productVariant.create({
     data: { tenant_id: tenantId, product_id: product.id, sku: `${label}-SKU`, cost_price: 10 },
   });
+  // WP-009 Phase A PR2: InventoryStock's primary key is now
+  // (warehouse_id, variant_id) -- the FK probe below for
+  // `InventoryStock.branch_id -> Branch` needs a variant that has never been
+  // inserted against this chain's own warehouse (the base inventoryStock row
+  // below already occupies (warehouse.id, variant.id)), or it collides on
+  // the primary key (P2002) before the FK it is testing is ever evaluated.
+  const secondVariant = await prisma.productVariant.create({
+    data: { tenant_id: tenantId, product_id: product.id, sku: `${label}-SKU-2`, cost_price: 10 },
+  });
   const customer = await prisma.customer.create({ data: { tenant_id: tenantId } });
   const supplier = await prisma.supplier.create({
     data: { tenant_id: tenantId, name: `${label} supplier`, alias_names: [] },
@@ -340,7 +349,7 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
   });
 
   return {
-    branch, secondBranch, warehouse, category, taxCategory, product, variant, customer, supplier, posTerminal, shift, inventoryStock,
+    branch, secondBranch, warehouse, category, taxCategory, product, variant, secondVariant, customer, supplier, posTerminal, shift, inventoryStock,
     salesInvoice, salesInvoiceItem, returnRecord, returnItem, purchaseInvoice, purchaseInvoiceItem,
     supplierReturn, supplierReturnItem, transfer, transferItem, transferTransitMovement,
     sellerCommissionPeriod, inventoryMovement, inventoryCostMovement, offerSuggestion,
@@ -352,7 +361,12 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
  * A whose named FK column is redirected to tenant B's row}. */
 function foreignKeyCases(chainA, chainB) {
   return [
-    { table: 'inventoryStock', name: 'InventoryStock.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, branch_id: chainB.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, qty_on_hand: 1 }) },
+    // secondVariant, not variant: chainA's base inventoryStock row already
+    // occupies (chainA.warehouse.id, chainA.variant.id) -- the actual
+    // primary key since WP-009 Phase A PR2 -- so reusing variant here would
+    // collide on that key (P2002) before the branch_id FK under test is
+    // ever evaluated.
+    { table: 'inventoryStock', name: 'InventoryStock.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, branch_id: chainB.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainA.secondVariant.id, qty_on_hand: 1 }) },
     { table: 'inventoryStock', name: 'InventoryStock.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, branch_id: chainA.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainB.variant.id, qty_on_hand: 1 }) },
     { table: 'inventoryMovement', name: 'InventoryMovement.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, branch_id: chainB.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', on_hand_delta: 1, reserved_delta: 0, on_hand_after: 1, reserved_after: 0, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-im-branch`, occurred_at: new Date() }) },
     { table: 'inventoryMovement', name: 'InventoryMovement.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, branch_id: chainA.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainB.variant.id, movement_type: 'adjustment', on_hand_delta: 1, reserved_delta: 0, on_hand_after: 1, reserved_after: 0, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-im-variant`, occurred_at: new Date() }) },
