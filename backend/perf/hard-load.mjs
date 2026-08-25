@@ -14,6 +14,7 @@ import {
   requireIdempotentReplay,
   requireSaleAcknowledgement,
 } from './support/sale-acknowledgement.mjs'
+import { resolveDefaultWarehouse } from '../prisma/resolve-default-warehouse.mjs'
 
 const api = process.env.PERF_API_URL || 'http://localhost:3000/api/v1'
 const smoke =
@@ -792,6 +793,7 @@ async function mutationIntegrityLoad(adminToken) {
         const coverageQuantity = 2
         const coverageKey = `hard-smoke-deficit-coverage:${deficitSyncId}`
         const coverageBranch = await tx.branch.findUniqueOrThrow({ where: { id: branchId } })
+        const coverageWarehouse = await resolveDefaultWarehouse(tx, coverageBranch.tenant_id, coverageBranch)
         // WP-008 Phase C (BR-TAX-201): Product.tax_category_id is NOT NULL.
         const coverageTaxCategory = await tx.taxCategory.findFirstOrThrow({
           where: { tenant_id: coverageBranch.tenant_id },
@@ -818,6 +820,7 @@ async function mutationIntegrityLoad(adminToken) {
           data: {
             tenant_id: coverageBranch.tenant_id,
             branch_id: branchId,
+            warehouse_id: coverageWarehouse.id,
             variant_id: coverageVariant.id,
             qty_on_hand: -1,
           },

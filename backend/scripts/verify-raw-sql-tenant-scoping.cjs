@@ -108,6 +108,25 @@ async function createBranch(tenantId, label) {
   });
 }
 
+// WP-009 Phase A: warehouse_id is nullable only until PR2's InventoryStock
+// primary-key swap makes it NOT NULL -- W1/W2/R3's InventoryStock rows below
+// need a real Warehouse for the branch they seed, the same way
+// prisma/seed.ts resolves one, not a NULL that works today only because
+// nothing enforces it yet.
+async function createBranchWithWarehouse(tenantId, label) {
+  const branch = await createBranch(tenantId, label);
+  const legalEntity = await prisma.legalEntity.create({
+    data: { tenant_id: tenantId, legal_name: `${label} legal entity`, is_primary: true },
+  });
+  const location = await prisma.location.create({
+    data: { id: branch.id, tenantId, legal_entity_id: legalEntity.id, code: branch.code, name_ar: branch.name_ar },
+  });
+  const warehouse = await prisma.warehouse.create({
+    data: { tenant_id: tenantId, location_id: location.id, name: `${label} default warehouse`, is_default: true },
+  });
+  return { branch, warehouse };
+}
+
 async function createCategory(tenantId) {
   return prisma.taxCategory.create({
     data: { tenant_id: tenantId, code: 'STANDARD', name_en: 'Standard' },
@@ -167,11 +186,11 @@ async function createVerifyActorUser() {
 async function seedPurchasingTenant(label) {
   const tenant = await createTenant(`wp009-p0-w-${label}`);
   const category = await createCategory(tenant.id);
-  const branch = await createBranch(tenant.id, label);
+  const { branch, warehouse } = await createBranchWithWarehouse(tenant.id, label);
   const supplier = await createSupplier(tenant.id, label);
   const variantOk = await createVariant(tenant.id, category);
   const variantShort = await createVariant(tenant.id, category);
-  return { tenant, branch, supplier, variantOk, variantShort };
+  return { tenant, branch, warehouse, supplier, variantOk, variantShort };
 }
 
 // Deliberately does NOT call PurchasingService.receive(): that method's
@@ -222,8 +241,22 @@ async function receiveStock(tenant, fixture, variant, qty) {
   await prisma.inventoryStock.upsert({
     where: { branch_id_variant_id: { branch_id: fixture.branch.id, variant_id: variant.id } },
     update: { qty_on_hand: { increment: qty } },
-    create: { tenant_id: tenant.id, branch_id: fixture.branch.id, variant_id: variant.id, qty_on_hand: qty },
+    create: { tenant_id: tenant.id, branch_id: fixture.branch.id, warehouse_id: fixture.warehouse.id, variant_id: variant.id, qty_on_hand: qty },
   });
+  // WP-009 Phase A: unlike the InventoryStock upsert above, record_inventory_
+  // movement()/record_inventory_cost_movement() have no warehouse_id
+  // parameter at all -- Phase A's own PR1 description scopes that function
+  // signature change to PR2's "application-code cutover", alongside the same
+  // function's other 8 call sites in real write paths (transfers.service.ts,
+  // sales.service.ts, purchasing.service.ts). The InventoryMovement/
+  // InventoryCostMovement rows these calls create keep warehouse_id NULL
+  // until then. ci.yml's clean-scenario comment calls rows like this
+  // "legitimately unbackfilled" -- true today (the column is nullable), but
+  // that framing does not survive PR2's NOT NULL constraint on
+  // InventoryMovement: these two calls will start raising a NOT NULL
+  // violation, not just leaving a null column, unless PR2 updates this
+  // function's signature (InventoryCostMovement stays nullable there,
+  // mirroring branch_id, so it is unaffected).
   await prisma.$queryRaw`
     SELECT "record_inventory_movement"(
       ${fixture.branch.id}::uuid, ${variant.id}::uuid, 'purchase_receipt'::"InventoryMovementType",
@@ -459,13 +492,13 @@ async function seedStockMismatchTenant(label) {
   const tenant = await createTenant(`wp-t2-r3-${label}`);
   const category = await createCategory(tenant.id);
   const variant = await createVariant(tenant.id, category);
-  const branch = await createBranch(tenant.id, label);
+  const { branch, warehouse } = await createBranchWithWarehouse(tenant.id, label);
   // qty_on_hand=5 with zero InventoryMovement rows -> ledger_on_hand
   // COALESCEs to 0. 5 != 0 is exactly the mismatch the query selects.
   await prisma.inventoryStock.create({
-    data: { tenant_id: tenant.id, branch_id: branch.id, variant_id: variant.id, qty_on_hand: 5 },
+    data: { tenant_id: tenant.id, branch_id: branch.id, warehouse_id: warehouse.id, variant_id: variant.id, qty_on_hand: 5 },
   });
-  return { tenant, branch, variant };
+  return { tenant, branch, warehouse, variant };
 }
 
 async function verifyReconciliationMismatchesScoping() {

@@ -5,6 +5,7 @@ import {
   markTransferFixtureShipped,
   resolveTransferFixtureReceipt,
 } from './support/transfer-command-context.mjs'
+import { resolveDefaultWarehouse } from '../prisma/resolve-default-warehouse.mjs'
 
 const prisma = new PrismaClient()
 const rollback = Symbol('rollback')
@@ -39,6 +40,7 @@ try {
           where: { is_active: true, id: { not: source.id } },
         })
 
+      const destinationWarehouse = await resolveDefaultWarehouse(tx, source.tenant_id, destination)
       await tx.inventoryStock.upsert({
         where: {
           branch_id_variant_id: {
@@ -49,6 +51,7 @@ try {
         update: {},
         create: {
           branch_id: destination.id,
+          warehouse_id: destinationWarehouse.id,
           variant_id: stock.variant_id,
           qty_on_hand: 0,
           tenant_id: source.tenant_id,
