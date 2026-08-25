@@ -15,6 +15,7 @@ import {
   ReversePurchaseDto,
 } from './dto/receive-purchase.dto'
 import { AuthenticatedUser } from '../auth/authenticated-user'
+import { resolveWarehouseIdForBranch } from '../inventory/resolve-warehouse-for-branch'
 import {
   PreparedPurchaseReceipt,
   calculateSupplierReturnCredit,
@@ -149,6 +150,12 @@ export class PurchasingService {
         if (!branch) throw new NotFoundException('Active branch not found')
         if (!supplier) throw new NotFoundException('Supplier not found')
 
+        const warehouseId = await resolveWarehouseIdForBranch(
+          tx,
+          context.tenantId,
+          dto.branch_id,
+        )
+
         const variantIds = prepared.lines
           .map((line) => line.variant_id)
           .sort()
@@ -226,8 +233,8 @@ export class PurchasingService {
 
           await tx.inventoryStock.upsert({
             where: {
-              branch_id_variant_id: {
-                branch_id: dto.branch_id,
+              warehouse_id_variant_id: {
+                warehouse_id: warehouseId,
                 variant_id: line.variant_id,
               },
             },
@@ -235,6 +242,7 @@ export class PurchasingService {
             create: {
               tenant_id: context.tenantId,
               branch_id: dto.branch_id,
+              warehouse_id: warehouseId,
               variant_id: line.variant_id,
               qty_on_hand: line.qty,
             },
@@ -243,6 +251,7 @@ export class PurchasingService {
           await tx.$queryRaw`
             SELECT "record_inventory_movement"(
               ${dto.branch_id}::uuid,
+              ${warehouseId}::uuid,
               ${line.variant_id}::uuid,
               'purchase_receipt'::"InventoryMovementType",
               ${line.qty}::integer,
@@ -473,6 +482,12 @@ export class PurchasingService {
             'You cannot return stock for another branch',
           )
         }
+
+        const warehouseId = await resolveWarehouseIdForBranch(
+          tx,
+          context.tenantId,
+          invoice.branch_id,
+        )
 
         type PurchaseLine = {
           id: string
@@ -718,7 +733,7 @@ export class PurchasingService {
           const stockChanged = await tx.$executeRaw`
             UPDATE "InventoryStock"
             SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
-            WHERE "branch_id" = ${invoice.branch_id}::uuid
+            WHERE "warehouse_id" = ${warehouseId}::uuid
               AND "tenant_id" = ${context.tenantId}::uuid
               AND "variant_id" = ${item.purchaseItem.variant_id}::uuid
               AND "qty_on_hand" >= ${item.qty}
@@ -735,6 +750,7 @@ export class PurchasingService {
           await tx.$queryRaw`
             SELECT "record_inventory_movement"(
               ${invoice.branch_id}::uuid,
+              ${warehouseId}::uuid,
               ${item.purchaseItem.variant_id}::uuid,
               'reversal'::"InventoryMovementType",
               ${-item.qty}::integer,
@@ -956,6 +972,12 @@ export class PurchasingService {
         )
       }
 
+      const warehouseId = await resolveWarehouseIdForBranch(
+        tx,
+        context.tenantId,
+        invoice.branch_id,
+      )
+
       const variantIds = invoice.items
         .map((item) => item.variant_id)
         .sort()
@@ -1050,7 +1072,7 @@ export class PurchasingService {
         const stockChanged = await tx.$executeRaw`
           UPDATE "InventoryStock"
           SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
-          WHERE "branch_id" = ${invoice.branch_id}::uuid
+          WHERE "warehouse_id" = ${warehouseId}::uuid
             AND "tenant_id" = ${context.tenantId}::uuid
             AND "variant_id" = ${item.variant_id}::uuid
             AND "qty_on_hand" >= ${item.qty}
@@ -1067,6 +1089,7 @@ export class PurchasingService {
         await tx.$queryRaw`
           SELECT "record_inventory_movement"(
             ${invoice.branch_id}::uuid,
+            ${warehouseId}::uuid,
             ${item.variant_id}::uuid,
             'reversal'::"InventoryMovementType",
             ${-item.qty}::integer,

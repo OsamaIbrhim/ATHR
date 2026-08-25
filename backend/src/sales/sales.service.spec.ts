@@ -30,6 +30,7 @@ const ctx = contextFor(TENANT_A);
 
 
 const branchId = '11111111-1111-4111-8111-111111111111';
+const warehouseId = '11111111-1111-4111-8111-1111111111aa';
 // WP-007 Phase A: the device-authenticated POS sale path derives its
 // TenantContext from the enrolled terminal's own tenant_id, so terminal
 // doubles carry one.
@@ -212,6 +213,9 @@ function setupSale(options: {
         qty_reserved: options.stockReserved ?? 0,
       }),
     },
+    warehouse: {
+      findFirst: jest.fn().mockResolvedValue({ id: warehouseId }),
+    },
     customer: {
       upsert: jest.fn(),
       update: jest.fn(),
@@ -317,6 +321,9 @@ function setupReturn(alreadyReturned = 0, hasCostMargin = false) {
       ),
     },
     inventoryStock: { upsert: jest.fn().mockResolvedValue({}) },
+    warehouse: {
+      findFirst: jest.fn().mockResolvedValue({ id: warehouseId }),
+    },
     productVariant: {
       update: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),

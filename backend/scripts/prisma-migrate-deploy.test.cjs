@@ -22,12 +22,15 @@ test('reports the repository migration history used by deployment', () => {
   // Location/Warehouse backfill, 202608220003 InventoryStock/Movement/
   // CostMovement warehouse_id backfill -- deliberately three separate
   // migrations, see the PR description for why each is its own step), so
-  // 170 -> 173.
-  assert.equal(countMigrationFolders(), 173);
-  assert.deepEqual(listMigrationFolders().slice(-3), [
+  // 170 -> 173. WP-009 Phase A PR2 adds 1 more (202608250001 constrain +
+  // key swap, atomic with the application-code cutover -- see that PR's
+  // description for why it cannot be split further), so 173 -> 174.
+  assert.equal(countMigrationFolders(), 174);
+  assert.deepEqual(listMigrationFolders().slice(-4), [
     '202608220001_wp009_phasea_expand_warehouse_dimension',
     '202608220002_wp009_phasea_backfill_location_warehouse_for_orphan_branches',
     '202608220003_wp009_phasea_backfill_inventory_warehouse_id',
+    '202608250001_wp009_phasea_constrain_and_cutover',
   ]);
 });
 

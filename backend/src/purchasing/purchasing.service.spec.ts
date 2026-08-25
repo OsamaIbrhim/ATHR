@@ -58,6 +58,9 @@ describe('PurchasingService accounting transaction', () => {
       supplier: {
         findFirst: jest.fn().mockResolvedValue({ id: dto.supplier_id }),
       },
+      warehouse: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),
+      },
       productVariant: {
         findMany: jest.fn().mockResolvedValue([
           { id: dto.items[0].variant_id },
@@ -208,6 +211,9 @@ describe('PurchasingService accounting transaction', () => {
       },
       supplierReturnItem: {
         groupBy: jest.fn().mockResolvedValue([]),
+      },
+      warehouse: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),
       },
       auditLog: {
         create: jest.fn().mockResolvedValue({}),

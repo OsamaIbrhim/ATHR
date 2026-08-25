@@ -770,8 +770,8 @@ async function mutationIntegrityLoad(adminToken) {
         }),
         prisma.inventoryStock.findUnique({
           where: {
-            branch_id_variant_id: {
-              branch_id: branchId,
+            warehouse_id_variant_id: {
+              warehouse_id: stockRows[0].warehouse_id,
               variant_id: stockRows[0].variant_id,
             },
           },
@@ -832,8 +832,8 @@ async function mutationIntegrityLoad(adminToken) {
 
         await tx.inventoryStock.update({
           where: {
-            branch_id_variant_id: {
-              branch_id: branchId,
+            warehouse_id_variant_id: {
+              warehouse_id: coverageWarehouse.id,
               variant_id: coverageVariant.id,
             },
           },

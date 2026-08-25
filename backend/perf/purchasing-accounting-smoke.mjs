@@ -127,8 +127,8 @@ try {
 
       await tx.inventoryStock.update({
         where: {
-          branch_id_variant_id: {
-            branch_id: branch.id,
+          warehouse_id_variant_id: {
+            warehouse_id: warehouse.id,
             variant_id: variant.id,
           },
         },
@@ -137,6 +137,7 @@ try {
       await tx.$queryRaw`
         SELECT "record_inventory_movement"(
           ${branch.id}::uuid,
+          ${warehouse.id}::uuid,
           ${variant.id}::uuid,
           'purchase_receipt'::"InventoryMovementType",
           10::integer,
@@ -244,8 +245,8 @@ try {
 
       await tx.inventoryStock.update({
         where: {
-          branch_id_variant_id: {
-            branch_id: branch.id,
+          warehouse_id_variant_id: {
+            warehouse_id: warehouse.id,
             variant_id: variant.id,
           },
         },
@@ -254,6 +255,7 @@ try {
       await tx.$queryRaw`
         SELECT "record_inventory_movement"(
           ${branch.id}::uuid,
+          ${warehouse.id}::uuid,
           ${variant.id}::uuid,
           'reversal'::"InventoryMovementType",
           -2::integer,
@@ -299,8 +301,8 @@ try {
 
       await tx.inventoryStock.update({
         where: {
-          branch_id_variant_id: {
-            branch_id: branch.id,
+          warehouse_id_variant_id: {
+            warehouse_id: warehouse.id,
             variant_id: variant.id,
           },
         },
@@ -309,6 +311,7 @@ try {
       await tx.$queryRaw`
         SELECT "record_inventory_movement"(
           ${branch.id}::uuid,
+          ${warehouse.id}::uuid,
           ${variant.id}::uuid,
           'reversal'::"InventoryMovementType",
           -8::integer,
@@ -401,8 +404,8 @@ try {
       })
       await tx.inventoryStock.update({
         where: {
-          branch_id_variant_id: {
-            branch_id: branch.id,
+          warehouse_id_variant_id: {
+            warehouse_id: warehouse.id,
             variant_id: variant.id,
           },
         },

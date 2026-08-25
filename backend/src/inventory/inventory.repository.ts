@@ -62,6 +62,23 @@ export class InventoryRepository {
    * one tenant's stock against every tenant's movements and report the
    * difference as a data-integrity mismatch. The predicate is bound as a
    * parameter, not interpolated.
+   *
+   * WP-009 Phase A PR2: the join key is `warehouse_id` (InventoryStock's
+   * actual identity since the key swap), not `branch_id`. `branch_id` is
+   * denormalized on both tables and, today, in a fixed 1:1 relationship with
+   * warehouse_id -- but that is a fact about the data, not something the
+   * schema enforces, and InventoryStock/InventoryMovement no longer carry a
+   * branch_id-based identity to safely join on. Grouping the ledger CTE by
+   * `(warehouse_id, branch_id, variant_id)` rather than `warehouse_id,
+   * variant_id)` alone is deliberate: it keeps branch_id available to
+   * project in the output without an aggregate, while still joining on
+   * warehouse_id -- and if that 1:1 assumption is ever broken by a
+   * centralized warehouse serving multiple branches, this GROUP BY starts
+   * fanning into multiple ledger rows per warehouse instead of silently
+   * picking one, which fails loud rather than mis-reporting.
+   *
+   * The output shape does not change: every row still projects `branch_id`,
+   * not `warehouse_id` -- no client reads this response any differently.
    */
   async reconciliationMismatches(
     context: TenantScope,
@@ -74,6 +91,7 @@ export class InventoryRepository {
       Prisma.sql`
         WITH ledger AS (
           SELECT
+            movement."warehouse_id",
             movement."branch_id",
             movement."variant_id",
             SUM(movement."on_hand_delta") AS "ledger_on_hand",
@@ -81,7 +99,7 @@ export class InventoryRepository {
             MAX(movement."recorded_at") AS "last_movement_at"
           FROM "InventoryMovement" movement
           WHERE movement."tenant_id" = ${context.tenantId}::uuid
-          GROUP BY movement."branch_id", movement."variant_id"
+          GROUP BY movement."warehouse_id", movement."branch_id", movement."variant_id"
         )
         SELECT
           COALESCE(stock."branch_id", ledger."branch_id") AS "branch_id",
@@ -96,7 +114,7 @@ export class InventoryRepository {
           WHERE "tenant_id" = ${context.tenantId}::uuid
         ) stock
         FULL OUTER JOIN ledger
-          ON ledger."branch_id" = stock."branch_id"
+          ON ledger."warehouse_id" = stock."warehouse_id"
          AND ledger."variant_id" = stock."variant_id"
         WHERE (
           COALESCE(stock."qty_on_hand", 0) <> COALESCE(ledger."ledger_on_hand", 0)

@@ -75,7 +75,10 @@ const ALL_TABLES = [
 // (report the concatenated key columns) or a differently-named single column
 // (SyncChange.sequence).
 const NON_STANDARD_KEY_TABLES = {
-  InventoryStock: ['branch_id', 'variant_id'],
+  // WP-009 Phase A PR2: InventoryStock's actual primary key is
+  // (warehouse_id, variant_id), not (branch_id, variant_id) -- branch_id
+  // remains a real, always-populated column, just no longer the key.
+  InventoryStock: ['warehouse_id', 'variant_id'],
   SellerCommissionPeriodRow: ['period_id', 'seller_id'],
   SellerCommissionOverride: ['seller_id'],
   SyncChange: ['sequence'],
