@@ -138,7 +138,7 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
     data: { tenant_id: tenantId, branch_id: branch.id, opened_by: sharedUser.id },
   });
   const inventoryStock = await prisma.inventoryStock.create({
-    data: { tenant_id: tenantId, branch_id: branch.id, variant_id: variant.id, qty_on_hand: 5 },
+    data: { tenant_id: tenantId, branch_id: branch.id, warehouse_id: warehouse.id, variant_id: variant.id, qty_on_hand: 5 },
   });
   // sync_id left unset so the SalesInvoiceItem AFTER INSERT trigger treats
   // this as a historical/imported invoice and skips the derived-InventoryMovement
