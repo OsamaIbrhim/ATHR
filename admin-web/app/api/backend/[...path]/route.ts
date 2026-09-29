@@ -12,7 +12,8 @@ function isCrossOrigin(request: NextRequest) {
   const origin = request.headers.get('origin')
   if (!origin || ['GET', 'HEAD'].includes(request.method)) return false
   try {
-    return new URL(origin).host !== request.headers.get('host')
+    const host = request.headers.get('x-forwarded-host') ?? request.headers.get('host')
+    return new URL(origin).host !== host
   } catch {
     return true
   }
