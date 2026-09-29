@@ -1,6 +1,7 @@
 import { app, ipcMain } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
+import { PRE_ENGINE_BACKUP_SUFFIX } from './db/connection'
 import {
   assertFactoryResetAllowed,
   FactoryResetPolicyError,
@@ -13,9 +14,9 @@ type FactoryResetDependencies = {
   getSecureState: () => any
   query: (sql: string, params?: any[]) => any[]
   getMeta: (key: string) => string
-  saveDb: () => void
   closeDb: () => void
   reopenDb: () => void
+  invalidateSecureState: () => void
   decommission: (payload: {
     device_id: string
     terminal_code: string
@@ -144,8 +145,9 @@ export function registerFactoryResetIpc(
             if (error?.code !== 'TERMINAL_REVOKED') throw error
           }
 
-          dependencies.saveDb()
+          // Closing checkpoints the WAL so the database file is complete.
           dependencies.closeDb()
+          dependencies.invalidateSecureState()
 
           const database = dependencies.dbPath()
           const secureState = dependencies.secureStatePath()
@@ -185,6 +187,11 @@ export function registerFactoryResetIpc(
           bestEffortRemove(path.join(app.getPath('userData'), 'updates'))
           if (secureMoved) bestEffortRemove(stagedSecure)
           if (databaseMoved) bestEffortRemove(stagedDatabase)
+          // A confirmed wipe also removes the one-time pre-WAL safety copy and
+          // any WAL sidecar files, so no customer data is left behind.
+          for (const leftover of ['-wal', '-shm', PRE_ENGINE_BACKUP_SUFFIX]) {
+            bestEffortRemove(`${database}${leftover}`)
+          }
 
           app.relaunch()
           setImmediate(() => app.exit(0))

@@ -2,8 +2,7 @@ import { decimalToMinorUnits } from './money-codec'
 
 /**
  * Minimal SQL surface this migration needs, so it can run against both the
- * real sql.js database (via thin wrappers around `q`/`run`/`getMeta`/
- * `setMeta` in main.ts) and an in-memory fixture database in tests.
+ * real better-sqlite3 database (see db/migrations.ts) and an in-memory fixture database in tests.
  */
 export interface MoneyColumnMigrationDb {
   query(sql: string, params?: unknown[]): Array<Record<string, unknown>>

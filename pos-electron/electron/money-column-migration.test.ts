@@ -1,22 +1,12 @@
-import * as path from 'path'
-// @ts-ignore
-import initSqlJs from 'sql.js'
-import { beforeAll, describe, expect, it } from 'vitest'
+import Database from 'better-sqlite3'
+import { describe, expect, it } from 'vitest'
 import {
   type MoneyColumnMigrationDb,
   migrateMoneyColumnsToMinorUnits,
 } from './money-column-migration'
 
-let SQL: any
-
-beforeAll(async () => {
-  SQL = await initSqlJs({
-    locateFile: (file: string) => path.join(path.dirname(require.resolve('sql.js')), file),
-  })
-})
-
 function createFixtureDatabase() {
-  const db = new SQL.Database()
+  const db = new Database(':memory:')
   db.exec(`
     CREATE TABLE products (
       id TEXT PRIMARY KEY,
@@ -40,45 +30,16 @@ function createFixtureDatabase() {
   return db
 }
 
-function wrap(db: any): MoneyColumnMigrationDb {
+function wrap(db: Database.Database): MoneyColumnMigrationDb {
   return {
-    query(sql: string, params: unknown[] = []) {
-      const stmt = db.prepare(sql)
-      try {
-        stmt.bind(params)
-        const rows: Array<Record<string, unknown>> = []
-        while (stmt.step()) rows.push(stmt.getAsObject())
-        return rows
-      } finally {
-        stmt.free()
-      }
+    query: (sql, params = []) => db.prepare(sql).all(...(params as any[])) as any[],
+    run: (sql, params = []) => {
+      db.prepare(sql).run(...(params as any[]))
     },
-    run(sql: string, params: unknown[] = []) {
-      const stmt = db.prepare(sql)
-      try {
-        stmt.bind(params)
-        stmt.step()
-      } finally {
-        stmt.free()
-      }
-    },
-    getMeta(key: string) {
-      const stmt = db.prepare(`SELECT value FROM sync_meta WHERE key=?`)
-      try {
-        stmt.bind([key])
-        return stmt.step() ? String(stmt.getAsObject().value) : ''
-      } finally {
-        stmt.free()
-      }
-    },
-    setMeta(key: string, value: string) {
-      const stmt = db.prepare(`INSERT OR REPLACE INTO sync_meta (key,value) VALUES (?,?)`)
-      try {
-        stmt.bind([key, value])
-        stmt.step()
-      } finally {
-        stmt.free()
-      }
+    getMeta: (key) =>
+      String((db.prepare('SELECT value FROM sync_meta WHERE key=?').get(key) as any)?.value ?? ''),
+    setMeta: (key, value) => {
+      db.prepare('INSERT OR REPLACE INTO sync_meta (key,value) VALUES (?,?)').run(key, value)
     },
   }
 }
