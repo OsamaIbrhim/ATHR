@@ -45,6 +45,13 @@ export class CreateSaleItemDto {
   @MaxLength(300)
   name_en_snapshot?: string;
 
+  /** "L · أسود": what the cashier saw. POS <= 1.5 sent size/color instead. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  variant_label_snapshot?: string;
+
+  /** Deprecated and ignored: accepted only so sales queued by POS <= 1.5 still validate and upload. */
   @IsOptional()
   @IsString()
   @MaxLength(100)

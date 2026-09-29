@@ -6,6 +6,7 @@ import { BranchesModule } from './branches/branches.module';
 import { ProductsModule } from './products/products.module';
 import { BrandsModule } from './brands/brands.module';
 import { UomModule } from './uom/uom.module';
+import { CatalogModule } from './catalog/catalog.module';
 import { AssortmentModule } from './assortment/assortment.module';
 import { PricingModule } from './pricing/pricing.module';
 import { TaxModule } from './tax/tax.module';
@@ -42,6 +43,7 @@ import { EntitlementGuard } from './entitlements/entitlement.guard';
     UsersModule,
     BranchesModule,
     ProductsModule,
+    CatalogModule,
     BrandsModule,
     UomModule,
     AssortmentModule,

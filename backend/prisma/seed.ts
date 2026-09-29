@@ -3,6 +3,7 @@ import * as bcryptjs from 'bcryptjs';
 import { ensureActiveSubscription, seedPlans } from './seed/plans';
 import { InventoryRepository } from '../src/inventory/inventory.repository';
 import { InventoryService } from '../src/inventory/inventory.service';
+import { applyPreset } from '../src/catalog/presets';
 
 const prisma = new PrismaClient();
 // The seed writes stock through the same single writer as the application.
@@ -37,6 +38,7 @@ async function main() {
   await prisma.offerSuggestion.deleteMany();
   await prisma.productVariant.deleteMany();
   await prisma.product.deleteMany();
+  await prisma.productType.deleteMany();
   // After Product/ProductVariant (both hold onDelete: Restrict FKs to
   // TaxCategory) and before Customer (TaxExemption restricts on it).
   await prisma.taxExemption.deleteMany();
@@ -178,7 +180,7 @@ async function main() {
     },
   });
 
-  // Products + Variants – 12 products, 28 variants
+  // Products + Variants – 12 clothing products (28 variants) + 3 simple products
   const productsData = [
     { name_en: 'Classic T-Shirt', brand: 'Bold', category_id: cat_t.id, variants: [
       { sku: 'BOLD-TS-001-S-BLK', size: 'S', color: 'Black', cost: 85, ean: '6223001000011' },
@@ -237,6 +239,14 @@ async function main() {
     ]},
   ];
 
+  // Trade presets are data: the demo tenant is a clothing shop that also sells
+  // a few groceries, so it gets both presets (product types, units, scale settings).
+  await applyPreset(prisma as any, tenant_id, 'clothing');
+  await applyPreset(prisma as any, tenant_id, 'grocery');
+  const clothingType = await prisma.productType.findFirstOrThrow({ where: { tenant_id, name_en: 'Clothing' } });
+  const uom = async (code: string) => prisma.unitOfMeasure.findFirstOrThrow({ where: { tenant_id, code } });
+  const [piece, kilogram] = [await uom('pcs'), await uom('kg')];
+
   const allVariants: any[] = [];
   for (const p of productsData) {
     const prod = await prisma.product.create({
@@ -245,23 +255,57 @@ async function main() {
         name_en: p.name_en,
         brand: p.brand,
         category_id: p.category_id,
+        product_type_id: clothingType.id,
         tax_category_id: taxCategory.id,
         has_variants: true,
         variants: {
           create: p.variants.map(v => ({
             sku: v.sku,
-            barcode_ean13: v.ean,
-            barcode_internal: v.sku,
-            size: v.size,
-            color: v.color,
+            attributes: { size: v.size, color: v.color },
+            label: `${v.size} · ${v.color}`,
+            base_uom_id: piece.id,
             cost_price: v.cost,
             return_count: 0,
+            barcodes: { create: [{ tenant_id, code: v.ean }, { tenant_id, code: v.sku }] },
           }))
         }
       },
       include: { variants: true }
     });
     allVariants.push(...prod.variants.map(v => ({ ...v, product_name: p.name_en, brand: p.brand, category_id: p.category_id })));
+  }
+
+  // Simple (typeless) products of other trades: a pack barcode (6 x water), a
+  // plain electronics item, and a weighed item (kg, 3 decimals) sold by scale label.
+  const simpleProducts = [
+    { name_en: 'Mineral Water 600ml', name_ar: 'مياه معدنية', brand: 'Aqua', sku: 'AQ-W600', cost: 4, uom: piece,
+      barcodes: [{ code: '6223002000011' }, { code: '6223002000066', pack_qty: 6 }] },
+    { name_en: 'USB-C Charger', name_ar: 'شاحن USB-C', brand: 'Volt', sku: 'VT-CH-20W', cost: 120, uom: piece,
+      barcodes: [{ code: '6223003000019' }] },
+    { name_en: 'Tomatoes', name_ar: 'طماطم', brand: undefined, sku: 'FR-TOM-KG', cost: 12, uom: kilogram,
+      barcodes: [{ code: '2000001', kind: 'scale_plu' as const }] },
+  ];
+  for (const p of simpleProducts) {
+    const prod = await prisma.product.create({
+      data: {
+        tenant_id,
+        name_en: p.name_en,
+        name_ar: p.name_ar,
+        brand: p.brand,
+        tax_category_id: taxCategory.id,
+        has_variants: false,
+        variants: {
+          create: [{
+            sku: p.sku,
+            base_uom_id: p.uom.id,
+            cost_price: p.cost,
+            barcodes: { create: p.barcodes.map((b) => ({ tenant_id, ...b })) },
+          }],
+        },
+      },
+      include: { variants: true },
+    });
+    allVariants.push(...prod.variants.map(v => ({ ...v, product_name: p.name_en, brand: p.brand, category_id: null })));
   }
 
   // Opening stock: one inventory command per warehouse (opening ledger rows,

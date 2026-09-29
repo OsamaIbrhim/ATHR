@@ -93,6 +93,8 @@ const CATALOG_PERMISSIONS = [
   // WP-008 Phase D: Bundle is catalog composition (Matrix §16), not a
   // Promotion/Coupon key (Matrix §19) -- see `catalog/bundle.entity` note.
   'catalog.bundle.manage',
+  // W2a: product types (the attribute definitions variants carry).
+  'catalog.product-type.manage',
   'promotion.view',
   'promotion.create',
   'promotion.update-draft',
@@ -378,6 +380,7 @@ const WAREHOUSE_MANAGER_GRANTS: readonly BusinessPermission[] = [
   // sellability -- an inventory-facing concern, same grouping as the
   // Assortment keys immediately above).
   'catalog.bundle.manage',
+  'catalog.product-type.manage',
   'inventory.position.view',
   'inventory.position.view-cost',
   'inventory.movement.view',
@@ -613,8 +616,11 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
  * `seller_*`/`settings.manage` capabilities expressed. Effective permissions
  * are now computed in code (`effectivePermissions`) from the role defaults plus
  * the Membership's granted/revoked keys; the snapshot only carries the version.
+ *
+ * v8 -> v9: W2a adds `catalog.product-type.manage` (owner via the blanket
+ * grant, `warehouse_manager` explicitly).
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 8;
+export const PERMISSION_POLICY_CURRENT_VERSION = 9;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(

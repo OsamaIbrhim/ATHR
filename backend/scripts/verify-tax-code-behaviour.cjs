@@ -419,15 +419,23 @@ async function verifySyncChangeEmission(tenant) {
   const product = await prisma.product.create({
     data: { tenant_id: tenant.id, name_en: 'C4 product', tax_category_id: category.id },
   });
-  const beforeRepoint = await countPricingChanges(tenant.id, product.id);
+  // W2a: only the product itself is re-sent (a 'product' change), not the whole catalog.
+  const countProductChanges = () =>
+    prisma.syncChange.count({ where: { tenant_id: tenant.id, kind: 'product', entity_key: product.id } });
+  const beforeRepoint = await countProductChanges();
   await prisma.product.update({
     where: { id: product.id },
     data: { tax_category_id: otherCategory.id },
   });
   expectEqual(
-    'C4 repointing a Product tax category emits a pricing SyncChange',
-    (await countPricingChanges(tenant.id, product.id)) - beforeRepoint,
+    'C4 repointing a Product tax category emits a per-product SyncChange (not a catalog-wide one)',
+    (await countProductChanges()) - beforeRepoint,
     1,
+  );
+  expectEqual(
+    'C4 ...and no catalog-wide pricing SyncChange',
+    await countPricingChanges(tenant.id, product.id),
+    0,
   );
 
   const beforeRename = await countPricingChanges(tenant.id, product.id);

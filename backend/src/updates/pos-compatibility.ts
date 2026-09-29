@@ -69,7 +69,7 @@ export type PosCompatibilityManifest = {
 
 export function readPosCompatibilityManifest(): PosCompatibilityManifest {
   const minimum = positiveInteger('POS_PROTOCOL_MIN', 2);
-  const maximum = positiveInteger('POS_PROTOCOL_MAX', 2);
+  const maximum = positiveInteger('POS_PROTOCOL_MAX', 3);
   const minimumPosVersion = optional('POS_MIN_APP_VERSION') || '1.4.0';
   if (minimum > maximum || !parseVersion(minimumPosVersion)) {
     throw new ServiceUnavailableException({

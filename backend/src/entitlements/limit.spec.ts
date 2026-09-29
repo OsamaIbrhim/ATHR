@@ -93,12 +93,12 @@ describe('limits at the creation points', () => {
   });
 
   it('product create', async () => {
-    const repository = { saveProduct: jest.fn() } as any;
+    const repository = { createProduct: jest.fn() } as any;
     const limits = limitService();
-    const service = new ProductsService(repository, {} as any, {} as any, limits);
+    const service = new ProductsService(repository, {} as any, {} as any, limits, {} as any);
     await expect(service.createProduct(ctx, { name_en: 'x' } as any)).rejects.toBe(reached);
     expect(limits.assertCanCreate).toHaveBeenCalledWith(TENANT_A, 'products');
-    expect(repository.saveProduct).not.toHaveBeenCalled();
+    expect(repository.createProduct).not.toHaveBeenCalled();
   });
 
   it('user create', async () => {

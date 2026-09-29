@@ -9,7 +9,7 @@ import {
   requireResourceRecord,
   resolveResource,
 } from './support/resource-contract.mjs'
-import { requireCatalogV2ProductMap } from './support/catalog-contract.mjs'
+import { requireCatalogProductMap } from './support/catalog-contract.mjs'
 import {
   requireIdempotentReplay,
   requireSaleAcknowledgement,
@@ -324,7 +324,7 @@ async function createPerformanceTerminal(
     'Content-Type': 'application/json',
     'x-pos-device-id': deviceId,
     'x-pos-device-token': deviceToken,
-    'x-pos-protocol-version': '2',
+    'x-pos-protocol-version': '3',
     'x-pos-app-version': '1.4.0',
   }
   const context = await json(
@@ -456,7 +456,7 @@ async function mutationIntegrityLoad(adminToken) {
       `/sync/pull?branch_id=${encodeURIComponent(branchId)}`,
       { headers: terminals[0].headers },
     )
-    const catalogProducts = requireCatalogV2ProductMap(snapshot)
+    const catalogProducts = requireCatalogProductMap(snapshot)
     const mutationProductIds = [...catalogProducts.values()]
       .filter((product) => product.selling_price >= 0.01)
       .map((product) => product.id)
@@ -548,8 +548,7 @@ async function mutationIntegrityLoad(adminToken) {
                 sku_snapshot: product.sku,
                 name_ar_snapshot: product.name_ar || product.name_en,
                 name_en_snapshot: product.name_en || undefined,
-                size_snapshot: product.size || undefined,
-                color_snapshot: product.color || undefined,
+                variant_label_snapshot: product.label || undefined,
               },
             ],
           }
@@ -736,8 +735,7 @@ async function mutationIntegrityLoad(adminToken) {
           sku_snapshot: variantProducts[0].sku,
           name_ar_snapshot: variantProducts[0].name_ar || variantProducts[0].name_en,
           name_en_snapshot: variantProducts[0].name_en || undefined,
-          size_snapshot: variantProducts[0].size || undefined,
-          color_snapshot: variantProducts[0].color || undefined,
+          variant_label_snapshot: variantProducts[0].label || undefined,
         },
       ],
     }

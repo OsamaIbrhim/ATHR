@@ -37,7 +37,7 @@ describe('POS compatibility contract', () => {
     delete process.env.POS_MIN_APP_VERSION;
     delete process.env.POS_REQUIRE_PROTOCOL_HEADERS;
     expect(readPosCompatibilityManifest()).toMatchObject({
-      api_protocol: { minimum: 2, maximum: 2 },
+      api_protocol: { minimum: 2, maximum: 3 },
       minimum_pos_version: '1.4.0',
       require_protocol_headers: false,
     });
@@ -62,13 +62,30 @@ describe('POS compatibility contract', () => {
 
   it('rejects unsupported protocols as permanent conflicts', () => {
     const result = responseOf(() => new PosProtocolGuard().canActivate(context({
-      'x-pos-protocol-version': '3',
+      'x-pos-protocol-version': '4',
       'x-pos-app-version': '1.4.0',
     })));
     expect(result).toMatchObject({
       status: 409,
       response: { code: 'POS_PROTOCOL_UNSUPPORTED', retryable: false },
     });
+  });
+
+  it('lets a route demand a newer protocol than the accepted range (catalog pull needs 3)', () => {
+    const pull = new PosProtocolGuard(3);
+    expect(pull.canActivate(context({ 'x-pos-protocol-version': '3', 'x-pos-app-version': '1.6.0' }))).toBe(true);
+    for (const headers of [
+      { 'x-pos-protocol-version': '2', 'x-pos-app-version': '1.5.1' },
+      {},
+    ]) {
+      expect(responseOf(() => pull.canActivate(context(headers)))).toMatchObject({ status: expect.any(Number) });
+    }
+    expect(responseOf(() => pull.canActivate(context({ 'x-pos-protocol-version': '2', 'x-pos-app-version': '1.5.1' })))).toMatchObject({
+      status: 409,
+      response: { code: 'POS_PROTOCOL_UNSUPPORTED' },
+    });
+    // The same POS may still upload its finished sales.
+    expect(new PosProtocolGuard().canActivate(context({ 'x-pos-protocol-version': '2', 'x-pos-app-version': '1.5.1' }))).toBe(true);
   });
 
   it('rejects an application below the configured minimum', () => {

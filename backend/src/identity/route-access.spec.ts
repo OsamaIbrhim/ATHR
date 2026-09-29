@@ -16,6 +16,8 @@ import { OverridesController } from '../pricing/overrides.controller';
 import { PriceBookController } from '../pricing/price-book.controller';
 import { PricingController } from '../pricing/pricing.controller';
 import { ProductsController } from '../products/products.controller';
+import { ProductTypesController } from '../catalog/product-types.controller';
+import { TenantSettingsController } from '../catalog/tenant-settings.controller';
 import { PromotionController } from '../promotions/promotion.controller';
 import { PurchasingController } from '../purchasing/purchasing.controller';
 import { ReportsController } from '../reports/reports.controller';
@@ -67,6 +69,7 @@ const CONTROLLERS: Record<string, any> = {
   PriceBookController,
   PricingController,
   ProductsController,
+  ProductTypesController,
   PromotionController,
   PurchasingController,
   ReportsController,
@@ -76,6 +79,7 @@ const CONTROLLERS: Record<string, any> = {
   SuppliersController,
   SyncController,
   TaxController,
+  TenantSettingsController,
   TerminalsController,
   TransfersController,
   UomController,
@@ -128,7 +132,18 @@ const ROUTES: Array<[controller: string, handler: string, allowed: string]> = [
   ['ProductsController', 'list', 'OLCWS'],
   ['ProductsController', 'search', 'OLCWS'],
   ['ProductsController', 'create', 'OLW'],
+  ['ProductsController', 'get', 'OLCWS'],
+  ['ProductsController', 'update', 'OLW'],
+  ['ProductsController', 'addVariant', 'OLW'],
+  ['ProductsController', 'addBarcode', 'OLW'],
+  ['ProductsController', 'updateBarcode', 'OLW'],
+  ['ProductsController', 'removeBarcode', 'OLW'],
   ['ProductsController', 'updateVariant', 'OLW'],
+  ['ProductTypesController', 'list', 'OLCWS'],
+  ['ProductTypesController', 'create', 'OLW'],
+  ['ProductTypesController', 'update', 'OLW'],
+  ['TenantSettingsController', 'get', 'OLCWS'],
+  ['TenantSettingsController', 'setScaleBarcode', 'O'],
   ['ProductsController', 'removeVariant', 'OLW'],
   ['BundleController', 'list', 'OLCWS'],
   ['BundleController', 'get', 'OLCWS'],

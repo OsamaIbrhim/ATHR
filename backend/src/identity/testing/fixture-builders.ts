@@ -209,11 +209,8 @@ export interface ProductVariantRow {
   tenant_id: string;
   product_id: string;
   sku: string;
-  barcode_ean13: string | null;
-  barcode_internal: string | null;
-  size: string | null;
-  color: string | null;
-  style: string | null;
+  attributes: unknown;
+  label: string;
   cost_price: Prisma.Decimal;
   return_count: number;
   qa_flag: boolean;
@@ -241,11 +238,8 @@ export function aProductVariant(
       tax_category_id: null,
       product_id: randomUUID(),
       sku: `SKU-${nextSequence()}`,
-      barcode_ean13: null,
-      barcode_internal: null,
-      size: null,
-      color: null,
-      style: null,
+      attributes: {},
+      label: '',
       cost_price: zero(),
       return_count: 0,
       qa_flag: false,
