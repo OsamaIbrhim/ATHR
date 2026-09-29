@@ -9,7 +9,7 @@ import {
   Req,
 } from '@nestjs/common';
 import { Request } from 'express';
-import { PageQueryDto } from '../common/pagination';
+import { PageQueryDto } from '../common/page-query.dto';
 import { PurchasingService } from './purchasing.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import {

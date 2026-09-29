@@ -3,7 +3,7 @@ import type { Prisma, Supplier } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantScope } from '../identity/tenant-context.type';
-import { FIRST_PAGE, PageQueryDto, pageArgs, pageOf, type PageQuery } from '../common/pagination';
+import { FIRST_PAGE, pageArgs, pageOf, type PageQuery } from '../common/pagination'
 
 export interface SupplierFilters {
   readonly search?: string;

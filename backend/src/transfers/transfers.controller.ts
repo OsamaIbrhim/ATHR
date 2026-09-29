@@ -1,4 +1,4 @@
-import { PageQueryDto } from '../common/pagination';
+import { PageQueryDto } from '../common/page-query.dto';
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { TransfersService } from './transfers.service';

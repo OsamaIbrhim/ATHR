@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
-import { PageQueryDto } from '../common/pagination';
+import { PageQueryDto } from '../common/page-query.dto';
 import { OffersService } from './offers.service';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';

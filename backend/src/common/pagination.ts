@@ -1,25 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
-
-export const MAX_PAGE_SIZE = 100;
-
-/** `?page=&page_size=` — the query every paginated list endpoint accepts. */
-export class PageQueryDto {
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page = 1;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(MAX_PAGE_SIZE)
-  page_size = 50;
-}
-
-export type PageQuery = Pick<PageQueryDto, 'page' | 'page_size'>;
+/** Pagination helpers. The decorated query DTO lives in page-query.dto.ts so repositories do not load class-validator. */
+export type PageQuery = { page: number; page_size: number };
 
 export const FIRST_PAGE: PageQuery = { page: 1, page_size: 50 };
 

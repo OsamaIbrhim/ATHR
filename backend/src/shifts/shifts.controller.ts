@@ -1,4 +1,4 @@
-import { PageQueryDto } from '../common/pagination';
+import { PageQueryDto } from '../common/page-query.dto';
 import {
   Body,
   Controller,

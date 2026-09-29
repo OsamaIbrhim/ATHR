@@ -3,7 +3,7 @@ import { CustomersService } from './customers.service';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
-import { PageQueryDto } from '../common/pagination';
+import { PageQueryDto } from '../common/page-query.dto';
 import { CreateCustomerDto, SetCustomerVipDto, UpdateCustomerDto } from './dto/customer.dto';
 
 @Controller('customers')
