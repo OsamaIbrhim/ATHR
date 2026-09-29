@@ -6,7 +6,14 @@ import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
-import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
+import {
+  BarcodeDto,
+  CreateProductDto,
+  UpdateBarcodeDto,
+  UpdateProductDto,
+  UpdateVariantDto,
+  VariantInputDto,
+} from './dto/product.dto';
 import { ListProductsDto } from './dto/list-products.dto';
 
 @Controller('products')
@@ -42,6 +49,42 @@ export class ProductsController {
   @Post()
   create(@TenantCtx() ctx: TenantContext, @Body() dto: CreateProductDto) {
     return this.svc.createProduct(ctx, dto);
+  }
+
+  @RequirePermission('catalog.product.view')
+  @Get(':id')
+  get(@TenantCtx() ctx: TenantContext, @Param('id') id: string) {
+    return this.svc.getProduct(ctx, id);
+  }
+
+  @RequirePermission('catalog.product.update')
+  @Patch(':id')
+  update(@TenantCtx() ctx: TenantContext, @Param('id') id: string, @Body() dto: UpdateProductDto) {
+    return this.svc.updateProduct(ctx, id, dto);
+  }
+
+  @RequirePermission('catalog.variant.create')
+  @Post(':id/variants')
+  addVariant(@TenantCtx() ctx: TenantContext, @Param('id') id: string, @Body() dto: VariantInputDto) {
+    return this.svc.addVariant(ctx, id, dto);
+  }
+
+  @RequirePermission('catalog.variant.update')
+  @Post('variants/:id/barcodes')
+  addBarcode(@TenantCtx() ctx: TenantContext, @Param('id') id: string, @Body() dto: BarcodeDto) {
+    return this.svc.addBarcode(ctx, id, dto);
+  }
+
+  @RequirePermission('catalog.variant.update')
+  @Patch('barcodes/:id')
+  updateBarcode(@TenantCtx() ctx: TenantContext, @Param('id') id: string, @Body() dto: UpdateBarcodeDto) {
+    return this.svc.updateBarcode(ctx, id, dto);
+  }
+
+  @RequirePermission('catalog.variant.update')
+  @Delete('barcodes/:id')
+  removeBarcode(@TenantCtx() ctx: TenantContext, @Param('id') id: string) {
+    return this.svc.removeBarcode(ctx, id);
   }
 
   @RequirePermission('catalog.variant.update')

@@ -5,6 +5,7 @@ import { parseTenantId } from '@athr/domain-core';
 import { AuthService } from '../auth/auth.service';
 import { BranchesRepository } from '../branches/branches.repository';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
+import { applyPreset, presetKeyFor } from '../catalog/presets';
 import { PrismaService } from '../prisma/prisma.service';
 import { SignupDto } from './signup.dto';
 import { SignupRateLimiter } from './signup-rate-limiter';
@@ -51,6 +52,8 @@ export class SignupService {
             legal_entities: { create: { legal_name: dto.tenant_name, is_primary: true } },
           },
         });
+        // The trade's product types, units and settings, chosen from the business type (unknown = general).
+        await applyPreset(tx, tenant.id, presetKeyFor(dto.business_type));
         // The existing branch create path, so it picks up whatever a branch needs (e.g. its warehouse).
         await this.branches.save(
           { tenantId: parseTenantId(tenant.id) },

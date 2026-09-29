@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, type Product, type ProductVariant } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import { Prisma, type Product, type ProductBarcode, type ProductVariant } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantScope } from '../identity/tenant-context.type';
@@ -10,6 +11,9 @@ export interface VariantListFilters {
   readonly page?: number;
   readonly pageSize?: number;
 }
+
+type NewBarcode = Omit<Prisma.ProductBarcodeUncheckedCreateInput, 'tenant_id' | 'variant_id'>;
+type NewVariant = Omit<Prisma.ProductVariantUncheckedCreateInput, 'tenant_id' | 'product_id' | 'id'>;
 
 /** WP-007 Phase A §A.3.2 — tenant-scoped repository for the `products` module. */
 @Injectable()
@@ -35,8 +39,7 @@ export class ProductsRepository {
       ...base,
       OR: [
         { sku: { contains: query, mode: 'insensitive' } },
-        { barcode_ean13: query },
-        { barcode_internal: query },
+        { barcodes: { some: { tenant_id: context.tenantId, code: query } } },
         { product: { name_en: { contains: query, mode: 'insensitive' } } },
         { product: { name_ar: { contains: query, mode: 'insensitive' } } },
       ],
@@ -75,8 +78,7 @@ export class ProductsRepository {
         is_active: true,
         OR: [
           { sku: { contains: q, mode: 'insensitive' } },
-          { barcode_ean13: q },
-          { barcode_internal: q },
+          { barcodes: { some: { tenant_id: context.tenantId, code: q } } },
           { product: { name_en: { contains: q, mode: 'insensitive' }, tenant_id: context.tenantId } },
         ],
       },
@@ -101,6 +103,13 @@ export class ProductsRepository {
     });
     // Consumers list stock per branch; the branch is the warehouse's owner.
     return rows.map(({ warehouse, ...stock }) => ({ ...stock, branch_id: warehouse.branch_id }));
+  }
+
+  async findBarcodes(context: TenantScope, variantIds: string[]): Promise<ProductBarcode[]> {
+    return this.prisma.productBarcode.findMany({
+      where: { tenant_id: context.tenantId, variant_id: { in: variantIds } },
+      orderBy: { created_at: 'asc' },
+    });
   }
 
   /**
@@ -129,14 +138,95 @@ export class ProductsRepository {
       `;
   }
 
-  async saveProduct(
-    context: TenantScope,
-    data: Omit<Prisma.ProductUncheckedCreateInput, 'tenant_id'>,
-  ): Promise<Product> {
-    return this.prisma.product.create({
-      data: { ...data, tenant_id: context.tenantId },
-      include: { variants: true },
+  /** A product with its type, variants and their barcodes. */
+  async findProduct(context: TenantScope, id: string) {
+    return this.prisma.product.findFirst({
+      where: { id, tenant_id: context.tenantId },
+      include: {
+        product_type: true,
+        variants: { orderBy: { created_at: 'asc' }, include: { barcodes: true } },
+      },
     });
+  }
+
+  async findVariantWithType(context: TenantScope, id: string) {
+    return this.prisma.productVariant.findFirst({
+      where: { id, tenant_id: context.tenantId },
+      include: { product: { select: { product_type: { select: { attributes: true } } } } },
+    });
+  }
+
+  async findBarcodeById(context: TenantScope, id: string): Promise<ProductBarcode | null> {
+    return this.prisma.productBarcode.findFirst({ where: { id, tenant_id: context.tenantId } });
+  }
+
+  async tenantSettings(context: TenantScope): Promise<Prisma.JsonValue> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: context.tenantId },
+      select: { settings: true },
+    });
+    return tenant?.settings ?? {};
+  }
+
+  /**
+   * A product with all its variants and their barcodes: one transaction, four
+   * statements however many variants. Ids are generated here so the barcodes
+   * can name their variant without reading it back.
+   */
+  async createProduct(
+    context: TenantScope,
+    product: Omit<Prisma.ProductUncheckedCreateInput, 'tenant_id' | 'variants'>,
+    variants: Array<NewVariant & { barcodes: NewBarcode[] }>,
+  ) {
+    const tenant_id = context.tenantId;
+    return this.withBarcodeConflict(() =>
+      this.prisma.$transaction(async (tx) => {
+        const created = await tx.product.create({ data: { ...product, tenant_id } });
+        const rows = variants.map(({ barcodes, ...variant }) => ({
+          variant: { ...variant, id: randomUUID(), tenant_id, product_id: created.id },
+          barcodes,
+        }));
+        await tx.productVariant.createMany({ data: rows.map((row) => row.variant) });
+        await tx.productBarcode.createMany({
+          data: rows.flatMap((row) =>
+            row.barcodes.map((barcode) => ({ ...barcode, tenant_id, variant_id: row.variant.id })),
+          ),
+        });
+        return tx.product.findUniqueOrThrow({
+          where: { id: created.id },
+          include: { variants: { include: { barcodes: true } } },
+        });
+      }),
+    );
+  }
+
+  async addVariant(
+    context: TenantScope,
+    productId: string,
+    variant: NewVariant,
+    barcodes: NewBarcode[],
+  ) {
+    const tenant_id = context.tenantId;
+    const id = randomUUID();
+    return this.withBarcodeConflict(() =>
+      this.prisma.$transaction(async (tx) => {
+        await tx.productVariant.create({ data: { ...variant, id, tenant_id, product_id: productId } });
+        await tx.productBarcode.createMany({
+          data: barcodes.map((barcode) => ({ ...barcode, tenant_id, variant_id: id })),
+        });
+        return tx.productVariant.findUniqueOrThrow({ where: { id }, include: { barcodes: true } });
+      }),
+    );
+  }
+
+  async updateProduct(
+    context: TenantScope,
+    id: string,
+    data: Prisma.ProductUncheckedUpdateInput,
+  ): Promise<Product> {
+    const exists = await this.prisma.product.findFirst({ where: { id, tenant_id: context.tenantId } });
+    if (!exists) throw new AthrDomainError('RESOURCE_NOT_FOUND', 'Product not found');
+    return this.prisma.product.update({ where: { id }, data });
   }
 
   async updateVariant(
@@ -148,9 +238,54 @@ export class ProductsRepository {
     return this.prisma.productVariant.update({ where: { id }, data });
   }
 
+  async addBarcode(context: TenantScope, variantId: string, data: NewBarcode): Promise<ProductBarcode> {
+    await this.assertVariantInTenant(context, variantId);
+    return this.withBarcodeConflict(() =>
+      this.prisma.productBarcode.create({
+        data: { ...data, tenant_id: context.tenantId, variant_id: variantId },
+      }),
+    );
+  }
+
+  async updateBarcode(
+    context: TenantScope,
+    id: string,
+    data: Prisma.ProductBarcodeUncheckedUpdateInput,
+  ): Promise<ProductBarcode> {
+    await this.assertBarcodeInTenant(context, id);
+    return this.prisma.productBarcode.update({ where: { id }, data });
+  }
+
+  async removeBarcode(context: TenantScope, id: string): Promise<void> {
+    await this.assertBarcodeInTenant(context, id);
+    await this.prisma.productBarcode.delete({ where: { id } });
+  }
+
   private async assertVariantInTenant(context: TenantScope, id: string): Promise<void> {
     if (!(await this.findVariantById(context, id))) {
       throw new AthrDomainError('RESOURCE_NOT_FOUND', 'Variant not found');
+    }
+  }
+
+  private async assertBarcodeInTenant(context: TenantScope, id: string): Promise<void> {
+    if (!(await this.findBarcodeById(context, id))) {
+      throw new AthrDomainError('RESOURCE_NOT_FOUND', 'Barcode not found');
+    }
+  }
+
+  /** The unique (tenant, code) index is the single arbiter of duplicate barcodes. */
+  private async withBarcodeConflict<T>(action: () => Promise<T>): Promise<T> {
+    try {
+      return await action();
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002' &&
+        JSON.stringify(error.meta?.target ?? '').includes('code')
+      ) {
+        throw new AthrDomainError('CATALOG_BARCODE_CONFLICT', 'A barcode with this code already exists.');
+      }
+      throw error;
     }
   }
 

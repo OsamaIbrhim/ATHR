@@ -65,8 +65,7 @@ export class InventoryRepository {
           select: {
             id: true,
             sku: true,
-            size: true,
-            color: true,
+            label: true,
             product: { select: { name_ar: true, name_en: true } },
           },
         },

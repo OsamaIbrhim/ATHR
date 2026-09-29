@@ -8,6 +8,9 @@ import { PosProtocolGuard } from '../updates/pos-protocol.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
+/** The catalog format (paged snapshot, entity deltas) arrived with POS protocol 3. */
+const CATALOG_PROTOCOL = 3;
+
 @Controller('sync')
 export class SyncController {
   constructor(private svc: SyncService, private terminals: TerminalsService) {}
@@ -15,13 +18,20 @@ export class SyncController {
   @Post('push') push() {
     throw new NotImplementedException('Batch push is disabled; use the idempotent command endpoints');
   }
+  /**
+   * `GET /sync/pull?branch_id=`                       first snapshot page
+   * `...&snapshot_after=<variant id>&snapshot_cursor=` next snapshot page (resumable)
+   * `...&cursor=<txid:sequence>`                      delta since the POS's cursor
+   */
   @RequirePermission('sales.sale.create', 'catalog.product.view')
   @Get('pull')
-  @UseGuards(new PosProtocolGuard())
+  @UseGuards(new PosProtocolGuard(CATALOG_PROTOCOL))
   async pull(
     @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string,
     @Query('cursor') cursor: string | undefined,
+    @Query('snapshot_after') snapshotAfter: string | undefined,
+    @Query('snapshot_cursor') snapshotCursor: string | undefined,
     @Headers('x-pos-device-id') deviceId: string | undefined,
     @Headers('x-pos-device-token') deviceToken: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
@@ -30,7 +40,14 @@ export class SyncController {
     if (!effectiveBranch) throw new BadRequestException('branch_id is required');
     // Tenant-wide users may call this endpoint for support/performance diagnostics. Every
     // branch-bound POS user must also prove that the physical till is enrolled.
-    if (!canAccessAllBranches(req.user)) await this.terminals.authenticate(deviceId, deviceToken, req.user);
-    return this.svc.pull(ctx, effectiveBranch, cursor);
+    const terminal = canAccessAllBranches(req.user)
+      ? undefined
+      : await this.terminals.authenticate(deviceId, deviceToken, req.user);
+    return this.svc.pull(
+      ctx,
+      effectiveBranch,
+      { cursor, snapshot_after: snapshotAfter, snapshot_cursor: snapshotCursor },
+      terminal && { id: terminal.id, sync_cursor: terminal.sync_cursor },
+    );
   }
 }

@@ -98,6 +98,12 @@ model Tenant {
   default_locale        String               @default("ar")
   default_timezone      String               @default("Africa/Cairo")
   default_currency      String               @default("EGP")
+  // Tenant-level settings in one place (e.g. `scale_barcode`); the shape is
+  // owned by `catalog/tenant-settings.ts`.
+  settings              Json                 @default("{}")
+  // Highest sync change ("txid:sequence") removed by compaction; a POS whose
+  // cursor is below it must take a fresh snapshot.
+  sync_floor            String               @default("0:0")
   created_at            DateTime             @default(now())
   updated_at            DateTime             @updatedAt
   organization_profile  OrganizationProfile?
@@ -437,6 +443,10 @@ model Product {
   image_url       String?
   is_active       Boolean          @default(true)
   has_variants    Boolean          @default(true)
+  // null = simple product (no attributes). Otherwise the type defines which
+  // attributes its variants carry.
+  product_type_id String?          @db.Uuid
+  product_type    ProductType?     @relation(fields: [tenant_id, product_type_id], references: [tenant_id, id], onDelete: Restrict)
   // WP-008 Phase C (BR-TAX-201, OD-CAT-014): the product-level *default* tax
   // category. NOT NULL — every product must resolve to a category, which is
   // what stops a line falling back to an implicit rate. Backfilled by
@@ -450,6 +460,7 @@ model Product {
   @@unique([tenant_id, sku_base])
   @@unique([tenant_id, id])
   @@index([tenant_id, tax_category_id])
+  @@index([tenant_id, product_type_id])
   @@index([is_active, created_at])
   @@index([name_en(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_en_trgm_idx")
   @@index([name_ar(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_ar_trgm_idx")
@@ -472,11 +483,12 @@ model ProductVariant {
   product_id                 String                    @db.Uuid
   product                    Product                   @relation(fields: [tenant_id, product_id], references: [tenant_id, id], onDelete: Cascade)
   sku                        String
-  barcode_ean13              String?
-  barcode_internal           String?
-  size                       String?
-  color                      String?
-  style                      String?
+  // Values of the product type's attributes, keyed by attribute key
+  // (`{"size":"L","color":"أسود"}`), and the display label computed from the
+  // axis attributes when the variant is written ("L · أسود"; "" if simple).
+  attributes                 Json                      @default("{}")
+  label                      String                    @default("")
+  barcodes                   ProductBarcode[]
   cost_price                 Decimal                   @db.Decimal(14, 4)
   return_count               Int                       @default(0)
   qa_flag                    Boolean                   @default(false)
@@ -519,15 +531,55 @@ model ProductVariant {
   tenant_id                  String                    @db.Uuid
 
   @@unique([tenant_id, sku])
-  @@unique([tenant_id, barcode_internal])
   @@unique([tenant_id, id])
-  @@index([barcode_ean13])
   @@index([created_at(sort: Desc), id(sort: Asc)])
   @@index([product_id])
   @@index([sku(ops: raw("gin_trgm_ops"))], type: Gin, map: "ProductVariant_sku_trgm_idx")
   @@index([tenant_id])
   @@index([base_uom_id])
   @@index([tenant_id, tax_category_id])
+}
+
+// A tenant's kind of product (clothing, grocery item, phone ...): the list of
+// attributes its variants carry. `attributes` is an array of
+// { key, label_ar, label_en, kind: text|number|select, options?, axis }; the
+// single validator is `catalog/product-type-schema.ts`.
+model ProductType {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenant_id  String    @db.Uuid
+  name_ar    String
+  name_en    String
+  attributes Json      @default("[]")
+  is_active  Boolean   @default(true)
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  products   Product[]
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, name_en])
+  @@index([tenant_id])
+}
+
+enum BarcodeKind {
+  standard
+  // The item code of a weighed item; the scale label adds weight or price.
+  scale_plu
+}
+
+// Every scannable code of a variant. Scanning a pack barcode adds `pack_qty`
+// units of the variant.
+model ProductBarcode {
+  id         String         @id @default(uuid()) @db.Uuid
+  tenant_id  String         @db.Uuid
+  code       String
+  variant_id String         @db.Uuid
+  variant    ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Cascade)
+  pack_qty   Decimal        @default(1) @db.Decimal(14, 3)
+  kind       BarcodeKind    @default(standard)
+  created_at DateTime       @default(now())
+
+  @@unique([tenant_id, code])
+  @@index([tenant_id, variant_id])
 }
 
 // WP-008 Phase A (§9 BR-UOM-1xx): tenant-owned reference data — base units
@@ -1315,6 +1367,9 @@ model PosTerminal {
   last_error         String?
   pending_count      Int            @default(0)
   last_sale_sequence BigInt         @default(0)
+  // Last sync cursor ("txid:sequence") this till pulled up to; compaction never
+  // removes changes above the lowest cursor of the active tills.
+  sync_cursor        String?
   is_revoked         Boolean        @default(false)
   device_token_hash  String?        @unique
   enrolled_by        String?        @db.Uuid
@@ -1351,14 +1406,18 @@ model PosTerminalEnrollment {
 model SyncChange {
   sequence   BigInt   @id @default(autoincrement())
   kind       String
+  // null = catalog-wide change, visible to every branch.
   branch_id  String?  @db.Uuid
   entity_key String?
+  // The writing transaction. Pull hands out only changes whose transaction
+  // has finished (txid < snapshot xmin), ordered by (txid, sequence), so a
+  // late commit is never skipped. Read and written by SQL only.
+  txid       Unsupported("xid8")? @default(dbgenerated("pg_current_xact_id()"))
   created_at DateTime @default(now())
   tenant_id  String   @db.Uuid
 
-  @@index([branch_id, sequence])
-  @@index([sequence, kind])
-  @@index([tenant_id])
+  @@index([tenant_id, txid, sequence])
+  @@index([tenant_id, branch_id, sequence])
 }
 
 model SalesInvoiceItem {
@@ -1374,8 +1433,7 @@ model SalesInvoiceItem {
   sku_snapshot     String?            @db.VarChar(191)
   name_ar_snapshot String?            @db.VarChar(300)
   name_en_snapshot String?            @db.VarChar(300)
-  size_snapshot    String?            @db.VarChar(100)
-  color_snapshot   String?            @db.VarChar(100)
+  variant_label_snapshot String?      @db.VarChar(200)
   return_items     ReturnItem[]
   tax_snapshots    SalesTaxSnapshot[]
   tenant_id        String             @db.Uuid

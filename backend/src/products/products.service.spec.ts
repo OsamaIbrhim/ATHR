@@ -6,6 +6,7 @@ import { TaxCodeService } from '../tax/tax-code.service';
 import { TaxCodeRepository } from '../tax/tax-code.repository';
 import { aTaxCategory, aTaxCode } from '../identity/testing/fixture-builders';
 import { unlimited } from '../entitlements/testing';
+import { ProductTypesService } from '../catalog/product-types.service';
 
 // WP-007 Phase A: `ProductsService` now depends on `ProductsRepository`
 // rather than `PrismaService` directly, and every method takes a
@@ -15,7 +16,7 @@ import { unlimited } from '../entitlements/testing';
 const ctx = contextFor(TENANT_A);
 
 function serviceOver(prisma: any) {
-  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any), new TaxCodeService(new TaxCodeRepository(prisma as any)), unlimited);
+  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any), new TaxCodeService(new TaxCodeRepository(prisma as any)), unlimited, new ProductTypesService(prisma as any));
 }
 
 function productReadPrisma(variants: any[], total = variants.length) {
@@ -34,36 +35,94 @@ function productReadPrisma(variants: any[], total = variants.length) {
         { warehouse: { branch_id: 'b1' }, variant_id: 'v1', qty_on_hand: 7, qty_reserved: 0 },
       ]),
     },
+    productBarcode: { findMany: jest.fn().mockResolvedValue([]) },
   };
 }
 
 describe('ProductsService pagination', () => {
-  it('preserves an explicitly confirmed zero initial cost', async () => {
-    const create = jest.fn().mockResolvedValue({ id: 'p1', variants: [] });
+  function createPrisma(extra: Record<string, unknown> = {}) {
+    const tx = {
+      product: {
+        create: jest.fn().mockResolvedValue({ id: 'p1' }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'p1', variants: [] }),
+      },
+      productVariant: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      productBarcode: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    };
     // WP-008 Phase C (BR-TAX-201): a Product must resolve to a tax category,
     // and with none supplied the service falls back to the tenant's STANDARD
     // one — the row migration 202608130003 creates for every tenant.
-    const service = serviceOver({
-      product: { create },
+    const prisma = {
+      $transaction: (fn: any) => fn(tx),
       taxCategory: {
         findMany: jest.fn().mockResolvedValue([aTaxCategory()]),
         count: jest.fn().mockResolvedValue(1),
       },
-    });
+      ...extra,
+    };
+    return { prisma, tx };
+  }
 
-    await service.createProduct(ctx, {
+  const clothingType = {
+    id: 'type-1',
+    is_active: true,
+    attributes: [
+      { key: 'size', label_ar: 'المقاس', label_en: 'Size', kind: 'select', options: ['M', 'L'], axis: true },
+      { key: 'color', label_ar: 'اللون', label_en: 'Color', kind: 'text', axis: true },
+    ],
+  };
+
+  it('creates a simple product with one variant and preserves an explicit zero cost', async () => {
+    const { prisma, tx } = createPrisma();
+    await serviceOver(prisma).createProduct(ctx, {
       name_en: 'Free sample',
-      sku: 'SAMPLE-0',
-      cost_price: 0,
+      variants: [{ sku: 'SAMPLE-0', cost_price: 0 }],
     } as any);
 
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        variants: {
-          create: [expect.objectContaining({ cost_price: 0 })],
-        },
-      }),
-    }));
+    expect(tx.productVariant.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ sku: 'SAMPLE-0', cost_price: 0, label: '', attributes: {}, tenant_id: ctx.tenantId })],
+    });
+  });
+
+  it('creates every variant of a typed product with its computed label and barcodes in one go', async () => {
+    const { prisma, tx } = createPrisma({ productType: { findFirst: jest.fn().mockResolvedValue(clothingType) } });
+    await serviceOver(prisma).createProduct(ctx, {
+      name_en: 'Shirt',
+      product_type_id: 'type-1',
+      variants: [
+        { sku: 'S-M-BLK', cost_price: 10, attributes: { size: 'M', color: 'Black' }, barcodes: [{ code: '111', pack_qty: 6 }] },
+        { sku: 'S-L-BLK', cost_price: 10, attributes: { size: 'L', color: 'Black' } },
+      ],
+    } as any);
+
+    const rows = tx.productVariant.createMany.mock.calls[0][0].data;
+    expect(rows.map((row: any) => row.label)).toEqual(['M · Black', 'L · Black']);
+    expect(tx.product.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ product_type_id: 'type-1', has_variants: true }),
+    });
+    expect(tx.productBarcode.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ code: '111', pack_qty: 6, kind: 'standard', variant_id: rows[0].id })],
+    });
+  });
+
+  it('rejects attributes the product type does not allow, duplicates and multi-variant simple products', async () => {
+    const { prisma } = createPrisma({ productType: { findFirst: jest.fn().mockResolvedValue(clothingType) } });
+    const service = serviceOver(prisma);
+    const typed = (variants: any[]) =>
+      service.createProduct(ctx, { name_en: 'Shirt', product_type_id: 'type-1', variants } as any);
+
+    await expect(typed([{ sku: 'A', cost_price: 1, attributes: { size: 'XXL', color: 'Red' } }])).rejects.toThrow(/size/);
+    await expect(typed([{ sku: 'A', cost_price: 1, attributes: { size: 'M', color: 'Red', brand: 'x' } }])).rejects.toThrow(/brand/);
+    await expect(typed([
+      { sku: 'A', cost_price: 1, attributes: { size: 'M', color: 'Red' } },
+      { sku: 'B', cost_price: 1, attributes: { size: 'M', color: 'Red' } },
+    ])).rejects.toThrow(/same attribute combination/);
+    await expect(
+      service.createProduct(ctx, {
+        name_en: 'Two',
+        variants: [{ sku: 'A', cost_price: 1 }, { sku: 'B', cost_price: 1 }],
+      } as any),
+    ).rejects.toThrow(/exactly one variant/);
   });
 
   it('hydrates the first page in one parallel relation wave', async () => {

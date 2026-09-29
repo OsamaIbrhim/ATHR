@@ -59,7 +59,7 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
   const variants = products.map((product) => {
     const index = Number(product.name_en.slice('Performance product '.length))
     const id = stableUuid('variant', index)
-    return { id, tenant_id: branch.tenant_id, product_id: product.id, sku: `PERF-${String(index).padStart(8, '0')}`, barcode_internal: `PERF-${index}`, cost_price: 100 + (index % 200) }
+    return { id, tenant_id: branch.tenant_id, product_id: product.id, sku: `PERF-${String(index).padStart(8, '0')}`, cost_price: 100 + (index % 200) }
   })
   const newVariantBySku = new Map(variants.map((variant) => [variant.sku, variant.id]))
   const batchVariantIds = skus.map((sku) => existingBySku.get(sku) || newVariantBySku.get(sku))

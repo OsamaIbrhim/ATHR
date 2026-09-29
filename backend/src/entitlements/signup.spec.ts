@@ -70,6 +70,8 @@ describe('SignupService', () => {
     const tx = {
       plan: { findFirst: jest.fn(async () => ('plan' in overrides ? overrides.plan : { id: 'plan-id', code: 'pro' })) },
       tenant: { create: step('tenant') },
+      productType: { createMany: step('product_types') },
+      unitOfMeasure: { createMany: step('uoms') },
       user: { create: step('user') },
       membership: { create: step('membership') },
       subscription: { create: step('subscription') },
@@ -94,7 +96,7 @@ describe('SignupService', () => {
     const { service, tx, branches, auth, committed } = setup();
     const result = await service.signup(dto, '9.9.9.9');
 
-    expect(committed).toEqual(['tenant', 'branch', 'user', 'membership', 'subscription', 'event']);
+    expect(committed).toEqual(['tenant', 'product_types', 'uoms', 'branch', 'user', 'membership', 'subscription', 'event']);
     expect(tx.tenant.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         name: 'Bold Fashion',

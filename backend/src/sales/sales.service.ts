@@ -215,8 +215,7 @@ export class SalesService {
           sku_snapshot: item.sku_snapshot.trim(),
           name_ar_snapshot: item.name_ar_snapshot.trim(),
           name_en_snapshot: item.name_en_snapshot?.trim() || null,
-          size_snapshot: item.size_snapshot?.trim() || null,
-          color_snapshot: item.color_snapshot?.trim() || null,
+          variant_label_snapshot: item.variant_label_snapshot?.trim() || null,
         }))
         .sort((left, right) => left.variant_id.localeCompare(right.variant_id)),
     };
@@ -237,8 +236,7 @@ export class SalesService {
           existing.sku_snapshot.trim() !== item.sku_snapshot.trim() ||
           existing.name_ar_snapshot.trim() !== item.name_ar_snapshot.trim() ||
           (existing.name_en_snapshot?.trim() || '') !== (item.name_en_snapshot?.trim() || '') ||
-          (existing.size_snapshot?.trim() || '') !== (item.size_snapshot?.trim() || '') ||
-          (existing.color_snapshot?.trim() || '') !== (item.color_snapshot?.trim() || '')
+          (existing.variant_label_snapshot?.trim() || '') !== (item.variant_label_snapshot?.trim() || '')
         ) {
           throw new UnprocessableEntityException({
             code: 'CONFLICTING_ITEM_SNAPSHOTS',
@@ -485,8 +483,7 @@ export class SalesService {
           sku_snapshot: line.sku_snapshot.trim(),
           name_ar_snapshot: line.name_ar_snapshot.trim(),
           name_en_snapshot: line.name_en_snapshot?.trim() || null,
-          size_snapshot: line.size_snapshot?.trim() || null,
-          color_snapshot: line.color_snapshot?.trim() || null,
+          variant_label_snapshot: line.variant_label_snapshot?.trim() || null,
         };
       });
 
@@ -609,8 +606,7 @@ export class SalesService {
               sku_snapshot: item.sku_snapshot,
               name_ar_snapshot: item.name_ar_snapshot,
               name_en_snapshot: item.name_en_snapshot,
-              size_snapshot: item.size_snapshot,
-              color_snapshot: item.color_snapshot,
+              variant_label_snapshot: item.variant_label_snapshot,
             })),
           },
         },

@@ -205,7 +205,7 @@ export class ReportsService {
         const name =
           item.variant?.product?.name_en +
           ' ' +
-          [item.variant?.size, item.variant?.color].filter(Boolean).join('/');
+          item.variant?.label;
         const revenue = lineMoney(item.unit_price, item.qty);
         const cost = lineMoney(item.unit_cost, item.qty);
         const previous = map.get(key) || {
@@ -231,7 +231,7 @@ export class ReportsService {
       const name =
         item.variant?.product?.name_en +
         ' ' +
-        [item.variant?.size, item.variant?.color].filter(Boolean).join('/');
+        item.variant?.label;
       const revenue = lineMoney(item.unit_price, item.qty);
       const cost = lineMoney(item.unit_cost, item.qty);
       const previous = map.get(key) || {
@@ -279,8 +279,7 @@ export class ReportsService {
       branch: record.warehouse.branch?.name_ar ?? record.warehouse.name,
       sku: record.variant.sku,
       product: record.variant.product.name_en,
-      size: record.variant.size,
-      color: record.variant.color,
+      label: record.variant.label,
       qty: record.qty_on_hand,
       cost_price: money(record.avg_cost),
       value: lineMoney(record.avg_cost, record.qty_on_hand),

@@ -54,9 +54,9 @@ const distTax = path.join(__dirname, '..', 'dist', 'src', 'tax', 'tax-resolution
 const distInventoryService = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.service.js');
 const distInventoryRepository = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.repository.js');
 
-let SyncService, PRODUCT_BATCH_SIZE, PricingService, TaxResolutionService, InventoryService, InventoryRepository;
+let SyncService, PRODUCT_BATCH_SIZE, SNAPSHOT_PAGE_SIZE, PricingService, TaxResolutionService, InventoryService, InventoryRepository;
 try {
-  ({ SyncService, PRODUCT_BATCH_SIZE } = require(distSync));
+  ({ SyncService, PRODUCT_BATCH_SIZE, SNAPSHOT_PAGE_SIZE } = require(distSync));
   ({ PricingService } = require(distPricing));
   ({ TaxResolutionService } = require(distTax));
   ({ InventoryService } = require(distInventoryService));
@@ -213,25 +213,37 @@ async function verifyRealSyncServiceSucceeds(tenant, branch) {
   const service = new SyncService(prisma, pricing, tax, new InventoryService(new InventoryRepository(prisma)));
   const context = { tenantId: tenant.id };
 
-  let result;
+  // The snapshot is paged (keyset on variant id): walk every page like the POS does.
+  const productIds = [];
+  let pages = 0;
+  let query = {};
+  let firstCursor;
   try {
-    // No cursor -> pull() calls the private snapshot(), the code path that
-    // crashed. This is SyncService.pull as shipped, not a reimplementation.
-    result = await service.pull(context, branch.id);
+    for (;;) {
+      const page = await service.pull(context, branch.id, query);
+      pages += 1;
+      firstCursor ??= page.cursor;
+      if (page.cursor !== firstCursor) throw new Error('snapshot cursor changed between pages');
+      productIds.push(...page.products.map((product) => product.id));
+      if (!page.has_more) break;
+      query = { snapshot_after: page.snapshot_after, snapshot_cursor: page.cursor };
+    }
   } catch (error) {
     record(
-      'S2 SyncService.pull() (the real shipped code) succeeds at 10,500 rows',
+      'S2 SyncService.pull() (the real shipped code) pages through 10,500 rows',
       false,
       `threw: ${String(error?.message ?? error).slice(0, 300)}`,
     );
     return;
   }
-  record('S2 SyncService.pull() (the real shipped code) succeeds at 10,500 rows', true);
+  record('S2 SyncService.pull() (the real shipped code) pages through 10,500 rows', true);
   expectEqual(
-    "S2 every seeded, fully-priced variant is present in the real snapshot's products",
-    result.products.length,
+    'S2 every seeded, fully-priced variant arrives exactly once across the pages',
+    new Set(productIds).size,
     VARIANT_COUNT,
   );
+  expectEqual('S2 no variant is sent twice', productIds.length, VARIANT_COUNT);
+  expectEqual('S2 the catalog is split into pages of SNAPSHOT_PAGE_SIZE', pages, Math.ceil(VARIANT_COUNT / SNAPSHOT_PAGE_SIZE));
 }
 
 async function main() {

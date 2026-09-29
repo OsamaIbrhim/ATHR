@@ -111,9 +111,11 @@ export class InvoicePdfService {
       y = this.drawTableHeader(doc, y, columns, isArabic);
       const items = Array.isArray(invoice.items) ? invoice.items : [];
       for (const item of items) {
-        const rawName = isArabic
+        const baseName = isArabic
           ? item.variant?.product?.name_ar || item.variant?.product?.name_en || item.variant?.sku || item.variant_id || '—'
           : item.variant?.product?.name_en || item.variant?.product?.name_ar || item.variant?.sku || item.variant_id || '—';
+        const label = item.variant_label_snapshot || item.variant?.label;
+        const rawName = label ? `${baseName} (${label})` : baseName;
         const values = {
           name: isArabic ? visualRtl(rawName) : String(rawName),
           qty: String(item.qty ?? 0),

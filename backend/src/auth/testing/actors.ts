@@ -25,6 +25,6 @@ export function actorFor(role: MembershipRole, options: ActorOptions = {}): Auth
     membership_role: role,
     permissions: effectivePermissions(role, options.granted, options.revoked),
     scope_set,
-    permission_policy_version: 8,
+    permission_policy_version: 9,
   };
 }

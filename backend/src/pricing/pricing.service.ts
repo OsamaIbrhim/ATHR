@@ -215,6 +215,8 @@ export class PricingService {
   async loadActiveRules(
     context: TenantScope,
     transaction?: Prisma.TransactionClient,
+    /** Only the variant/product ids being priced (brand/category/global entries always load). */
+    scopeIds?: readonly string[],
   ): Promise<ResolvedPriceEntry[]> {
     const db = transaction || this.prisma;
     const now = new Date();
@@ -224,6 +226,9 @@ export class PricingService {
         status: 'active',
         effective_from: { lte: now },
         OR: [{ effective_to: null }, { effective_to: { gte: now } }],
+        ...(scopeIds
+          ? { AND: [{ OR: [{ scope_type: { in: ['brand', 'category', 'global'] } }, { scope_id: { in: [...scopeIds] } }] }] }
+          : {}),
         price_book: { tenant_id: context.tenantId, status: 'active', is_default: true },
       },
     });

@@ -12,7 +12,7 @@ function requireFiniteNumber(value, label) {
   return value
 }
 
-export function requireCatalogV2ProductMap(snapshot) {
+export function requireCatalogProductMap(snapshot) {
   if (!snapshot || !Array.isArray(snapshot.products)) {
     throw new Error('Catalog snapshot must contain a products array')
   }
@@ -22,8 +22,8 @@ export function requireCatalogV2ProductMap(snapshot) {
     if (!product || typeof product !== 'object') {
       throw new Error(`Catalog product ${index} must be an object`)
     }
-    if (product.catalog_version !== 2) {
-      throw new Error(`Catalog product ${index} must use catalog version 2`)
+    if (product.catalog_version !== 3) {
+      throw new Error(`Catalog product ${index} must use catalog version 3`)
     }
 
     const id = requireNonEmptyString(product.id, `Catalog product ${index} ID`)
