@@ -13,16 +13,28 @@
 | W4a | الـPOS على better-sqlite3 + WAL، migrations بإصدار، بحث مفهرس، main.ts مقسم لموديولات |
 | W5a | Plans/Subscription/Entitlements/Limits، signup عام، APIs لوحة المنصة، `npm run platform:admin -- <email|phone>` |
 
+## W2a — دُمج الـbackend فقط (⚠ الـPOS والـadmin لم يُحدَّثا بعد)
+
+الـbackend: ProductType/attributes/label، `ProductBarcode`، `Tenant.settings` (باركود الميزان)، parser في `@athr/domain-core`،
+presets في `backend/src/catalog/presets/` (إضافة نوع تجارة = ملف preset + تسجيله في `index.ts`)، مزامنة بـcursor `txid:sequence`
+و delta بالكيان و snapshot مقسم (`catalog_version: 3`، `/sync/pull` يتطلب POS protocol 3)، compaction عبر `POST /platform/sync/compact`.
+
+**مطلوب فورًا (أولوية 1):**
+- **POS (Part C):** migration محلية v4 (`attributes`, `label`, جدول `barcodes`) · scan عبر جدول الباركود مع `pack_qty` · باركود الميزان بـ`parseScaleBarcode` من domain-core ·
+  كميات عشرية حسب `uom_precision` (`catalog-format.ts` ما زال يشترط stock صحيح) · إزالة نصوص المقاس/اللون · بروتوكول pull الجديد (cursor مركب، snapshot مقسم قابل للاستئناف) ·
+  إرسال `variant_label_snapshot` · `POS_PROTOCOL_VERSION = 3` في `electron/pos-protocol.ts` · رفع إصدار الـPOS و`POS_MIN_APP_VERSION`.
+- **Admin (Part D):** فورم منتج ديناميكي من خصائص نوع المنتج + matrix للـvariants + قائمة باركود + اختيار الوحدة · عمود `label` بدل size/color · صفحة أنواع المنتجات.
+- ملاحظة: الـmigration الخاصة بـW2a لم تُختبر على بيانات موجودة (فقط قواعد فارغة + seed).
+
 ## قيد التنفيذ عند كتابة هذا الملف
 
 - **W1c** (أداء): مسار البيع ~12–14 query، التقارير في SQL، pagination للقوائم، تنظيف indexes.
-- **W2a** (كتالوج عام + مزامنة): ProductType/attributes/label، جدول `ProductBarcode`، باركود الميزان، presets لأنواع التجارة، SyncChange بـ`xid8` و delta بالكيان و snapshot مقسم، تكييف الـPOS والـadmin.
 
 إن لم تظهر هذه في سجل الفرع فهي لم تُدمج — أعد تنفيذها من وصفها أعلاه والتصميم في `docs/design`.
 
 ## الخطوات التالية بالترتيب
 
-1. إكمال/دمج W1c و W2a (إن لم تكن دُمجت).
+1. إكمال W2a (POS + admin أعلاه)، وإكمال/دمج W1c إن لم يكن دُمج.
 2. **W2b:** التتبع `serial`/`batch` (خلف مفاتيح المزايا `tracking.serial`/`tracking.batch`).
 3. **W3 — البيع:** جدول Payments ودفع مقسم · خصومات سطر/فاتورة · تطبيق promotions/coupons في البيع (مع فحص الميزة `promotions`) · ترقيم مسلسل لكل فرع · إعدادات بيع لكل tenant (مدة الاسترجاع، طرق الدفع، العملة) · الاستبدال.
 4. **W4 باقي الـPOS:** طباعة صامتة ودرج النقدية · مرتجعات/شفت/عملاء Offline · شاشة الفواتير المرفوضة · قراءة حالة الاشتراك من heartbeat وإيقاف البيع عند `suspended`.
