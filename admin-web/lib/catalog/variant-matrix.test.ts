@@ -30,10 +30,10 @@ describe('matrix generation', () => {
 
   it('keeps typed data of surviving rows when the axes change', () => {
     const first = generateMatrix(defs, { size: ['S'], color: ['red'] }, [], 'TS')
-    expect(first.rows[0].sku).toBe('TS-S-red')
+    expect(first.rows[0].sku).toBe('TS-S-RED')
     const edited = [{ ...first.rows[0], sku: 'CUSTOM', cost: '50' }]
     const second = generateMatrix(defs, { size: ['S', 'M'], color: ['red'] }, edited, 'TS')
-    expect(second.rows.map(row => row.sku)).toEqual(['CUSTOM', 'TS-M-red'])
+    expect(second.rows.map(row => row.sku)).toEqual(['CUSTOM', 'TS-M-RED'])
     expect(second.rows[0].cost).toBe('50')
   })
 
@@ -63,12 +63,18 @@ describe('matrix generation', () => {
     const rows = generateMatrix(defs, { size: ['S', 'M'], color: ['red'] }, []).rows
     rows[1] = { ...rows[1], sku: 'MINE' }
     const next = rebaseSkus(rows, '', 'TS', defs)
-    expect(next.map(row => row.sku)).toEqual(['TS-S-red', 'MINE'])
-    expect(rebaseSkus([{ ...rows[0], id: 'v1' }], '', 'TS', defs)[0].sku).toBe('S-red')
+    expect(next.map(row => row.sku)).toEqual(['TS-S-RED', 'MINE'])
+    expect(rebaseSkus([{ ...rows[0], id: 'v1' }], '', 'TS', defs)[0].sku).toBe('S-RED')
   })
 
   it('suggests a sku from base and axis values', () => {
-    expect(suggestSku('TS', { size: 'XL', color: 'أزرق فاتح' }, defs)).toBe('TS-XL-أزرق-فاتح')
-    expect(suggestSku('', { size: 'XL', color: 'red' }, defs)).toBe('XL-red')
+    expect(suggestSku('', { size: 'xl', color: 'red' }, defs)).toBe('XL-RED')
+  })
+
+  it('keeps suggested skus ASCII and stable for non-latin values', () => {
+    const sku = suggestSku('TS', { size: 'XL', color: 'أزرق فاتح' }, defs)
+    expect(sku).toMatch(/^TS-XL-C[0-9A-Z]{4}$/)
+    expect(suggestSku('TS', { size: 'XL', color: 'أزرق فاتح' }, defs)).toBe(sku)
+    expect(suggestSku('TS', { size: 'XL', color: 'أسود' }, defs)).not.toBe(sku)
   })
 })

@@ -33,9 +33,26 @@ export function cartesian(
   return combos
 }
 
-/** SKU proposal "BASE-L-أسود" that the user can overwrite. */
+/** Short stable ASCII code for a value (FNV-1a, base 36), independent of value order. */
+function asciiCode(text: string): string {
+  let hash = 0x811c9dc5
+  for (const char of text) hash = Math.imul(hash ^ char.codePointAt(0)!, 0x01000193) >>> 0
+  return hash.toString(36).toUpperCase().padStart(4, '0').slice(-4)
+}
+
+/** One SKU segment: ASCII values as typed ("XL"); others as key initial + code ("C7QK2" for أسود). */
+function skuSegment(key: string, value: string): string {
+  const text = value.trim().replace(/\s+/g, '-')
+  if (!text) return ''
+  return /^[A-Za-z0-9._-]+$/.test(text) ? text.toUpperCase() : `${key.charAt(0).toUpperCase()}${asciiCode(text)}`
+}
+
+/**
+ * SKU proposal "BASE-XL-C7QK2" that the user can overwrite. SKUs stay ASCII so
+ * scanners, keyboards and mixed RTL/LTR text never garble them.
+ */
 export function suggestSku(base: string, attributes: AttributeValues, definitions: readonly AttributeDefinition[]): string {
-  const parts = axisAttributes(definitions).map(def => String(attributes[def.key] ?? '').trim().replace(/\s+/g, '-'))
+  const parts = axisAttributes(definitions).map(def => skuSegment(def.key, String(attributes[def.key] ?? '')))
   return [base.trim(), ...parts].filter(Boolean).join('-')
 }
 
