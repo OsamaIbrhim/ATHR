@@ -14,7 +14,7 @@ export function registerPrintingIpc() {
     const itemsHtml = (invoice.items || [])
       .map(
         (item: any) =>
-          `<tr><td>${escapeHtml(item.name || item.sku)}</td><td>${Number(item.qty)}</td><td>${formatMoney(item.unit_price || 0)}</td><td>${formatMoney(fromCents(lineCents(item.unit_price || 0, Number(item.qty))))}</td></tr>`,
+          `<tr><td>${escapeHtml(item.name || item.sku)}${item.label ? `<br><span class="small">${escapeHtml(item.label)}</span>` : ''}</td><td>${Number(item.qty)}${item.uom_name_ar ? ` <span class="small">${escapeHtml(item.uom_name_ar)}</span>` : ''}</td><td>${formatMoney(item.unit_price || 0)}</td><td>${formatMoney(fromCents(lineCents(item.unit_price || 0, Number(item.qty))))}</td></tr>`,
       )
       .join('')
     const payment = (
@@ -49,7 +49,6 @@ export function registerPrintingIpc() {
   <body>
     <h2>ATHR</h2>
     <div class="center small">
-      ملابس رجالي – Men's Clothing<br>
       ${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br>
       ${new Date(invoice.occurred_at || Date.now()).toLocaleString(isAr ? 'ar-EG' : 'en-GB')}
     </div>

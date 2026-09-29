@@ -1,3 +1,5 @@
+import { isValidQuantity } from './quantity'
+
 export type HeldSaleScope = {
   branch_id: string
   cashier_id: string
@@ -57,11 +59,7 @@ export function validateHeldSaleItems(
       'Held sale variant',
     )
     const qty = Number(item?.qty)
-    if (
-      !Number.isInteger(qty) ||
-      qty < 1 ||
-      qty > 1_000
-    ) {
+    if (!isValidQuantity(qty)) {
       throw new HeldSaleValidationError(
         'Held sale quantity is invalid',
       )

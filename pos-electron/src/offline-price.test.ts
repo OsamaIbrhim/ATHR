@@ -19,6 +19,7 @@ describe('historical offline sale prices', () => {
       tax: 28,
       total: 228,
       quantity: 2,
+      lines: 1,
     })
   })
 })

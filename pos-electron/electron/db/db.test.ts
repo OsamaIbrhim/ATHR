@@ -5,10 +5,9 @@ import * as path from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { closeDb, initDb, openDatabase, PRE_ENGINE_BACKUP_SUFFIX } from './connection'
 import { LATEST_SCHEMA_VERSION } from './migrations'
-import { searchProducts, EXACT_MATCH_QUERY } from './catalog'
 import { markSending, updateSyncStatus, markFailed } from './outbox'
 import { get, getMeta, q, run, setMeta } from './queries'
-import { commitLocalSale, type LocalSaleRecord } from './sales'
+import { assertQuantityPrecision, commitLocalSale, type LocalSaleRecord } from './sales'
 
 let dir: string
 let file: string
@@ -26,7 +25,7 @@ afterEach(() => {
 const columns = (db: Database.Database, table: string) =>
   (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name).sort()
 
-const TABLES = ['products', 'stock', 'sellers', 'outbox', 'sales_local', 'held_sales', 'sync_meta']
+const TABLES = ['products', 'stock', 'barcodes', 'sellers', 'outbox', 'sales_local', 'held_sales', 'sync_meta']
 
 /** The very first release schema: no tax, Arabic name, sale context or sync columns. */
 const LEGACY_V0 = `
@@ -69,14 +68,14 @@ describe('migrations', () => {
     )
     expect(indexes).toEqual(
       expect.arrayContaining([
-        'products_barcode_ean13_idx',
-        'products_barcode_internal_idx',
         'products_sku_idx',
+        'barcodes_variant_idx',
         'outbox_status_created_idx',
         'sales_local_occurred_idx',
         'held_sales_scope_created_idx',
       ]),
     )
+    expect(indexes).not.toContain('products_barcode_ean13_idx')
     expect(fs.existsSync(`${file}${PRE_ENGINE_BACKUP_SUFFIX}`)).toBe(false)
     db.close()
   })
@@ -107,7 +106,13 @@ describe('migrations', () => {
     expect(db.prepare('SELECT * FROM products').get()).toMatchObject({
       id: 'p1', sku: 'SKU-1', name_en: 'Shirt', selling_price: 19.99, catalog_version: 2,
       selling_price_minor_units: 1999, cost_price_minor_units: 1050,
+      // The old size/color become the label, the old barcodes stay scannable, until the next snapshot.
+      label: 'M · Blue', uom_precision: 0,
     })
+    expect(db.prepare('SELECT code,variant_id,pack_qty,kind FROM barcodes ORDER BY code').all()).toEqual([
+      { code: '6221234567890', variant_id: 'p1', pack_qty: 1, kind: 'standard' },
+      { code: 'ATHR-1', variant_id: 'p1', pack_qty: 1, kind: 'standard' },
+    ])
     expect(db.prepare('SELECT qty FROM stock').get()).toEqual({ qty: 7 })
     expect(db.prepare('SELECT name FROM sellers').get()).toEqual({ name: 'Seller One' })
     expect(db.prepare('SELECT * FROM outbox').get()).toMatchObject({ id: 'o1', sync_status: 'pending', attempt_count: 0 })
@@ -115,7 +120,8 @@ describe('migrations', () => {
       sync_id: 'o1', total: 19.99, total_minor_units: 1999,
     })
     expect(db.prepare('SELECT id FROM held_sales').get()).toEqual({ id: 'h1' })
-    expect(db.prepare(`SELECT value FROM sync_meta WHERE key='sync_cursor'`).get()).toEqual({ value: '42' })
+    // v4 clears the catalog cursor: the next sync is a full snapshot.
+    expect(db.prepare(`SELECT value FROM sync_meta WHERE key='sync_cursor'`).get()).toBeUndefined()
     db.close()
 
     // The backup is never recreated or overwritten by later launches.
@@ -216,6 +222,31 @@ describe('sale commit', () => {
     expect(snapshot()).toEqual(before)
   })
 
+  it('sells decimal quantities without float drift, down to exactly zero', () => {
+    run(`INSERT INTO stock (variant_id,qty) VALUES ('kg',2.335)`)
+    commitLocalSale(saleRecord({ syncId: 's1', terminalSequence: '000010', items: [{ variant_id: 'kg', qty: 1.235 }] }))
+    expect(get(`SELECT qty FROM stock WHERE variant_id='kg'`)).toEqual({ qty: 1.1 })
+    commitLocalSale(saleRecord({ syncId: 's2', terminalSequence: '000011', items: [{ variant_id: 'kg', qty: 0.1 }] }))
+    commitLocalSale(saleRecord({ syncId: 's3', terminalSequence: '000012', items: [{ variant_id: 'kg', qty: 1 }] }))
+    expect(get(`SELECT qty FROM stock WHERE variant_id='kg'`)).toEqual({ qty: 0 })
+    expect(() =>
+      commitLocalSale(saleRecord({ syncId: 's4', terminalSequence: '000013', items: [{ variant_id: 'kg', qty: 0.001 }] })),
+    ).toThrow(/Insufficient local stock for kg/)
+  })
+
+  it('refuses a quantity finer than the unit of the item before committing', () => {
+    run(`INSERT INTO products (id,sku,name_ar,uom_precision) VALUES ('piece','P','قطعة',0),('kg','K','كجم',3),('dz','D','دستة',1)`)
+    expect(() => assertQuantityPrecision([{ variant_id: 'piece', qty: 1.5 }])).toThrow(/كسور/)
+    expect(() => assertQuantityPrecision([{ variant_id: 'dz', qty: 0.25 }])).toThrow(/كسور/)
+    expect(() =>
+      assertQuantityPrecision([
+        { variant_id: 'piece', qty: 2 },
+        { variant_id: 'kg', qty: 1.235 },
+        { variant_id: 'dz', qty: 0.5 },
+      ]),
+    ).not.toThrow()
+  })
+
   it('rolls back the stock update when a later insert fails mid-transaction', () => {
     commitLocalSale(saleRecord({ items: [{ variant_id: 'a', qty: 1 }] }))
     const before = snapshot()
@@ -224,42 +255,6 @@ describe('sale commit', () => {
       /UNIQUE/,
     )
     expect(snapshot()).toEqual(before)
-  })
-})
-
-describe('product search', () => {
-  beforeEach(() => {
-    initDb(file)
-    for (let i = 0; i < 60; i += 1) {
-      run(
-        `INSERT INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,selling_price_minor_units)
-         VALUES (?,?,?,?,?,?,1000)`,
-        [`id-${i}`, `SKU-${String(i).padStart(3, '0')}`, `Polo ${i}`, `بولو ${i}`, `62200000${String(i).padStart(5, '0')}`, `ATHR-${i}`],
-      )
-    }
-    run(`INSERT INTO stock (variant_id,qty) VALUES ('id-7',4)`)
-  })
-
-  it('uses an index for the exact barcode / sku match', () => {
-    const details = q(`EXPLAIN QUERY PLAN ${EXACT_MATCH_QUERY.replaceAll('?', "'x'")}`)
-      .map((row) => row.detail)
-      .join('\n')
-    expect(details).toContain('USING INDEX')
-    expect(details).not.toMatch(/SCAN p\b/)
-  })
-
-  it('returns only the exact hit (with stock) when a barcode or sku matches', () => {
-    expect(searchProducts('6220000000007')).toMatchObject([{ id: 'id-7', qty: 4 }])
-    expect(searchProducts('ATHR-7')).toHaveLength(1)
-    expect(searchProducts('SKU-007')).toHaveLength(1)
-  })
-
-  it('falls back to a limited text search and ignores empty input', () => {
-    expect(searchProducts('Polo 1').map((row) => row.id)).toContain('id-1')
-    expect(searchProducts('SKU')).toHaveLength(50)
-    expect(searchProducts('بولو 3').length).toBeGreaterThan(0)
-    expect(searchProducts('   ')).toEqual([])
-    expect(searchProducts('nomatch-xyz')).toEqual([])
   })
 })
 

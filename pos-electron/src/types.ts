@@ -42,10 +42,12 @@ export type Product = {
   sku: string
   name_en?: string
   name_ar?: string
-  barcode_ean13?: string | null
-  barcode_internal?: string | null
-  size?: string | null
-  color?: string | null
+  /** What tells this variant apart ("L · أسود"); replaces the old size/color columns. */
+  label?: string | null
+  uom_code?: string | null
+  uom_name_ar?: string | null
+  /** Decimal places the unit allows: 0 = pieces, 3 = kg. */
+  uom_precision?: number
   selling_price?: number | string
   unit_tax?: number | string
   catalog_version?: number
@@ -86,6 +88,8 @@ export type InvoiceItem = {
   sku_snapshot?: string
   name_ar_snapshot?: string
   name_en_snapshot?: string | null
+  variant_label_snapshot?: string | null
+  /** Sales recorded by POS <= 1.5 carry these instead of a label. */
   size_snapshot?: string | null
   color_snapshot?: string | null
   qty: number
@@ -96,8 +100,7 @@ export type InvoiceItem = {
   return_items?: ReturnedInvoiceItem[]
   variant?: {
     sku?: string
-    size?: string | null
-    color?: string | null
+    label?: string | null
     product?: {
       name_ar?: string
       name_en?: string
@@ -153,6 +156,9 @@ export type SyncState = {
   blocked_reason?: string | null
   terminal_sale_sequence?: string
   sync_cursor?: string | null
+  /** Set while a catalog snapshot is only partly downloaded; the next sync resumes from here. */
+  snapshot_after?: string | null
+  snapshot_cursor?: string | null
   catalog_valid_until?: string | null
   backend_version?: string | null
   backend_deployment_sha?: string | null

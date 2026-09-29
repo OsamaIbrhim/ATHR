@@ -5,6 +5,7 @@ import {
   type MoneyColumnMigrationReport,
 } from '../money-column-migration'
 import { ADDED_COLUMNS, CREATE_INDEXES, CREATE_TABLES } from './schema'
+import { V4_SCHEMA } from './schema-v4'
 
 type Db = Database.Database
 
@@ -73,6 +74,13 @@ const MIGRATIONS: readonly Migration[] = [
     name: 'hot-path-indexes',
     up(db) {
       db.exec(CREATE_INDEXES)
+    },
+  },
+  {
+    version: 4,
+    name: 'generic-catalog',
+    up(db) {
+      db.exec(V4_SCHEMA)
     },
   },
 ]

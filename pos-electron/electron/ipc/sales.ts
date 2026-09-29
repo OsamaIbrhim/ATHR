@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron'
-import { commitLocalSale, findSaleBySyncId } from '../db/sales'
+import { assertQuantityPrecision, commitLocalSale, findSaleBySyncId } from '../db/sales'
 import { get, getMeta, q } from '../db/queries'
 import { assertFactoryResetIdle } from '../factory-reset-runtime'
 import { fromCents, lineCents, sameMoney, toCents } from '../money'
@@ -8,7 +8,7 @@ import {
   nextTerminalSequence,
   offlineAccountingContextMatches,
 } from '../offline-accounting'
-import { validateLocalSaleInput } from '../sale-validation'
+import { saleItemCommand, validateLocalSaleInput } from '../sale-validation'
 import { readSecureState } from '../secure-state'
 
 function listLocalSales() {
@@ -66,6 +66,7 @@ function recordSale(sale: any) {
   }
   const existing = findSaleBySyncId(syncId)
   if (existing) return { ...existing, ok: true, replayed: true }
+  assertQuantityPrecision(items)
 
   const shift = context ? { id: context.shift_id, branch_id: context.branch_id } : null
   if (
@@ -112,17 +113,7 @@ function recordSale(sale: any) {
     terminal_sequence: terminalSequence,
     occurred_at: occurredAt,
     customer_phone: customerPhone,
-    items: items.map((item: any) => ({
-      variant_id: item.variant_id,
-      qty: item.qty,
-      unit_price: item.unit_price,
-      unit_tax: item.unit_tax,
-      sku_snapshot: item.sku,
-      name_ar_snapshot: item.name_ar,
-      name_en_snapshot: item.name_en || undefined,
-      size_snapshot: item.size || undefined,
-      color_snapshot: item.color || undefined,
-    })),
+    items: items.map(saleItemCommand),
     payment_method: paymentMethod,
     language,
     local_total: localTotal,

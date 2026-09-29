@@ -1,6 +1,6 @@
 import { app, ipcMain } from 'electron'
 import { applyCatalogPull } from '../db/catalog-sync'
-import { catalogNeedsFullRefresh } from '../db/catalog'
+import { catalogNeedsFullRefresh, snapshotProgress } from '../db/catalog'
 import {
   markFailed,
   markSending,
@@ -84,6 +84,8 @@ export function registerSyncIpc() {
     // A null cursor makes the next normal sync request a full snapshot. This
     // also self-heals a partially corrupted local catalog.
     const refreshRequired = catalogNeedsFullRefresh()
+    // An interrupted snapshot resumes where it stopped instead of restarting.
+    const snapshot = snapshotProgress()
     return {
       device_id: meta.device_id,
       terminal_name: meta.terminal_name,
@@ -95,6 +97,8 @@ export function registerSyncIpc() {
       quarantined_count: counts.quarantined,
       terminal_sale_sequence: meta.terminal_sale_sequence,
       sync_cursor: refreshRequired ? null : meta.sync_cursor,
+      snapshot_after: snapshot?.after || null,
+      snapshot_cursor: snapshot?.cursor || null,
       catalog_valid_until: refreshRequired ? null : meta.catalog_valid_until,
     }
   })

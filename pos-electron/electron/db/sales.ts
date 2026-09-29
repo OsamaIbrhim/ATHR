@@ -1,4 +1,6 @@
 import { decimalToMinorUnits } from '../money-codec'
+import { isValidQuantity } from '../quantity'
+import { PosSaleValidationError } from '../sale-validation'
 import { get, run, setMeta, tx } from './queries'
 
 export interface LocalSaleItem {
@@ -23,6 +25,19 @@ export interface LocalSaleRecord {
   outboxPayload: string
 }
 
+/** The server rejects a quantity finer than the unit allows (422), so refuse it before the sale is committed. */
+export function assertQuantityPrecision(items: LocalSaleItem[]) {
+  for (const item of items) {
+    const precision = Number(get(`SELECT uom_precision FROM products WHERE id=?`, [item.variant_id])?.uom_precision ?? 0)
+    if (!isValidQuantity(item.qty, precision)) {
+      throw new PosSaleValidationError(
+        'QUANTITY_PRECISION_EXCEEDED',
+        'الكمية تحتوي على كسور أكثر مما تسمح به وحدة قياس الصنف.',
+      )
+    }
+  }
+}
+
 /**
  * The stock decrement, the sale row, the outbox command and the sequence
  * counter commit together or not at all.
@@ -31,7 +46,8 @@ export function commitLocalSale(sale: LocalSaleRecord) {
   tx(() => {
     for (const item of sale.items) {
       const changed = run(
-        `UPDATE stock SET qty=qty-? WHERE variant_id=? AND qty>=?`,
+        // Rounded to the stored 3 decimals so decimal sales never drift on float noise.
+        `UPDATE stock SET qty=ROUND(qty-?,3) WHERE variant_id=? AND ROUND(qty,3)>=?`,
         [item.qty, item.variant_id, item.qty],
       )
       if (changed !== 1) {
