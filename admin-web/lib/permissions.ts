@@ -4,6 +4,7 @@ export const NAV_ITEMS = [
   { href: '/', label: 'لوحة التحكم', permission: 'reports.sales.view' },
   { href: '/sales', label: 'فواتير المبيعات', permission: 'sales.sale.view' },
   { href: '/products', label: 'المنتجات', permission: 'catalog.product.view' },
+  { href: '/product-types', label: 'أنواع المنتجات', permission: 'catalog.product.view' },
   { href: '/inventory', label: 'المخزون', permission: 'inventory.position.view' },
   { href: '/customers', label: 'العملاء', permission: 'customer.profile.view' },
   { href: '/purchasing', label: 'المشتريات', permission: 'purchasing.purchase-order.view' },
@@ -23,6 +24,12 @@ export const NAV_ITEMS = [
 /** Keys of the backend permission catalog (identity/permission-catalog.ts) the admin checks. */
 export type Permission = typeof NAV_ITEMS[number]['permission']
   | 'catalog.product.update'
+  | 'catalog.product.create'
+  | 'catalog.product.archive'
+  | 'catalog.product-type.manage'
+  | 'catalog.variant.create'
+  | 'catalog.variant.update'
+  | 'catalog.uom.view'
   | 'customer.profile.update'
   | 'purchasing.goods-receipt.post'
   | 'terminal.provision'

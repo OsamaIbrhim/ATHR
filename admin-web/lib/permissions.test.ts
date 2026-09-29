@@ -18,6 +18,13 @@ describe('admin authorization', () => {
     expect(canAccessPath(readOnlyUser, '/sales/invoice-id')).toBe(false)
   })
 
+  it('gates the product types page by the catalog view permission and its management by a separate one', () => {
+    expect(requiredPermission('/product-types')).toBe('catalog.product.view')
+    expect(requiredPermission('/product-types/abc')).toBe('catalog.product.view')
+    expect(requiredPermission('/products/new')).toBe('catalog.product.view')
+    expect(hasPermission(readOnlyUser, 'catalog.product-type.manage')).toBe(false)
+  })
+
   it('does not grant write actions from a read permission', () => {
     expect(hasPermission(readOnlyUser, 'catalog.product.view')).toBe(true)
     expect(hasPermission(readOnlyUser, 'catalog.product.update')).toBe(false)
