@@ -59,6 +59,7 @@ type PriceQuote = {
 type VariantOption = {
   id: string
   sku: string
+  label?: string
   product?: { name_ar?: string | null; name_en?: string | null } | null
 }
 
@@ -102,7 +103,7 @@ export default function Pricing() {
             <option value="">اختر المنتج / SKU</option>
             {products.map(p => (
               <option key={p.id} value={p.id}>
-                {p.sku} – {p.product?.name_ar || p.product?.name_en}
+                {p.sku} – {p.product?.name_ar || p.product?.name_en} {p.label || ''}
               </option>
             ))}
           </select>
