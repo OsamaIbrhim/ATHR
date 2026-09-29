@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { OffersService } from './offers.service';
 import { PricingService } from '../pricing/pricing.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { TaxResolutionService } from '../tax/tax-resolution.service';
 
@@ -46,29 +46,27 @@ function setup() {
   });
   // Cost visibility is granted here so these stay isolation tests -- the
   // masking behaviour itself is pinned in `offers.cost-visibility.spec.ts`.
-  const costVisibility = new CostVisibilityService({
-    hasPermission: async () => true,
-  } as unknown as PermissionPolicyService);
+  const costVisibility = new CostVisibilityService();
   return { prisma, service: new OffersService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), costVisibility) };
 }
 
-const actorFor = (branchId: string) =>
-  ({ sub: randomUUID(), role: 'owner', membership_role: 'tenant_owner', branch_id: branchId, capabilities: [] }) as any;
+const ownerFor = (branchId: string) =>
+  actorFor('tenant_owner', { sub: randomUUID(), tenantWide: true, branchId });
 
 describe('offers — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s pending suggestions', async () => {
     const { service } = setup();
-    const forA = await service.suggestions(contextFor(TENANT_A), actorFor(BRANCH_A));
+    const forA = await service.suggestions(contextFor(TENANT_A), ownerFor(BRANCH_A));
     expect(forA.map((row: any) => row.id)).toEqual([SUGGESTION_A]);
 
-    const forB = await service.suggestions(contextFor(TENANT_B), actorFor(BRANCH_B));
+    const forB = await service.suggestions(contextFor(TENANT_B), ownerFor(BRANCH_B));
     expect(forB.map((row: any) => row.id)).toEqual([SUGGESTION_B]);
   });
 
   it('does not review another tenant\'s suggestion', async () => {
     const { service, prisma } = setup();
     await expect(
-      service.review(contextFor(TENANT_B), SUGGESTION_A, 'approved', actorFor(BRANCH_A)),
+      service.review(contextFor(TENANT_B), SUGGESTION_A, 'approved', ownerFor(BRANCH_A)),
     ).rejects.toThrow('Offer suggestion not found');
 
     expect(prisma.offerSuggestion.rows.find((row: any) => row.id === SUGGESTION_A).status).toBe(
@@ -79,7 +77,7 @@ describe('offers — cross-tenant isolation', () => {
 
   it('reviews the caller\'s own suggestion and stamps the audit row with its tenant', async () => {
     const { service, prisma } = setup();
-    await service.review(contextFor(TENANT_A), SUGGESTION_A, 'approved', actorFor(BRANCH_A));
+    await service.review(contextFor(TENANT_A), SUGGESTION_A, 'approved', ownerFor(BRANCH_A));
 
     expect(prisma.offerSuggestion.rows.find((row: any) => row.id === SUGGESTION_A).status).toBe(
       'approved',

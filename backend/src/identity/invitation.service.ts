@@ -115,7 +115,7 @@ export class InvitationService {
     const tenantScope: TenantScope = { tenantId: invitation.tenant_id as TenantContext['tenantId'] };
 
     // BR-MEM-100: at most one active Membership per (Identity, Tenant) pair.
-    const existingMembership = await this.membershipRepository.findByIdentity(tenantScope, input.acceptingIdentityId);
+    const existingMembership = await this.membershipRepository.findByUser(tenantScope, input.acceptingIdentityId);
     if (existingMembership && existingMembership.status !== 'deactivated') {
       return fail({
         code: 'MEMBERSHIP_ALREADY_EXISTS',
@@ -124,7 +124,7 @@ export class InvitationService {
     }
 
     const membership = await this.membershipRepository.save(tenantScope, {
-      identityId: input.acceptingIdentityId,
+      userId: input.acceptingIdentityId,
       role: invitation.role,
       status: 'active',
     });

@@ -7,7 +7,8 @@ import {
 import { PosTerminal, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
-import { assertBranchAccess } from '../auth/branch-access';
+import { assertBranchAccess, hasBranchAccess } from '../auth/branch-access';
+import { CLIENT_ROLE_NAME } from '../auth/session-user';
 import { randomUUID } from 'crypto';
 import { requireResourceId } from '../common/resource-id';
 import { ShiftsRepository } from './shifts.repository';
@@ -53,7 +54,8 @@ export class ShiftsService {
     terminal: Pick<PosTerminal, 'id' | 'branch_id' | 'last_sale_sequence'>,
   ) {
     const shiftId = requireResourceId(id, 'shift_id');
-    if (actor.role !== 'cashier' && actor.role !== 'branch_manager') {
+    // Only till operators (cashiers and branch managers) work offline.
+    if (actor.membership_role !== 'cashier' && actor.membership_role !== 'location_manager') {
       throw new ForbiddenException('Only POS cashiers and branch managers can receive an offline accounting context');
     }
     const shift = await this.repository.findById(context, shiftId);
@@ -61,10 +63,7 @@ export class ShiftsService {
     if (shift.status !== 'open' || shift.closed_at) {
       throw new ConflictException('Offline accounting context requires an open shift');
     }
-    if (
-      actor.branch_id !== shift.branch_id ||
-      terminal.branch_id !== shift.branch_id
-    ) {
+    if (!hasBranchAccess(actor, shift.branch_id) || terminal.branch_id !== shift.branch_id) {
       throw new ForbiddenException('The cashier, terminal and shift must belong to the same branch');
     }
 
@@ -80,7 +79,7 @@ export class ShiftsService {
       context_version: 2,
       session_id: randomUUID(),
       user_id: actor.sub,
-      role: actor.role,
+      role: CLIENT_ROLE_NAME[actor.membership_role],
       branch_id: shift.branch_id,
       terminal_id: terminal.id,
       shift_id: shift.id,

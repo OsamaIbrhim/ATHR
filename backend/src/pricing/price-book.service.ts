@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PriceBookRepository } from './price-book.repository';
 import { PrismaService } from '../prisma/prisma.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantContext } from '../identity/tenant-context.type';
 import type { AuthenticatedUser } from '../auth/authenticated-user';
@@ -29,7 +28,6 @@ export class PriceBookService {
   constructor(
     private readonly repository: PriceBookRepository,
     private readonly prisma: PrismaService,
-    private readonly permissionPolicy: PermissionPolicyService,
   ) {}
 
   list(context: TenantContext, dto: ListPriceBooksDto) {
@@ -319,11 +317,7 @@ export class PriceBookService {
       );
     }
     if (status !== 'active') return;
-    const role = actor.membership_role ?? null;
-    const canPublishLivePrices = role
-      ? await this.permissionPolicy.hasPermission(role, 'pricing.price-book.activate')
-      : false;
-    if (!canPublishLivePrices) {
+    if (!actor.permissions.has('pricing.price-book.activate')) {
       throw new AthrDomainError(
         'PRICING_PRICE_BOOK_INVALID_TRANSITION',
         'This Price Book is active; changing a live price additionally requires "pricing.price-book.activate".',

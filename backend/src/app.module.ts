@@ -23,7 +23,6 @@ import { SyncModule } from './sync/sync.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
-import { RolesGuard } from './auth/roles.guard';
 import { TerminalsModule } from './terminals/terminals.module';
 import { PerformanceInterceptor } from './common/performance.interceptor';
 import { HealthModule } from './health/health.module';
@@ -65,12 +64,11 @@ import { PermissionGuard } from './identity/permission.guard';
   ],
   // Guard order is significant and matches the Permission Matrix §74 denial
   // precedence: authenticate (JwtAuthGuard) → resolve tenant context
-  // (TenantContextGuard, which needs `req.user`) → legacy role/capability
-  // check (RolesGuard) → Matrix permission check (PermissionGuard).
+  // (TenantContextGuard, which needs `req.user`) → permission check
+  // (PermissionGuard, the only authorization guard).
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: TenantContextGuard },
-    { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: PerformanceInterceptor },
   ],

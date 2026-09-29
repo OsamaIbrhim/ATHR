@@ -440,7 +440,7 @@ function uniquenessCases(chainA, chainB) {
 
 async function main() {
   const sharedUser = await prisma.user.create({
-    data: { name: 'constraint-proof', password_hash: 'not-a-real-hash', role: 'owner' },
+    data: { name: 'constraint-proof', password_hash: 'not-a-real-hash' },
   });
   // A second, otherwise-unused User: the SellerCommissionPeriodRow FK case
   // below targets chain B's own period with a foreign tenant-A row, and
@@ -448,7 +448,7 @@ async function main() {
   // for its own row -- reusing sharedUser there would collide on the
   // composite primary key before the foreign key is ever evaluated.
   const secondSharedUser = await prisma.user.create({
-    data: { name: 'constraint-proof-2', password_hash: 'not-a-real-hash', role: 'owner' },
+    data: { name: 'constraint-proof-2', password_hash: 'not-a-real-hash' },
   });
 
   const tenantA = await prisma.tenant.create({ data: { name: 'MT-MIG-006 proof tenant A' } });

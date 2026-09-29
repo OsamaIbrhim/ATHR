@@ -4,7 +4,7 @@ import { OverridesRepository } from './overrides.repository';
 import { OverridesService } from './overrides.service';
 import { PricingService } from './pricing.service';
 import { CostVisibilityService } from './cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aProductVariant, aTaxCategory, aTaxCode, taxCategoryIdFor } from '../identity/testing/fixture-builders';
 import { TaxResolutionService } from '../tax/tax-resolution.service';
@@ -14,14 +14,12 @@ import { TaxResolutionService } from '../tax/tax-resolution.service';
 const ctx = contextFor(TENANT_A);
 const VARIANT_ID = randomUUID();
 
-function actor(overrides: Record<string, unknown> = {}) {
-  return {
-    sub: randomUUID(),
-    role: 'cashier',
-    branch_id: null,
-    membership_role: 'cashier',
-    ...overrides,
-  } as any;
+// Permissions the actors built by `actor()` hold on top of their role defaults;
+// set per test by `setup()`.
+let extraPermissions: string[] = [];
+
+function actor(overrides: { membership_role?: 'cashier' | 'location_manager' } = {}) {
+  return actorFor(overrides.membership_role ?? 'cashier', { sub: randomUUID(), granted: extraPermissions });
 }
 
 function setup(options: {
@@ -55,18 +53,13 @@ function setup(options: {
   });
   const pricing = new PricingService(prisma, new TaxResolutionService(prisma));
   const overridesRepo = new OverridesRepository(prisma);
-  const permissionPolicy = {
-    hasPermission: jest.fn().mockResolvedValue(options.hasAboveThreshold ?? false),
-  } as unknown as PermissionPolicyService;
-  // A separate policy double for cost visibility, so the assertions about
-  // *which* permission the override path checks stay meaningful.
-  const costVisibility = new CostVisibilityService({
-    hasPermission: async () => options.hasCostView ?? false,
-  } as unknown as PermissionPolicyService);
+  extraPermissions = [
+    ...(options.hasAboveThreshold ? ['pricing.manual-override.above-threshold'] : []),
+    ...(options.hasCostView ? ['pricing.cost.view'] : []),
+  ];
   return {
     prisma,
-    service: new OverridesService(overridesRepo, pricing, permissionPolicy, costVisibility),
-    permissionPolicy,
+    service: new OverridesService(overridesRepo, pricing, new CostVisibilityService()),
   };
 }
 
@@ -157,24 +150,23 @@ describe('OverridesService — below-floor requires a separate approval permissi
   // below-floor override. It is recorded PENDING — the applying actor is
   // never its own approver.
   it('records the below-floor override as PENDING approval, never self-approved', async () => {
-    const { service, permissionPolicy } = setup({ policy: {}, hasAboveThreshold: true });
+    const { service } = setup({ policy: {}, hasAboveThreshold: true });
     const applier = actor();
     const result: any = await service.applyOverride(ctx, applier, {
       variant_id: VARIANT_ID, qty: 1, override_price: 70, reason: 'clearance',
     } as any);
 
-    expect(permissionPolicy.hasPermission).toHaveBeenCalledWith('cashier', 'pricing.manual-override.above-threshold');
     expect(result.is_below_floor).toBe(true);
     expect(result.approved_by).toBeNull();
     expect(result.approved_at).toBeNull();
   });
 
-  it('never checks the above-threshold permission for an at-or-above-floor override (one permission does not imply the other)', async () => {
-    const { service, permissionPolicy } = setup({ policy: {}, hasAboveThreshold: false });
-    await service.applyOverride(ctx, actor(), {
+  it('does not need the above-threshold permission for an at-or-above-floor override (one permission does not imply the other)', async () => {
+    const { service } = setup({ policy: {}, hasAboveThreshold: false });
+    const result: any = await service.applyOverride(ctx, actor(), {
       variant_id: VARIANT_ID, qty: 1, override_price: 85, reason: 'x',
     } as any);
-    expect(permissionPolicy.hasPermission).not.toHaveBeenCalled();
+    expect(result.is_below_floor).toBe(false);
   });
 });
 
@@ -274,7 +266,7 @@ describe('OverridesService — the floor is never disclosed without cost/margin 
   it('does quote the floor in that message for an actor allowed to see cost', async () => {
     const { service } = setup({ policy: {}, hasAboveThreshold: false, hasCostView: true });
     const error = await service
-      .applyOverride(ctx, actor({ membership_role: 'location_manager' }), {
+      .applyOverride(ctx, actor(), {
         variant_id: VARIANT_ID, qty: 1, override_price: 70, reason: 'x',
       } as any)
       .catch((e: any) => e);

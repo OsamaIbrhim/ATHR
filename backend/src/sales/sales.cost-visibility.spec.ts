@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { SalesService } from './sales.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { PricingService } from '../pricing/pricing.service';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
@@ -33,15 +33,16 @@ const UNIT_COST = 100;
 /** The second disclosure on the same payload: cost *today*, via the joined variant. */
 const VARIANT_COST_PRICE = 110;
 
-function actor(overrides: Record<string, unknown> = {}) {
-  return {
+/** Set by `setup()`: whether the actors built by `actor()` hold `sales.sale.view-cost-margin`. */
+let holdsKey = false;
+
+function actor(overrides: { revoked?: string[] } = {}) {
+  return actorFor('cashier', {
     sub: randomUUID(),
-    role: 'owner',
-    branch_id: BRANCH_ID,
-    membership_role: 'cashier',
-    capabilities: [],
-    ...overrides,
-  } as any;
+    branchId: BRANCH_ID,
+    granted: holdsKey ? ['sales.sale.view-cost-margin'] : [],
+    revoked: overrides.revoked,
+  });
 }
 
 function invoiceFixture() {
@@ -103,9 +104,8 @@ function setup(hasCostMargin: boolean) {
   const prisma = {
     salesInvoice: { findFirst: jest.fn().mockResolvedValue(invoiceFixture()) },
   };
-  const costVisibility = new CostVisibilityService({
-    hasPermission: async () => hasCostMargin,
-  } as unknown as PermissionPolicyService);
+  holdsKey = hasCostMargin;
+  const costVisibility = new CostVisibilityService();
   return {
     prisma,
     service: new SalesService(prisma as any, {} as unknown as PricingService, costVisibility, new SalesTaxSnapshotService()),
@@ -158,19 +158,16 @@ describe('SalesService.getInvoice — sale-line cost is never disclosed without 
 
   it('returns every cost field to an actor holding the key', async () => {
     const { service } = setup(true);
-    const invoice: any = await service.getInvoice(ctx, 'sale-1', actor({ membership_role: 'location_manager' }));
+    const invoice: any = await service.getInvoice(ctx, 'sale-1', actor());
 
     expect(Number(invoice.items[0].unit_cost)).toBe(UNIT_COST);
     expect(Number(invoice.items[0].variant.cost_price)).toBe(VARIANT_COST_PRICE);
     expect(Number(invoice.original_returns[0].items[0].unit_cost)).toBe(UNIT_COST);
   });
 
-  it('masks when the actor has no membership_role at all', async () => {
-    // `GET /sales/:id/pdf` carries no `@RequirePermission`, so `PermissionGuard`
-    // never runs its fail-closed membership check and this handler can be
-    // reached without the claim. The gate must deny rather than throw.
+  it('masks when the key was revoked from the actor, even if the role grants it', async () => {
     const { service } = setup(true);
-    const invoice: any = await service.getInvoice(ctx, 'sale-1', actor({ membership_role: undefined }));
+    const invoice: any = await service.getInvoice(ctx, 'sale-1', actor({ revoked: ['sales.sale.view-cost-margin'] }));
 
     expect(invoice.items[0]).not.toHaveProperty('unit_cost');
     expect(invoice.items[0].variant).not.toHaveProperty('cost_price');

@@ -10,7 +10,6 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { PurchasingService } from './purchasing.service';
-import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import {
   assertBranchAccess,
@@ -27,8 +26,6 @@ import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 
 @Controller('purchasing')
-@Roles('owner', 'branch_manager', 'warehouse_manager')
-@RequireCapabilities('purchasing.read')
 export class PurchasingController {
   constructor(private svc: PurchasingService) {}
 
@@ -42,11 +39,7 @@ export class PurchasingController {
   ) {
     return this.svc.list(
       ctx,
-      resolveBranchScope(
-        req.user,
-        branch_id,
-        ['owner', 'warehouse_manager'],
-      ),
+      resolveBranchScope(req.user, branch_id),
       Number(take) || 50,
     );
   }
@@ -62,15 +55,10 @@ export class PurchasingController {
     if (!invoice) {
       throw new NotFoundException('Purchase invoice not found');
     }
-    assertBranchAccess(
-      req.user,
-      invoice.branch_id,
-      ['owner', 'warehouse_manager'],
-    );
+    assertBranchAccess(req.user, invoice.branch_id);
     return invoice;
   }
 
-  @RequireCapabilities('purchasing.manage')
   @RequirePermission('purchasing.goods-receipt.post')
   @Post('receive')
   receive(
@@ -78,16 +66,11 @@ export class PurchasingController {
     @Body() dto: ReceivePurchaseDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    assertBranchAccess(
-      req.user,
-      dto.branch_id,
-      ['owner', 'warehouse_manager'],
-    );
+    assertBranchAccess(req.user, dto.branch_id);
     return this.svc.receive(ctx, dto, req.user);
   }
 
 
-  @RequireCapabilities('purchasing.manage')
   @RequirePermission('purchasing.supplier-return.post')
   @Post('invoices/:id/supplier-returns')
   async returnToSupplier(
@@ -100,11 +83,7 @@ export class PurchasingController {
     if (!invoice) {
       throw new NotFoundException('Purchase invoice not found');
     }
-    assertBranchAccess(
-      req.user,
-      invoice.branch_id,
-      ['owner', 'warehouse_manager'],
-    );
+    assertBranchAccess(req.user, invoice.branch_id);
     return this.svc.returnToSupplier(ctx, id, dto, req.user);
   }
 
@@ -116,11 +95,7 @@ export class PurchasingController {
     @Query('take') take: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    const branch = resolveBranchScope(
-      req.user,
-      branch_id,
-      ['owner', 'warehouse_manager'],
-    );
+    const branch = resolveBranchScope(req.user, branch_id);
     return this.svc.listSupplierReturns(
       ctx,
       branch,
@@ -128,7 +103,6 @@ export class PurchasingController {
     );
   }
 
-  @RequireCapabilities('purchasing.manage')
   @RequirePermission('purchasing.purchase-order.cancel')
   @Post('invoices/:id/reverse')
   async reverse(
@@ -141,11 +115,7 @@ export class PurchasingController {
     if (!invoice) {
       throw new NotFoundException('Purchase invoice not found');
     }
-    assertBranchAccess(
-      req.user,
-      invoice.branch_id,
-      ['owner', 'warehouse_manager'],
-    );
+    assertBranchAccess(req.user, invoice.branch_id);
     return this.svc.reverse(ctx, id, dto, req.user);
   }
 
@@ -158,11 +128,7 @@ export class PurchasingController {
     @Query('take') take: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    const branch = resolveBranchScope(
-      req.user,
-      branch_id,
-      ['owner', 'warehouse_manager'],
-    );
+    const branch = resolveBranchScope(req.user, branch_id);
     return this.svc.listCostMovements(
       ctx,
       branch,
@@ -171,7 +137,6 @@ export class PurchasingController {
     );
   }
 
-  @Roles('owner', 'warehouse_manager')
   @RequirePermission('purchasing.export')
   @Get('cost-reconciliation')
   costReconciliation(
@@ -181,7 +146,7 @@ export class PurchasingController {
     return this.svc.costReconciliation(ctx, variant_id);
   }
 
-  @RequireCapabilities('purchasing.manage')
+  @RequirePermission('purchasing.goods-receipt.create')
   @Post('ocr-import')
   ocr(@Body() dto: OcrImportDto) {
     return this.svc.ocrImport(dto.fileUrl);

@@ -22,8 +22,7 @@ function setup() {
     priceBookEntry: [],
   });
   const repository = new PriceBookRepository(prisma);
-  const permissionPolicy = { hasPermission: async () => true } as any;
-  return { prisma, repository, service: new PriceBookService(repository, prisma, permissionPolicy) };
+  return { prisma, repository, service: new PriceBookService(repository, prisma) };
 }
 
 describe('price books — cross-tenant isolation', () => {

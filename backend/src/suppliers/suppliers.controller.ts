@@ -1,14 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { SuppliersService } from './suppliers.service';
-import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
 
 @Controller('suppliers')
-@Roles('owner', 'branch_manager', 'warehouse_manager')
-@RequireCapabilities('suppliers.manage')
 export class SuppliersController {
   constructor(private svc: SuppliersService) {}
 

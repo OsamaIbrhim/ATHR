@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { randomUUID } from 'crypto';
 import { TransfersService } from './transfers.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
@@ -64,8 +65,8 @@ function setup() {
   return { prisma, captured, service: new TransfersService(prisma) };
 }
 
-const actorFor = (branchId: string) =>
-  ({ sub: randomUUID(), role: 'warehouse_manager', branch_id: branchId, capabilities: [] }) as any;
+const warehouseFor = (branchId: string) =>
+  actorFor('warehouse_manager', { sub: randomUUID(), tenantWide: true, branchId });
 
 describe('transfers — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s transfers', async () => {
@@ -77,7 +78,7 @@ describe('transfers — cross-tenant isolation', () => {
   it('does not return another tenant\'s transfer by id', async () => {
     const { service } = setup();
     await expect(
-      service.get(contextFor(TENANT_B), TRANSFER_A, actorFor(BRANCH_B1)),
+      service.get(contextFor(TENANT_B), TRANSFER_A, warehouseFor(BRANCH_B1)),
     ).rejects.toThrow('Transfer not found');
   });
 
@@ -96,7 +97,7 @@ describe('transfers — cross-tenant isolation', () => {
           to_branch_id: BRANCH_B1,
           items: [{ variant_id: VARIANT_A, qty: 1 }],
         } as any,
-        actorFor(BRANCH_A1),
+        warehouseFor(BRANCH_A1),
       ),
     ).rejects.toThrow('One or more active branches were not found');
   });
@@ -113,7 +114,7 @@ describe('transfers — cross-tenant isolation', () => {
           to_branch_id: BRANCH_A2,
           items: [{ variant_id: 'foreign-variant', qty: 1 }],
         } as any,
-        actorFor(BRANCH_A1),
+        warehouseFor(BRANCH_A1),
       ),
     ).rejects.toThrow('One or more product variants were not found');
   });
@@ -126,7 +127,7 @@ describe('transfers — cross-tenant isolation', () => {
   it('binds the tenant predicate into the raw transfer state reads', async () => {
     const { service, captured } = setup();
     await service
-      .get(contextFor(TENANT_A), TRANSFER_A, actorFor(BRANCH_A1))
+      .get(contextFor(TENANT_A), TRANSFER_A, warehouseFor(BRANCH_A1))
       .catch(() => undefined);
 
     const transferRead = captured.find((sql) => sql.includes('FROM "Transfer"'));
@@ -137,7 +138,7 @@ describe('transfers — cross-tenant isolation', () => {
 
   it('scopes the in-transit reconciliation to the calling tenant on both sides', async () => {
     const { service, captured } = setup();
-    await service.reconcileInTransit(contextFor(TENANT_A), actorFor(BRANCH_A1));
+    await service.reconcileInTransit(contextFor(TENANT_A), warehouseFor(BRANCH_A1));
 
     const sql = captured.find((text) => text.includes('TransferTransitMovement'))!;
     expect(sql).toMatch(/FROM "TransferItem" item[\s\S]*WHERE item\."tenant_id"/);
@@ -158,7 +159,7 @@ describe('transfers — cross-tenant isolation', () => {
   it('does not ship another tenant\'s transfer', async () => {
     const { service, captured } = setup();
     await expect(
-      service.ship(contextFor(TENANT_B), TRANSFER_A, {} as any, actorFor(BRANCH_B1)),
+      service.ship(contextFor(TENANT_B), TRANSFER_A, {} as any, warehouseFor(BRANCH_B1)),
     ).rejects.toThrow('Transfer not found');
 
     const lockQuery = captured.find((sql) => sql.includes('FROM "Transfer"') && sql.includes('FOR UPDATE'));

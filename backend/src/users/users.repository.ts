@@ -1,104 +1,109 @@
 import { Injectable } from '@nestjs/common';
-import type { MembershipRole, Prisma, Role } from '@prisma/client';
+import type { MembershipRole, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantScope } from '../identity/tenant-context.type';
+import { primaryBranchId, toScopeSet } from '../auth/branch-access';
 
-const USER_VIEW = {
+const MEMBERSHIP_VIEW = {
   id: true,
-  branch_id: true,
-  name: true,
-  phone: true,
-  email: true,
   role: true,
-  granted_capabilities: true,
-  revoked_capabilities: true,
-  is_active: true,
-  created_at: true,
-} as const;
+  status: true,
+  granted_permissions: true,
+  revoked_permissions: true,
+  access_scope_assignments: true,
+  user: { select: { id: true, name: true, phone: true, email: true, is_active: true, created_at: true } },
+} satisfies Prisma.MembershipSelect;
 
-/** The legacy `Role` → `MembershipRole` mapping fixed by migration 202608020003. */
-const MEMBERSHIP_ROLE_FOR: Readonly<Record<Role, MembershipRole>> = {
-  owner: 'tenant_owner',
-  branch_manager: 'location_manager',
-  cashier: 'cashier',
-  warehouse_manager: 'warehouse_manager',
-  seller: 'seller',
-};
+type MembershipRow = Prisma.MembershipGetPayload<{ select: typeof MEMBERSHIP_VIEW }>;
+
+/** A staff member as the admin sees them: identity + tenant-specific Membership data. */
+function toView({ user, access_scope_assignments, ...membership }: MembershipRow) {
+  const scope_set = toScopeSet(access_scope_assignments);
+  return {
+    ...user,
+    membership_id: membership.id,
+    role: membership.role,
+    branch_id: primaryBranchId({ scope_set }),
+    all_branches: scope_set.some((scope) => scope.scope_type === 'tenant_wide'),
+    granted_permissions: membership.granted_permissions,
+    revoked_permissions: membership.revoked_permissions,
+  };
+}
+
+export interface NewStaffInput {
+  readonly user: Omit<Prisma.UserUncheckedCreateInput, 'id'>;
+  readonly role: MembershipRole;
+  /** A branch scope, or `null` for a tenant-wide scope, or `undefined` for none. */
+  readonly branchId: string | null | undefined;
+}
 
 /**
- * WP-007 Phase A §A.3.2 — tenant-scoped repository for the `users` module.
+ * Tenant-scoped repository for the `users` module.
  *
- * `User` is the Platform Identity (ADR-0003) and deliberately has **no**
- * `tenant_id` column: an Identity is global and belongs to a Tenant only
- * through a `Membership`. So every query here scopes through the Membership
- * join rather than a column predicate. That is the correct model, not a
- * workaround — an Identity may later hold Memberships in several Tenants,
- * and a `tenant_id` on `User` would make that unrepresentable.
+ * `User` is the global identity and has no `tenant_id`; a person belongs to a
+ * Tenant only through a `Membership`, which is where role, scope and permission
+ * overrides live. So every query here goes through the Membership.
  */
 @Injectable()
 export class UsersRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  private tenantMembers(context: TenantScope): Prisma.UserWhereInput {
-    return { memberships: { some: { tenantId: context.tenantId } } };
-  }
-
-  async findById(context: TenantScope, id: string) {
-    return this.prisma.user.findFirst({ where: { id, ...this.tenantMembers(context) } });
-  }
-
-  async list(context: TenantScope, where: Prisma.UserWhereInput) {
-    return this.prisma.user.findMany({
-      where: { ...where, ...this.tenantMembers(context) },
-      select: USER_VIEW,
-      orderBy: { created_at: 'desc' },
+  async findMembership(context: TenantScope, userId: string) {
+    const membership = await this.prisma.membership.findFirst({
+      where: { user_id: userId, tenant_id: context.tenantId },
+      select: MEMBERSHIP_VIEW,
     });
+    return membership && toView(membership);
+  }
+
+  async list(context: TenantScope, where: Prisma.MembershipWhereInput) {
+    const memberships = await this.prisma.membership.findMany({
+      where: { ...where, tenant_id: context.tenantId },
+      select: MEMBERSHIP_VIEW,
+      orderBy: { user: { created_at: 'desc' } },
+    });
+    return memberships.map(toView);
   }
 
   /**
-   * Creates the Identity and its Membership in one transaction.
-   *
-   * Without the Membership the new account would authenticate but resolve no
-   * TenantContext, so `TenantContextGuard` would deny every request — the
-   * account would be created successfully and then be unusable. Migration
-   * `202608020003` guarantees this invariant for every pre-existing User;
-   * this keeps it true for every new one.
+   * Creates the identity, its Membership and its access scope in one
+   * transaction. Without the Membership the new account would authenticate but
+   * resolve no TenantContext, so every request would be denied.
    */
-  async save(context: TenantScope, data: Prisma.UserUncheckedCreateInput) {
+  async save(context: TenantScope, input: NewStaffInput) {
     return this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({ data, select: USER_VIEW });
-      await tx.membership.create({
+      const user = await tx.user.create({ data: input.user, select: { id: true } });
+      const membership = await tx.membership.create({
         data: {
-          tenantId: context.tenantId,
-          identityId: user.id,
-          role: MEMBERSHIP_ROLE_FOR[user.role],
-          status: user.is_active ? 'active' : 'suspended',
+          tenant_id: context.tenantId,
+          user_id: user.id,
+          role: input.role,
+          status: input.user.is_active === false ? 'suspended' : 'active',
         },
       });
-      return user;
+      if (input.branchId !== undefined) {
+        await tx.accessScopeAssignment.create({
+          data: {
+            membership_id: membership.id,
+            scope_type: input.branchId === null ? 'tenant_wide' : 'location',
+            scope_ref_id: input.branchId,
+            grant_source: 'user_admin',
+          },
+        });
+      }
+      return toView(await tx.membership.findUniqueOrThrow({ where: { id: membership.id }, select: MEMBERSHIP_VIEW }));
     });
   }
 
-  async updateCapabilities(
-    context: TenantScope,
-    id: string,
-    granted: string[],
-    revoked: string[],
-  ) {
-    await this.assertInTenant(context, id);
-    return this.prisma.user.update({
-      where: { id },
-      data: { granted_capabilities: granted, revoked_capabilities: revoked },
-      select: USER_VIEW,
+  async updatePermissions(context: TenantScope, userId: string, granted: string[], revoked: string[]) {
+    const existing = await this.findMembership(context, userId);
+    if (!existing) throw new AthrDomainError('RESOURCE_NOT_FOUND', 'User not found');
+    const membership = await this.prisma.membership.update({
+      where: { id: existing.membership_id },
+      data: { granted_permissions: granted, revoked_permissions: revoked },
+      select: MEMBERSHIP_VIEW,
     });
-  }
-
-  async assertInTenant(context: TenantScope, id: string) {
-    const user = await this.findById(context, id);
-    if (!user) {
-      throw new AthrDomainError('RESOURCE_NOT_FOUND', 'User not found');
-    }
-    return user;
+    return toView(membership);
   }
 }

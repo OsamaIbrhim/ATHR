@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { TransfersController } from './transfers.controller';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 
@@ -5,11 +6,11 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 const ctx = contextFor(TENANT_A);
 
 describe('TransfersController command forwarding', () => {
-  const actor = {
+  const actor = actorFor('warehouse_manager', {
     sub: '11111111-1111-4111-8111-111111111111',
-    role: 'warehouse_manager' as const,
-    branch_id: '22222222-2222-4222-8222-222222222222',
-  };
+    tenantWide: true,
+    branchId: '22222222-2222-4222-8222-222222222222',
+  });
   const request = { user: actor } as any;
 
   function setup() {

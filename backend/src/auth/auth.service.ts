@@ -5,8 +5,9 @@ import { createHash, randomBytes } from 'crypto';
 import { Prisma, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
-import { resolveIdentityClaims } from './identity-claims';
-import { effectiveCapabilities } from './permissions';
+import { IdentityClaims, resolveIdentityClaims } from './identity-claims';
+import { AuthenticatedUser } from './authenticated-user';
+import { toSessionUser } from './session-user';
 
 @Injectable()
 export class AuthService {
@@ -39,7 +40,8 @@ export class AuthService {
         data: { revoked_at: new Date() },
       });
       if (revoked.count !== 1) throw new UnauthorizedException('Refresh token was already used');
-      return this.createSession(stored.user, tx, tenantId);
+      // Keep the tenant the session was issued for unless the client asks to switch.
+      return this.createSession(stored.user, tx, tenantId ?? stored.tenant_id ?? undefined);
     });
   }
 
@@ -53,65 +55,39 @@ export class AuthService {
 
   async hash(password: string) { return bcrypt.hash(password, 12); }
 
-  async me(userId: string) {
+  async me(actor: AuthenticatedUser) {
     const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true, name: true, role: true, branch_id: true, is_active: true,
-        granted_capabilities: true, revoked_capabilities: true,
-      },
+      where: { id: actor.sub },
+      select: { id: true, name: true, is_active: true },
     });
     if (!user?.is_active) throw new UnauthorizedException();
     const memberships = await this.prisma.membership.findMany({
-      where: { identityId: userId, status: 'active' },
+      where: { user_id: actor.sub, status: 'active' },
       orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
       select: { tenant: { select: { id: true, name: true } } },
     });
-    return {
-      ...user,
-      capabilities: effectiveCapabilities(user),
-      tenants: memberships.map((m) => m.tenant),
-    };
+    return { ...toSessionUser(user, actor), tenants: memberships.map((m) => m.tenant) };
   }
 
   private async createSession(user: User, transaction?: Prisma.TransactionClient, tenantId?: string) {
     const db = transaction || this.prisma;
+    const claims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id, tenantId);
     const refreshToken = randomBytes(48).toString('base64url');
     await db.refreshToken.create({
       data: {
         user_id: user.id,
+        tenant_id: claims.tenant_id,
         token_hash: this.hashToken(refreshToken),
         expires_at: new Date(Date.now() + this.refreshLifetimeMs()),
       },
     });
-    // WP-006 §2 item 6: additive only — every pre-existing claim/field below
-    // (sub/role/branch_id in the token payload; id/name/role/branch_id/
-    // capabilities in `user`) is unchanged. See auth/identity-claims.ts and
-    // the dual-compatibility regression test in dual-compatibility.spec.ts.
-    const identityClaims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id, tenantId);
-    const payload = {
-      sub: user.id,
-      role: user.role,
-      branch_id: user.branch_id,
-      tenant_id: identityClaims.tenant_id,
-      membership_id: identityClaims.membership_id,
-      scope_set: identityClaims.scope_set,
-      permission_policy_version: identityClaims.permission_policy_version,
-    };
+    // The token only names the identity and tenant; the Membership is reloaded
+    // on every request (see JwtStrategy), so role/permission changes apply at once.
+    const payload = { sub: user.id, tenant_id: claims.tenant_id, membership_id: claims.membership_id };
     return {
       access_token: await this.jwt.signAsync(payload),
       refresh_token: refreshToken,
-      user: {
-        id: user.id,
-        name: user.name,
-        role: user.role,
-        branch_id: user.branch_id,
-        capabilities: effectiveCapabilities(user),
-        tenant_id: identityClaims.tenant_id,
-        membership_id: identityClaims.membership_id,
-        scope_set: identityClaims.scope_set,
-        permission_policy_version: identityClaims.permission_policy_version,
-      },
+      user: toSessionUser(user, claims),
     };
   }
 

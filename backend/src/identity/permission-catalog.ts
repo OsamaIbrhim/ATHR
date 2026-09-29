@@ -284,6 +284,14 @@ const TENANT_STRUCTURE_PERMISSIONS = [
   'location.update',
   'location.close',
   'tenant.membership.view',
+  'tenant.settings.manage',
+] as const;
+
+/** Seller commission reporting and settings (no Matrix section; W1a). */
+const SELLER_PERMISSIONS = [
+  'sellers.report.view',
+  'sellers.commission.manage',
+  'sellers.period.close',
 ] as const;
 
 export const BUSINESS_PERMISSIONS = [
@@ -298,6 +306,7 @@ export const BUSINESS_PERMISSIONS = [
   ...TERMINAL_SHIFT_PERMISSIONS,
   ...REPORTING_PERMISSIONS,
   ...TENANT_STRUCTURE_PERMISSIONS,
+  ...SELLER_PERMISSIONS,
 ] as const;
 
 export type BusinessPermission = (typeof BUSINESS_PERMISSIONS)[number];
@@ -329,7 +338,7 @@ const CASHIER_GRANTS: readonly BusinessPermission[] = [
   'shift.close-own',
   // The enrolled terminal reports its own sync/health state via
   // POST /terminals/heartbeat regardless of which role is logged in on the
-  // till. `@Roles` already allows `cashier` on that route; without this grant
+  // till. Cashiers are allowed on that route; without this grant
   // every cashier-operated terminal fails the permission check on every
   // heartbeat and can never advance past it to pull catalog updates.
   'terminal.view-health',
@@ -481,6 +490,7 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'location.view',
   // Legacy `branch_manager` can already list its branch's users today.
   'tenant.membership.view',
+  'sellers.report.view',
 ];
 
 /**
@@ -596,8 +606,15 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
  * quote path (`PricingController.calculate`) folds promotion evaluation into
  * the existing `pricing.price-book.view` gate rather than requiring a new
  * key, and neither role manages promotions/coupons/bundles.
+ *
+ * v7 -> v8: W1a folds the legacy capability list into this catalog. Adds
+ * `sellers.*` (report view for `location_manager`, commission/period close
+ * owner-only) and `tenant.settings.manage` (owner-only), which the legacy
+ * `seller_*`/`settings.manage` capabilities expressed. Effective permissions
+ * are now computed in code (`effectivePermissions`) from the role defaults plus
+ * the Membership's granted/revoked keys; the snapshot only carries the version.
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 7;
+export const PERMISSION_POLICY_CURRENT_VERSION = 8;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(
@@ -609,3 +626,25 @@ export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly Athr
       ]),
     ]),
   ) as Record<MembershipRole, readonly AthrPermission[]>;
+
+const VALID_PERMISSIONS: ReadonlySet<string> = new Set(ALL_PERMISSIONS);
+
+export function isPermission(key: string): key is AthrPermission {
+  return VALID_PERMISSIONS.has(key);
+}
+
+/**
+ * A Membership's effective permissions: role defaults + granted - revoked.
+ * Unknown keys are ignored. A tenant owner keeps every default (a revoke
+ * cannot lock the owner out of its own tenant).
+ */
+export function effectivePermissions(
+  role: MembershipRole,
+  granted: readonly string[] = [],
+  revoked: readonly string[] = [],
+): ReadonlySet<AthrPermission> {
+  const result = new Set<AthrPermission>(ALL_ROLE_PERMISSIONS[role]);
+  for (const key of granted) if (isPermission(key)) result.add(key);
+  if (role !== 'tenant_owner') for (const key of revoked) result.delete(key as AthrPermission);
+  return result;
+}

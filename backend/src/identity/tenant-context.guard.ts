@@ -4,19 +4,14 @@ import type { Request } from 'express';
 import { parseMembershipId, parseTenantId } from '@athr/domain-core';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { IS_PUBLIC_KEY } from '../auth/public.decorator';
+import type { AuthenticatedUser } from '../auth/authenticated-user';
 import type { ScopeGrant, TenantContext } from './tenant-context.type';
 
 export interface RequestWithTenantContext extends Request {
   tenantContext?: TenantContext;
   requestId?: string;
   correlationId?: string;
-  user?: {
-    sub: string;
-    tenant_id?: string | null;
-    membership_id?: string | null;
-    scope_set?: ReadonlyArray<{ scope_type: string; scope_ref_id: string | null }>;
-    permission_policy_version?: number | null;
-  };
+  user?: AuthenticatedUser;
 }
 
 /**

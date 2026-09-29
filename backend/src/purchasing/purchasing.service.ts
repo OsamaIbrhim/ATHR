@@ -15,6 +15,7 @@ import {
   ReversePurchaseDto,
 } from './dto/receive-purchase.dto'
 import { AuthenticatedUser } from '../auth/authenticated-user'
+import { hasBranchAccess } from '../auth/branch-access'
 import {
   PreparedPurchaseReceipt,
   calculateSupplierReturnCredit,
@@ -25,10 +26,10 @@ const purchaseInclude = {
   branch: true,
   supplier: true,
   creator: {
-    select: { id: true, name: true, role: true },
+    select: { id: true, name: true },
   },
   reverser: {
-    select: { id: true, name: true, role: true },
+    select: { id: true, name: true },
   },
   items: {
     include: {
@@ -41,7 +42,7 @@ const purchaseInclude = {
   supplier_returns: {
     include: {
       creator: {
-        select: { id: true, name: true, role: true },
+        select: { id: true, name: true },
       },
       items: {
         include: {
@@ -67,7 +68,7 @@ export class PurchasingService {
       include: {
         branch: true,
         supplier: true,
-        creator: { select: { id: true, name: true, role: true } },
+        creator: { select: { id: true, name: true } },
         items: { include: { variant: { include: { product: true } } } },
       },
       orderBy: [{ received_at: 'desc' }, { id: 'desc' }],
@@ -101,11 +102,7 @@ export class PurchasingService {
       )
     }
 
-    if (
-      actor.role !== 'owner' &&
-      actor.role !== 'warehouse_manager' &&
-      actor.branch_id !== dto.branch_id
-    ) {
+    if (!hasBranchAccess(actor, dto.branch_id)) {
       throw new ForbiddenException(
         'You cannot receive stock for another branch',
       )
@@ -423,7 +420,7 @@ export class PurchasingService {
             supplier: true,
             branch: true,
             creator: {
-              select: { id: true, name: true, role: true },
+              select: { id: true, name: true },
             },
             items: {
               include: {
@@ -464,11 +461,7 @@ export class PurchasingService {
             'A discounted legacy purchase has no reproducible line allocation and requires manual accounting review',
           )
         }
-        if (
-          actor.role !== 'owner' &&
-          actor.role !== 'warehouse_manager' &&
-          actor.branch_id !== invoice.branch_id
-        ) {
+        if (!hasBranchAccess(actor, invoice.branch_id)) {
           throw new ForbiddenException(
             'You cannot return stock for another branch',
           )
@@ -809,7 +802,7 @@ export class PurchasingService {
             supplier: true,
             branch: true,
             creator: {
-              select: { id: true, name: true, role: true },
+              select: { id: true, name: true },
             },
             items: {
               include: {
@@ -832,7 +825,7 @@ export class PurchasingService {
               supplier: true,
               branch: true,
               creator: {
-                select: { id: true, name: true, role: true },
+                select: { id: true, name: true },
               },
               items: {
                 include: {
@@ -869,7 +862,7 @@ export class PurchasingService {
         supplier: true,
         branch: true,
         creator: {
-          select: { id: true, name: true, role: true },
+          select: { id: true, name: true },
         },
         items: {
           include: {
@@ -926,11 +919,7 @@ export class PurchasingService {
         throw new NotFoundException('Purchase invoice not found')
       }
 
-      if (
-        actor.role !== 'owner' &&
-        actor.role !== 'warehouse_manager' &&
-        actor.branch_id !== invoice.branch_id
-      ) {
+      if (!hasBranchAccess(actor, invoice.branch_id)) {
         throw new ForbiddenException(
           'You cannot reverse a purchase for another branch',
         )
@@ -1182,7 +1171,7 @@ export class PurchasingService {
           include: { supplier: true },
         },
         creator: {
-          select: { id: true, name: true, role: true },
+          select: { id: true, name: true },
         },
       },
       orderBy: { sequence: 'desc' },

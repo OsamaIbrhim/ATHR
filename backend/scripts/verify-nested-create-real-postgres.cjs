@@ -110,16 +110,16 @@ async function createSupplier(tenantId, label) {
 
 async function createOwnerUser() {
   return prisma.user.create({
-    data: { name: 'Verify owner', password_hash: 'not-a-real-hash', role: 'owner' },
+    data: { name: 'Verify owner', password_hash: 'not-a-real-hash' },
   });
 }
 
 async function createSellerWithMembership(tenantId) {
   const seller = await prisma.user.create({
-    data: { name: 'Verify seller', password_hash: 'not-a-real-hash', role: 'seller' },
+    data: { name: 'Verify seller', password_hash: 'not-a-real-hash' },
   });
   await prisma.membership.create({
-    data: { tenantId, identityId: seller.id, role: 'seller', status: 'active' },
+    data: { tenant_id: tenantId, user_id: seller.id, role: 'seller', status: 'active' },
   });
   return seller;
 }
@@ -137,7 +137,7 @@ async function verifyReceiveAgainstRealPostgres() {
   const owner = await createOwnerUser();
   const service = new PurchasingService(prisma);
   const context = { tenantId: tenant.id };
-  const actor = { sub: owner.id, role: 'owner', branch_id: null };
+  const actor = { sub: owner.id, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
 
   let invoice = null;
   let caught = null;
@@ -180,7 +180,7 @@ async function verifyClosePeriodAgainstRealPostgres() {
   const owner = await createOwnerUser();
   const service = new SellersService(new SellersRepository(prisma));
   const context = { tenantId: tenant.id };
-  const actor = { sub: owner.id, role: 'owner', branch_id: null };
+  const actor = { sub: owner.id, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
 
   // Found but not fixed, out of scope for this PR (see PR description):
   // `SellerCommissionSettings` carries CHECK("id" = 1) from its single-

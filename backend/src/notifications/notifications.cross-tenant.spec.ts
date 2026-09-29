@@ -15,7 +15,7 @@ describe('notifications — per-tenant recipients', () => {
   function setup() {
     const prisma = {
       user: {
-        findMany: jest.fn(({ where }) => Promise.resolve(owners[where.memberships.some.tenantId] ?? [])),
+        findMany: jest.fn(({ where }) => Promise.resolve(owners[where.memberships.some.tenant_id] ?? [])),
       },
     };
     const service = new NotificationsService(prisma as any);
@@ -38,7 +38,7 @@ describe('notifications — per-tenant recipients', () => {
     const { service, prisma } = setup();
     await service.sendReport(contextFor(TENANT_A), {}, ['whatsapp']);
     expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { is_active: true, memberships: { some: { tenantId: TENANT_A, role: 'tenant_owner', status: 'active' } } },
+      where: { is_active: true, memberships: { some: { tenant_id: TENANT_A, role: 'tenant_owner', status: 'active' } } },
     }));
   });
 

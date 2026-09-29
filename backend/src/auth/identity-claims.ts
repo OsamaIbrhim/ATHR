@@ -1,22 +1,20 @@
 import { UnauthorizedException } from '@nestjs/common';
 import type { AccessScopeType, MembershipRole } from '@prisma/client';
+import { toScopeSet } from './branch-access';
 import { PrismaService } from '../prisma/prisma.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { AthrPermission, effectivePermissions } from '../identity/permission-catalog';
 
 /**
- * WP-006 §2 item 6 (MT-MIG-005's session/token half): additive claims
- * carried alongside every pre-existing session/token field, never
- * replacing them. `null`/`[]` here just means "no active Membership yet"
- * — a completely ordinary, pre-WP-006-shaped account — so an old-shape
- * consumer that never reads these fields sees no behavior change at all.
+ * Everything the request needs to know about the caller's Membership.
+ * `null`/empty means the identity has no active Membership yet.
  */
 export interface IdentityClaims {
   readonly tenant_id: string | null;
   readonly membership_id: string | null;
-  // WP-007 Phase A: additive, same rule as the WP-006 claims above. Lets the
-  // global `PermissionGuard` evaluate a permission without a per-request
-  // database round trip; `null` still means "no active Membership".
   readonly membership_role: MembershipRole | null;
+  /** role defaults + granted - revoked, see `effectivePermissions`. */
+  readonly permissions: ReadonlySet<AthrPermission>;
   readonly scope_set: ReadonlyArray<{ scope_type: AccessScopeType; scope_ref_id: string | null }>;
   readonly permission_policy_version: number | null;
 }
@@ -25,6 +23,7 @@ const EMPTY_CLAIMS: IdentityClaims = {
   tenant_id: null,
   membership_id: null,
   membership_role: null,
+  permissions: new Set(),
   scope_set: [],
   permission_policy_version: null,
 };
@@ -32,13 +31,13 @@ const EMPTY_CLAIMS: IdentityClaims = {
 export async function resolveIdentityClaims(
   prisma: PrismaService,
   permissionPolicy: PermissionPolicyService,
-  identityId: string,
+  userId: string,
   requestedTenantId?: string | null,
 ): Promise<IdentityClaims> {
   // An explicit tenant is only honoured if it is an active membership of this
-  // identity; otherwise the oldest active membership is used (deterministic).
+  // user; otherwise the oldest active membership is used (deterministic).
   const membership = await prisma.membership.findFirst({
-    where: { identityId, status: 'active', ...(requestedTenantId ? { tenantId: requestedTenantId } : {}) },
+    where: { user_id: userId, status: 'active', ...(requestedTenantId ? { tenant_id: requestedTenantId } : {}) },
     orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
     include: { access_scope_assignments: true },
   });
@@ -47,18 +46,12 @@ export async function resolveIdentityClaims(
     return EMPTY_CLAIMS;
   }
 
-  const now = new Date();
-  const scope_set = membership.access_scope_assignments
-    .filter((assignment) => assignment.effective_from <= now && (!assignment.effective_to || assignment.effective_to > now))
-    .map((assignment) => ({ scope_type: assignment.scope_type, scope_ref_id: assignment.scope_ref_id }));
-
-  const permission_policy_version = await permissionPolicy.getCurrentVersion();
-
   return {
-    tenant_id: membership.tenantId,
+    tenant_id: membership.tenant_id,
     membership_id: membership.id,
     membership_role: membership.role,
-    scope_set,
-    permission_policy_version,
+    permissions: effectivePermissions(membership.role, membership.granted_permissions, membership.revoked_permissions),
+    scope_set: toScopeSet(membership.access_scope_assignments),
+    permission_policy_version: await permissionPolicy.getCurrentVersion(),
   };
 }

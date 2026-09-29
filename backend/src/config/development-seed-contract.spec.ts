@@ -20,8 +20,9 @@ describe('development and CI seed contract', () => {
   // can do anything. This is exactly what admin-e2e-smoke caught.
   it('gives every seeded identity a Membership in a real Tenant', () => {
     expect(seed).toContain('Initial ATHR Demo Tenant');
-    expect(seed).toContain('prisma.membership.create');
-    expect(seed).toContain('tenantId: tenant_id');
+    expect(seed).toContain('memberships: {');
+    expect(seed).toContain('tenant_id,');
+    expect(seed).toContain('access_scope_assignments');
     // Membership has a Restrict FK to User, so it must be cleared first.
     expect(seed).toContain('prisma.membership.deleteMany()');
   });
@@ -53,13 +54,13 @@ describe('development and CI seed contract', () => {
 
   it('creates every operational role deterministically', () => {
     for (const role of [
-      'owner',
-      'branch_manager',
+      'tenant_owner',
+      'location_manager',
       'cashier',
       'warehouse_manager',
       'seller',
     ]) {
-      expect(seed).toContain(`role: '${role}'`);
+      expect(seed).toContain(`'${role}'`);
       expect(validator).toContain(`'${role}'`);
     }
 

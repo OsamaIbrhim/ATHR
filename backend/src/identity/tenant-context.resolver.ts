@@ -43,7 +43,7 @@ export class TenantContextResolver {
     }
 
     const membership = await this.prisma.membership.findUnique({
-      where: { identityId_tenantId: { identityId: input.authenticatedIdentityId, tenantId: input.requestedTenantId } },
+      where: { user_id_tenant_id: { user_id: input.authenticatedIdentityId, tenant_id: input.requestedTenantId } },
       include: { access_scope_assignments: true },
     });
 

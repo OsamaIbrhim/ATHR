@@ -4,7 +4,7 @@ import { OverridesRepository } from './overrides.repository';
 import { OverridesService } from './overrides.service';
 import { PricingService } from './pricing.service';
 import { CostVisibilityService } from './cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aProductVariant, aTaxCategory, aTaxCode, taxCategoryIdFor } from '../identity/testing/fixture-builders';
 import { TaxResolutionService } from '../tax/tax-resolution.service';
@@ -46,13 +46,11 @@ function setup() {
   );
   const pricing = new PricingService(prisma, new TaxResolutionService(prisma));
   const repository = new OverridesRepository(prisma);
-  const permissionPolicy = { hasPermission: jest.fn().mockResolvedValue(false) } as unknown as PermissionPolicyService;
-  const costVisibility = new CostVisibilityService({ hasPermission: async () => true } as unknown as PermissionPolicyService);
-  return { prisma, repository, service: new OverridesService(repository, pricing, permissionPolicy, costVisibility) };
+  return { prisma, repository, service: new OverridesService(repository, pricing, new CostVisibilityService()) };
 }
 
 function actor(overrides: Record<string, unknown> = {}) {
-  return { sub: randomUUID(), role: 'cashier', branch_id: null, membership_role: 'cashier', ...overrides } as any;
+  return actorFor('cashier', { sub: randomUUID(), granted: ['pricing.cost.view'], ...overrides });
 }
 
 describe('overrides/discounts — cross-tenant isolation', () => {

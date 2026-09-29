@@ -29,6 +29,7 @@ describe('SyncService incremental synchronization', () => {
   it('returns an unsigned protocol-v2 snapshot with a resumable cursor', async () => {
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
+      membership: { findMany: jest.fn().mockResolvedValue([]) },
       syncChange: {
         aggregate: jest
           .fn()
@@ -87,6 +88,7 @@ describe('SyncService incremental synchronization', () => {
     });
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
+      membership: { findMany: jest.fn().mockResolvedValue([]) },
       syncChange: { aggregate: jest.fn().mockReturnValue(cursor) },
       productVariant: { findMany: jest.fn().mockResolvedValue([]) },
       inventoryStock: { findMany: jest.fn().mockResolvedValue([]) },
@@ -115,6 +117,7 @@ describe('SyncService incremental synchronization', () => {
   it('returns only changed variants and branch stock after a cursor', async () => {
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
+      membership: { findMany: jest.fn().mockResolvedValue([]) },
       syncChange: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -173,6 +176,7 @@ describe('SyncService incremental synchronization', () => {
   it('returns an empty lightweight delta when nothing changed', async () => {
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
+      membership: { findMany: jest.fn().mockResolvedValue([]) },
       syncChange: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const result = await new SyncService(
@@ -235,6 +239,7 @@ describe('SyncService.attachProducts (chunked product batching)', () => {
   it('does not query product.findMany at all for zero variants', async () => {
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([]) },
+      membership: { findMany: jest.fn().mockResolvedValue([]) },
       syncChange: { aggregate: jest.fn().mockResolvedValue({ _max: { sequence: 1n } }) },
       productVariant: { findMany: jest.fn().mockResolvedValue([]) },
       product: { findMany: jest.fn() },
@@ -252,6 +257,7 @@ describe('SyncService.attachProducts (chunked product batching)', () => {
     const productFindMany = chunkedProductFindMany(products);
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([]) },
+      membership: { findMany: jest.fn().mockResolvedValue([]) },
       syncChange: { aggregate: jest.fn().mockResolvedValue({ _max: { sequence: 1n } }) },
       productVariant: { findMany: jest.fn().mockResolvedValue(variants) },
       product: { findMany: productFindMany },
@@ -271,6 +277,7 @@ describe('SyncService.attachProducts (chunked product batching)', () => {
     const productFindMany = chunkedProductFindMany(products);
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([]) },
+      membership: { findMany: jest.fn().mockResolvedValue([]) },
       syncChange: { aggregate: jest.fn().mockResolvedValue({ _max: { sequence: 1n } }) },
       productVariant: { findMany: jest.fn().mockResolvedValue(variants) },
       product: { findMany: productFindMany },
@@ -292,6 +299,7 @@ describe('SyncService.attachProducts (chunked product batching)', () => {
     const incompleteProducts = products.slice(0, 2);
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([]) },
+      membership: { findMany: jest.fn().mockResolvedValue([]) },
       syncChange: { aggregate: jest.fn().mockResolvedValue({ _max: { sequence: 1n } }) },
       productVariant: { findMany: jest.fn().mockResolvedValue(variants) },
       product: { findMany: chunkedProductFindMany(incompleteProducts) },

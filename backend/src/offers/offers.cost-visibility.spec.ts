@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { OffersService } from './offers.service';
 import { PricingService } from '../pricing/pricing.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aProductVariant, aTaxCategory, aTaxCode, anInventoryStock, taxCategoryIdFor } from '../identity/testing/fixture-builders';
 import { TaxResolutionService } from '../tax/tax-resolution.service';
@@ -34,15 +34,15 @@ const COST_PRICE = 50;
 /** Floor wins the max: suggested = max(95, 100 x 0.90) = 95, i.e. cost exactly. */
 const CLAMPING_COST_PRICE = 95;
 
-function actor(overrides: Record<string, unknown> = {}) {
-  return {
+/** Set by `setup()`: whether the actors built by `actor()` may see cost/margin. */
+let canSeeCost = true;
+
+function actor() {
+  return actorFor('location_manager', {
     sub: randomUUID(),
-    role: 'branch_manager',
-    branch_id: BRANCH_ID,
-    membership_role: 'location_manager',
-    capabilities: [],
-    ...overrides,
-  } as any;
+    branchId: BRANCH_ID,
+    revoked: canSeeCost ? [] : ['pricing.cost.view', 'pricing.margin.view'],
+  });
 }
 
 /** `hasCostView` drives the gate directly — see the block comment above. */
@@ -118,9 +118,8 @@ function setup(
     },
     { priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } } },
   );
-  const costVisibility = new CostVisibilityService({
-    hasPermission: async () => options.hasCostView,
-  } as unknown as PermissionPolicyService);
+  canSeeCost = options.hasCostView;
+  const costVisibility = new CostVisibilityService();
   return { prisma, service: new OffersService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), costVisibility) };
 }
 

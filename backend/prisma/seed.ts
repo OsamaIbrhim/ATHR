@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { MembershipRole, PrismaClient } from '@prisma/client';
 import * as bcryptjs from 'bcryptjs';
 
 const prisma = new PrismaClient();
@@ -103,32 +103,40 @@ async function main() {
   const { branch: b1, warehouse: w1 } = await createBranchWithWarehouse({ code: 'BOLD-01', name_ar: 'بولد – الفرع الرئيسي', name_en: 'Bold Main', address: 'طنطا', phone: '0400000000', cash_drawer_enabled: false });
   const { branch: b2, warehouse: w2 } = await createBranchWithWarehouse({ code: 'BOLD-02', name_ar: 'بولد – القاهرة الجديدة', name_en: 'Bold New Cairo', cash_drawer_enabled: true });
 
-  // Users
-  const owner = await prisma.user.create({ data: { name: 'Owner – أسامة', phone: '+200100000000', email: 'owner@bold.eg', password_hash, role: 'owner', branch_id: b1.id }});
-  const manager = await prisma.user.create({ data: { name: 'مدير فرع', phone: '+200100000001', email: 'manager@bold.eg', password_hash, role: 'branch_manager', branch_id: b1.id }});
-  const cashier = await prisma.user.create({ data: { name: 'كاشير', phone: '+200100000002', email: 'cashier@bold.eg', password_hash, role: 'cashier', branch_id: b1.id }});
-  const warehouse = await prisma.user.create({ data: { name: 'أمين مخزن', phone: '+200100000003', email: 'warehouse@bold.eg', password_hash, role: 'warehouse_manager', branch_id: b1.id }});
-  const seller = await prisma.user.create({ data: { name: 'بائع', phone: '+200100000004', email: 'seller@bold.eg', password_hash, role: 'seller', branch_id: b1.id }});
-
-  // WP-007 Phase A: one Membership per seeded identity, mapping the legacy
-  // Role enum exactly as migration 202608020003 does.
-  const membershipRoleFor = {
-    owner: 'tenant_owner',
-    branch_manager: 'location_manager',
-    cashier: 'cashier',
-    warehouse_manager: 'warehouse_manager',
-    seller: 'seller',
-  } as const;
-  for (const identity of [owner, manager, cashier, warehouse, seller]) {
-    await prisma.membership.create({
+  // Staff: a global User plus a Membership carrying the role and access scope.
+  // `all` = tenant-wide scope (owner, warehouse manager); otherwise the branch.
+  async function createStaff(
+    data: { name: string; phone: string; email: string },
+    role: MembershipRole,
+    scope: 'all' | { branch_id: string },
+  ) {
+    return prisma.user.create({
       data: {
-        tenantId: tenant_id,
-        identityId: identity.id,
-        role: membershipRoleFor[identity.role],
-        status: 'active',
+        ...data,
+        password_hash,
+        memberships: {
+          create: {
+            tenant_id,
+            role,
+            status: 'active',
+            access_scope_assignments: {
+              create: {
+                scope_type: scope === 'all' ? 'tenant_wide' : 'location',
+                scope_ref_id: scope === 'all' ? null : scope.branch_id,
+                grant_source: 'seed',
+              },
+            },
+          },
+        },
       },
     });
   }
+
+  const owner = await createStaff({ name: 'Owner – أسامة', phone: '+200100000000', email: 'owner@bold.eg' }, 'tenant_owner', 'all');
+  const manager = await createStaff({ name: 'مدير فرع', phone: '+200100000001', email: 'manager@bold.eg' }, 'location_manager', { branch_id: b1.id });
+  const cashier = await createStaff({ name: 'كاشير', phone: '+200100000002', email: 'cashier@bold.eg' }, 'cashier', { branch_id: b1.id });
+  const warehouse = await createStaff({ name: 'أمين مخزن', phone: '+200100000003', email: 'warehouse@bold.eg' }, 'warehouse_manager', 'all');
+  const seller = await createStaff({ name: 'بائع', phone: '+200100000004', email: 'seller@bold.eg' }, 'seller', { branch_id: b1.id });
 
   // Suppliers
   const s1 = await prisma.supplier.create({ data: { tenant_id, name: 'محمد', company_name: 'Mohamed Fabrics Co.', phone: '01222222222', alias_names: ['Mohamed Fabrics Co.', 'Mohamed Trading'] }});

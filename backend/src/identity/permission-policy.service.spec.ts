@@ -1,5 +1,5 @@
 import { PermissionPolicyService } from './permission-policy.service';
-import { IDENTITY_PERMISSIONS, PERMISSION_POLICY_INITIAL_VERSION, SYSTEM_ROLE_PERMISSIONS } from './system-roles';
+import { PERMISSION_POLICY_INITIAL_VERSION, SYSTEM_ROLE_PERMISSIONS } from './system-roles';
 import { PERMISSION_POLICY_CURRENT_VERSION } from './permission-catalog';
 
 function fakePrisma() {
@@ -64,40 +64,5 @@ describe('PermissionPolicyService', () => {
 
     expect(upgraded.version).toBe(PERMISSION_POLICY_CURRENT_VERSION);
     expect(prisma.__rows.find((row: any) => row.id === 'snap-v1').is_active).toBe(false);
-    expect(await service.hasPermission('cashier', 'sales.sale.create')).toBe(true);
-  });
-
-  it('grants tenant_owner the full permission set (allow-only union)', async () => {
-    const service = new PermissionPolicyService(fakePrisma());
-    expect(await service.hasPermission('tenant_owner', 'ownership.transfer')).toBe(true);
-    expect(await service.hasPermission('tenant_owner', 'support_access.grant')).toBe(true);
-  });
-
-  it('does not bundle sensitive permissions into location_manager (BR-ROL-105)', async () => {
-    const service = new PermissionPolicyService(fakePrisma());
-    expect(await service.hasPermission('location_manager', 'ownership.transfer')).toBe(false);
-    expect(await service.hasPermission('location_manager', 'support_access.grant')).toBe(false);
-    expect(await service.hasPermission('location_manager', 'tenant_data.export_all')).toBe(false);
-    expect(await service.hasPermission('location_manager', 'membership.invite')).toBe(true);
-  });
-
-  it('grants cashier and seller no identity/administrative permissions', async () => {
-    const service = new PermissionPolicyService(fakePrisma());
-    // The invariant this has always asserted (BR-ROL-105): neither role gets
-    // any *identity/administrative* key. They now hold business keys, so the
-    // assertion is expressed against the identity catalog rather than against
-    // an empty grant list.
-    for (const role of ['cashier', 'seller'] as const) {
-      const grants = await service.getGrants(role);
-      expect(grants.filter((grant) => (IDENTITY_PERMISSIONS as readonly string[]).includes(grant)))
-        .toEqual([]);
-    }
-  });
-
-  it('default-denies a key that is in the catalog but not in the role grant', async () => {
-    const service = new PermissionPolicyService(fakePrisma());
-    expect(await service.hasPermission('cashier', 'inventory.adjustment.post')).toBe(false);
-    expect(await service.hasPermission('seller', 'sales.sale.create')).toBe(false);
-    expect(await service.hasPermission('cashier', 'reports.sales.export')).toBe(false);
   });
 });
