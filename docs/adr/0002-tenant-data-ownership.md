@@ -84,7 +84,7 @@ Row-level isolation without RLS means correctness rests entirely on WP-006/WP-00
 
 ## Compatibility and Migration
 
-This ADR is the architectural basis for the Migration Sequence in `docs/runbooks/tenant-migration-backfill-rollback.md` (MT-MIG-000 through MT-MIG-004, WP-005 Phase B scope). No schema or migration is created by this ADR itself — see §A.4 of `docs/wp/WP-005-tenant-organization-location-schema.md` (Phase A must not touch `schema.prisma`).
+This ADR is the architectural basis for the tenant foundation schema (WP-005 Phase B scope; its migration history is now collapsed into `backend/prisma/migrations/000000000000_baseline`). No schema or migration is created by this ADR itself — see §A.4 of `docs/wp/WP-005-tenant-organization-location-schema.md` (Phase A must not touch `schema.prisma`).
 
 ## Validation / Acceptance
 

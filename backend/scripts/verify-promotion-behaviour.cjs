@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // WP-008 Phase D — database-level proof for the invariants that live in SQL,
 // not in application code. Runs against a real, freshly-migrated Postgres
-// (wired into the CI `migration-gate` job's `athr_migrations_clean` database),
+// (run by `npm run test:db`),
 // same convention as `verify-tax-code-behaviour.cjs`/`verify-price-book-
 // behaviour.cjs`.
 //

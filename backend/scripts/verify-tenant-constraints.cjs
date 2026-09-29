@@ -9,7 +9,7 @@
 //      scoped, not still effectively global).
 //
 // Runs against a real, freshly-migrated Postgres (wired into the CI
-// migration-gate job's `athr_migrations_clean` database). Not a jest spec:
+// `npm run test:db` (CI backend job)). Not a jest spec:
 // the `backend` CI job has no live database, matching the existing
 // perf/*.mjs convention for tests that need one.
 'use strict';
