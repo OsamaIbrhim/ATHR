@@ -1179,7 +1179,7 @@ enum InventoryMovementType {
 }
 
 model InventoryMovement {
-  id                String                @id @default(uuid()) @db.Uuid
+  id                String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sequence          BigInt                @unique @default(autoincrement())
   // WP-009 Phase A: same denormalization contract as InventoryStock.branch_id
   // (see the comment there) — branch_id stays stored and authoritative for
@@ -1226,7 +1226,7 @@ enum InventoryCostMovementType {
 }
 
 model InventoryCostMovement {
-  id                       String                    @id @default(uuid()) @db.Uuid
+  id                       String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sequence                 BigInt                    @unique @default(autoincrement())
   variant_id               String                    @db.Uuid
   variant                  ProductVariant            @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
@@ -1725,7 +1725,7 @@ enum TransferTransitMovementType {
 }
 
 model TransferTransitMovement {
-  id               String                      @id @default(uuid()) @db.Uuid
+  id               String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sequence         BigInt                      @unique @default(autoincrement())
   transfer_id      String                      @db.Uuid
   transfer         Transfer                    @relation(fields: [tenant_id, transfer_id], references: [tenant_id, id], onDelete: Restrict)
