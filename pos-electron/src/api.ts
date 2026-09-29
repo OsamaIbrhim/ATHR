@@ -33,6 +33,13 @@ type TerminalEvidence = {
   first_seen_at: number
 }
 
+/** Where a catalog pull starts: nothing (first snapshot page), a snapshot to resume, or a delta cursor. */
+export type PullPosition = {
+  cursor?: string | null
+  snapshot_after?: string
+  snapshot_cursor?: string
+}
+
 export type TerminalCredentialDisposition = 'ignore' | 'confirm' | 'clear'
 
 export class ApiError extends Error {
@@ -522,12 +529,16 @@ export const api = {
       body: { closing_cash: closingCash },
     }),
 
-  pull: (branchId: string, cursor?: string | null) =>
-    request<any>(
-      `/sync/pull?branch_id=${encodeURIComponent(branchId)}${
-        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
-      }`,
-    ),
+  pull: (branchId: string, position: PullPosition = {}) => {
+    const query = new URLSearchParams({ branch_id: branchId })
+    if (position.snapshot_cursor) {
+      query.set('snapshot_after', position.snapshot_after || '')
+      query.set('snapshot_cursor', position.snapshot_cursor)
+    } else if (position.cursor) {
+      query.set('cursor', position.cursor)
+    }
+    return request<any>(`/sync/pull?${query.toString()}`)
+  },
 
   heartbeat: (payload: any) =>
     request<any>('/terminals/heartbeat', {

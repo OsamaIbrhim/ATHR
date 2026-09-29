@@ -33,6 +33,11 @@ export function isValidQuantity(quantity: unknown, precision = QUANTITY_SCALE): 
   }
 }
 
+/** The shortest exact text for a quantity ("2", "1.235"). */
+export function formatQuantity(quantity: number): string {
+  return String(milliToQuantity(Math.round(quantity * 1000)))
+}
+
 export function addQuantity(left: number, right: number): number {
   return milliToQuantity(quantityToMilli(left) + quantityToMilli(right))
 }

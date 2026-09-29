@@ -7,6 +7,7 @@ import {
 } from './held-sale'
 import { fromCents, lineCents } from './money'
 import { minorUnitsToDecimal } from './money-codec'
+import { isValidQuantity } from './quantity'
 import { readSecureState } from './secure-state'
 
 /** The branch/cashier/shift the current secure state authorizes, or throws. */
@@ -61,7 +62,8 @@ export function hydrateHeldSale(row: any) {
     if (
       !product ||
       !isValidCatalogProduct(product) ||
-      !Number.isInteger(available) ||
+      !isValidQuantity(stored.qty, Number(product.uom_precision) || 0) ||
+      !Number.isFinite(available) ||
       available < stored.qty ||
       price <= 0
     ) {
@@ -89,7 +91,7 @@ export function hydrateHeldSale(row: any) {
     id: String(row.id),
     customer: parseHeldCustomer(row.customer_json),
     items,
-    item_count: items.reduce((sum, item) => sum + item.qty, 0),
+    item_count: items.length,
     total: fromCents(totalCents),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
@@ -103,7 +105,7 @@ function summarizeHeldSale(row: any) {
   } catch (error) {
     let itemCount = 0
     try {
-      itemCount = parseHeldSaleItems(row.items_json).reduce((sum, item) => sum + item.qty, 0)
+      itemCount = parseHeldSaleItems(row.items_json).length
     } catch {}
     let customer = null
     try {

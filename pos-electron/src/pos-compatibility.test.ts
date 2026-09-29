@@ -5,7 +5,7 @@ import {
 } from './pos-compatibility'
 
 const compatible = {
-  api_protocol: { minimum: 2, maximum: 2 },
+  api_protocol: { minimum: 2, maximum: 3 },
   minimum_pos_version: '1.4.0',
   backend_version: '1.8.0',
   deployment_sha: 'abc123',
@@ -16,7 +16,7 @@ describe('POS/backend compatibility', () => {
     expect(
       assertPosCompatibility(compatible, '1.4.0'),
     ).toEqual({
-      protocol: 2,
+      protocol: 3,
       backendVersion: '1.8.0',
       deploymentSha: 'abc123',
       minimumPosVersion: '1.4.0',
@@ -28,7 +28,7 @@ describe('POS/backend compatibility', () => {
       assertPosCompatibility(
         {
           ...compatible,
-          api_protocol: { minimum: 3, maximum: 3 },
+          api_protocol: { minimum: 4, maximum: 4 },
         },
         '1.4.0',
       ),
@@ -45,6 +45,15 @@ describe('POS/backend compatibility', () => {
         '1.3.4',
       ),
     ).toThrow('أقدم من الحد الأدنى')
+  })
+
+  it('blocks a backend that no longer supports this protocol', () => {
+    expect(() =>
+      assertPosCompatibility(
+        { ...compatible, api_protocol: { minimum: 2, maximum: 2 } },
+        '1.6.0',
+      ),
+    ).toThrowError(PosCompatibilityError)
   })
 
   it('fails closed for a malformed response', () => {

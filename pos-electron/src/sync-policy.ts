@@ -41,6 +41,19 @@ const AUTH_CODES = new Set([
   'UNAUTHORIZED',
 ])
 
+// The server refuses this build (too old, or a protocol it does not speak).
+// That says nothing about the sale itself: it must wait, never be quarantined,
+// so raising the minimum app version later cannot strand a completed sale.
+const UPDATE_REQUIRED_CODES = new Set([
+  'POS_UPDATE_REQUIRED',
+  'POS_PROTOCOL_UNSUPPORTED',
+  'POS_PROTOCOL_HEADER_REQUIRED',
+])
+
+export function isUpdateRequiredError(error: unknown) {
+  return error instanceof ApiError && UPDATE_REQUIRED_CODES.has(error.code)
+}
+
 export function retryDelayMs(attempt: number, retryAfterMs?: number) {
   if (Number.isFinite(retryAfterMs) && Number(retryAfterMs) > 0) {
     return Math.min(15 * 60_000, Math.max(1_000, Number(retryAfterMs)))
@@ -116,6 +129,14 @@ export function classifySyncError(
   if (!(error instanceof ApiError)) {
     return block('unknown', 'SYNC_UNKNOWN_ERROR_REVIEW_REQUIRED')
   }
+  if (isUpdateRequiredError(error)) {
+    // Retryable (the sale stays pending) but reported as blocked so the
+    // cashier sees why; the backoff re-tries after an update or a server fix.
+    return {
+      ...retry('compatibility', attempt, nowMs, undefined, operationId),
+      blockedReason: error.code,
+    }
+  }
   if (error.code === 'NETWORK_ERROR' || error.status === 408) {
     return retry('network', attempt, nowMs, undefined, operationId)
   }
@@ -164,6 +185,9 @@ export function formatSyncError(error: unknown) {
     : String(error || 'Unknown synchronization error')
 
   if (error instanceof ApiError) {
+    if (isUpdateRequiredError(error)) {
+      return `${message} — تم إيقاف المزامنة. الفواتير المكتملة محفوظة على هذا الجهاز وستُرسل تلقائيًا بعد تحديث نقطة البيع أو الخادم. — code=${error.code}`
+    }
     const values = [
       error.code ? `code=${error.code}` : '',
       error.status ? `http=${error.status}` : '',

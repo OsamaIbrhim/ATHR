@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { catalogNeedsFullRefresh, requireFullCatalogRefresh } from './db/catalog'
+import { catalogNeedsFullRefresh, requireFullCatalogRefresh, snapshotProgress } from './db/catalog'
 import { initDb } from './db/connection'
 import { requeueInterruptedSends } from './db/outbox'
 import { getMeta, setMeta } from './db/queries'
@@ -51,6 +51,6 @@ export function openLocalDatabase() {
   alignLocalSequence(readSecureState().accounting)
 
   // A catalog from another protocol must be replaced atomically before it is
-  // used for a v2 sale.
-  if (catalogNeedsFullRefresh()) requireFullCatalogRefresh()
+  // used for a sale. An interrupted snapshot is kept: the next sync resumes it.
+  if (!snapshotProgress() && catalogNeedsFullRefresh()) requireFullCatalogRefresh()
 }

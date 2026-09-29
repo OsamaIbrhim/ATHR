@@ -1,8 +1,8 @@
+import type { ScanResult } from '../electron/scan-types'
 import {
   Customer,
   HeldSale,
   OfflineAccountingContext,
-  Product,
   Seller,
   SyncState,
 } from './types'
@@ -105,7 +105,7 @@ export type FactoryResetStatus = {
 }
 
 export type AthrBridge = {
-  search(query: string): Promise<Product[]>
+  scan(term: string): Promise<ScanResult>
   stock(variantId: string): Promise<number>
   sellers(): Promise<Seller[]>
 

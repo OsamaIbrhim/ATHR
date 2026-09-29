@@ -30,6 +30,15 @@ describe('held sale validation', () => {
     ])
   })
 
+  it('accepts decimal quantities up to three places and rejects finer ones', () => {
+    expect(validateHeldSaleItems([{ variant_id: variantOne, qty: 1.235 }])).toEqual([
+      { variant_id: variantOne, qty: 1.235 },
+    ])
+    for (const qty of [0, 1.2345, Number.NaN, 100_000_000]) {
+      expect(() => validateHeldSaleItems([{ variant_id: variantOne, qty }])).toThrow(/quantity/i)
+    }
+  })
+
   it('rejects duplicate variants and invalid quantities', () => {
     expect(() =>
       validateHeldSaleItems([

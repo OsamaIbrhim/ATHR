@@ -62,6 +62,24 @@ describe('POS synchronization retry policy', () => {
     })
   })
 
+  it('waits, never quarantines, when the server refuses this app version or protocol', () => {
+    for (const [code, status] of [
+      ['POS_UPDATE_REQUIRED', 426],
+      ['POS_PROTOCOL_UNSUPPORTED', 409],
+      ['POS_PROTOCOL_HEADER_REQUIRED', 426],
+    ] as const) {
+      expect(classifySyncError(new ApiError({ code }, status), 1, 0)).toMatchObject({
+        retryable: true,
+        failureClass: 'compatibility',
+        blockedReason: code,
+        nextAttemptAt: new Date(15_000).toISOString(),
+      })
+    }
+    // Other 4xx statuses still quarantine (a 409 payload conflict is not an update problem).
+    expect(classifySyncError(new ApiError({ code: 'SALE_PAYLOAD_CONFLICT' }, 409)).retryable).toBe(false)
+    expect(classifySyncError(new ApiError({}, 426)).retryable).toBe(false)
+  })
+
   it('never converts a temporary server outage into a lost sale', () => {
     expect(classifySyncError(
       new ApiError({ code: 'INTERNAL_ERROR' }, 500),
