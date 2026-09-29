@@ -20,7 +20,6 @@ model Branch {
   is_active                Boolean                 @default(true)
   created_at               DateTime                @default(now())
   tenant_id                String                  @db.Uuid
-  users                    User[]
   inventory                InventoryStock[]
   inventory_movements      InventoryMovement[]
   inventory_cost_movements InventoryCostMovement[]
@@ -43,15 +42,10 @@ model Branch {
 
 model User {
   id                         String                      @id @default(uuid()) @db.Uuid
-  branch_id                  String?                     @db.Uuid
-  branch                     Branch?                     @relation(fields: [branch_id], references: [id])
   name                       String
   phone                      String?                     @unique
   email                      String?                     @unique
   password_hash              String
-  role                       Role
-  granted_capabilities       String[]                    @default([])
-  revoked_capabilities       String[]                    @default([])
   is_active                  Boolean                     @default(true)
   created_at                 DateTime                    @default(now())
   created_returns            Return[]                    @relation("ReturnCreatedBy")
@@ -85,20 +79,15 @@ model RefreshToken {
   id         String    @id @default(uuid()) @db.Uuid
   user_id    String    @db.Uuid
   user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  // The tenant this session was issued for; refresh re-issues for the same one.
+  tenant_id  String?   @db.Uuid
+  tenant     Tenant?   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   token_hash String    @unique
   expires_at DateTime
   revoked_at DateTime?
   created_at DateTime  @default(now())
 
   @@index([user_id, expires_at])
-}
-
-enum Role {
-  owner
-  branch_manager
-  cashier
-  warehouse_manager
-  seller
 }
 
 // WP-005 Phase B (MT-MIG-001/002/003): Tenant/Organization/LegalEntity/Location/
@@ -131,6 +120,7 @@ model Tenant {
   locations             Location[]
   warehouses            Warehouse[]
   memberships           Membership[]
+  refresh_tokens        RefreshToken[]
   invitations           Invitation[]
   support_access_grants SupportAccessGrant[]
 }
@@ -157,10 +147,7 @@ model LegalEntity {
   @@index([tenant_id])
 }
 
-// NOTE: tenantId/identityId are camelCase (not this file's usual snake_case)
-// because they were fixed by the original tenant foundation design and
-// existing queries reference them as `l."tenantId"`, `m."tenantId"`,
-// `m."identityId"`.
+// NOTE: Location keeps a camelCase `tenantId` (legacy); removed with Location in W1b.
 model Location {
   id              String      @id @default(uuid()) @db.Uuid
   tenantId        String      @db.Uuid
@@ -223,18 +210,22 @@ enum MembershipStatus {
 
 model Membership {
   id                       String                  @id @default(uuid()) @db.Uuid
-  tenantId                 String                  @db.Uuid
-  tenant                   Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  identityId               String                  @db.Uuid
-  identity                 User                    @relation(fields: [identityId], references: [id], onDelete: Restrict)
+  tenant_id                String                  @db.Uuid
+  tenant                   Tenant                  @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
+  user_id                  String                  @db.Uuid
+  user                     User                    @relation(fields: [user_id], references: [id], onDelete: Restrict)
   role                     MembershipRole
   status                   MembershipStatus        @default(active)
+  // Effective permissions = role defaults + granted - revoked (permission keys
+  // from identity/permission-catalog.ts).
+  granted_permissions      String[]                @default([])
+  revoked_permissions      String[]                @default([])
   created_at               DateTime                @default(now())
   updated_at               DateTime                @updatedAt
   access_scope_assignments AccessScopeAssignment[]
 
-  @@unique([identityId, tenantId])
-  @@index([tenantId])
+  @@unique([user_id, tenant_id])
+  @@index([tenant_id])
 }
 
 // WP-006 (MT-MIG-005's identity/permission half only — see
