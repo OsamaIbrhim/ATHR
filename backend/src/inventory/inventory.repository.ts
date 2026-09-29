@@ -14,6 +14,19 @@ export type InventoryReconciliationRow = {
   last_movement_at: Date | null;
 };
 
+/**
+ * Stock columns a reader may see. `avg_cost` is a cost: it stays out of the
+ * position lookup, which only needs `inventory.position.view`.
+ */
+export const STOCK_QUANTITY_COLUMNS = {
+  warehouse_id: true,
+  variant_id: true,
+  tenant_id: true,
+  qty_on_hand: true,
+  qty_reserved: true,
+  last_sold_at: true,
+} as const;
+
 /** Stock is keyed by warehouse; admin/POS consumers still read the owning branch off each row. */
 function withBranch<T extends { warehouse: { branch_id: string | null; branch: unknown } }>(row: T) {
   return { ...row, branch_id: row.warehouse.branch_id, branch: row.warehouse.branch };
@@ -32,7 +45,7 @@ export class InventoryRepository {
         qty_on_hand: { gt: 0 },
         ...(branchId ? { warehouse: { branch_id: branchId } } : {}),
       },
-      include: { warehouse: { include: { branch: true } } },
+      select: { ...STOCK_QUANTITY_COLUMNS, warehouse: { include: { branch: true } } },
     });
     return rows.map(withBranch);
   }

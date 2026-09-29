@@ -151,30 +151,42 @@ async function lockRows(tx: Tx, command: ApplyStockCommand, variantIds: string[]
 }
 
 async function lockOrCreateRows(tx: Tx, command: ApplyStockCommand, variantIds: string[]) {
-  let rows = await lockRows(tx, command, variantIds);
-  if (rows.length < variantIds.length) {
-    // First sight of some variants in this warehouse: create their rows
-    // (seeded with the variant's catalog cost), then lock what is still missing.
-    const have = new Set(rows.map((row) => row.variant_id));
-    const missing = variantIds.filter((id) => !have.has(id));
-    const created = await tx.$queryRaw<Array<{ variant_id: string }>>`
-      INSERT INTO "InventoryStock" ("tenant_id", "warehouse_id", "variant_id", "avg_cost")
-      SELECT ${command.tenantId}::uuid, ${command.warehouseId}::uuid, v."id", v."cost_price"
-      FROM "ProductVariant" v
-      WHERE v."tenant_id" = ${command.tenantId}::uuid
-        AND v."id" = ANY(${missing}::uuid[])
-        AND v."item_type" = 'stocked'
-      ORDER BY v."id"
-      ON CONFLICT ("warehouse_id", "variant_id") DO NOTHING
-      RETURNING "variant_id"
+  const rows = new Map((await lockRows(tx, command, variantIds)).map((row) => [row.variant_id, row]));
+  if (rows.size < variantIds.length) {
+    // First sight of some variants in this warehouse: one statement creates
+    // their rows (seeded with the variant's catalog cost) and reports which
+    // stocked variants it created. Non-stocked variants do not appear at all.
+    const missing = variantIds.filter((id) => !rows.has(id));
+    const stocked = await tx.$queryRaw<Array<{ variant_id: string; cost_price: Prisma.Decimal; inserted: boolean }>>`
+      WITH stocked AS (
+        SELECT v."id", v."cost_price"
+        FROM "ProductVariant" v
+        WHERE v."tenant_id" = ${command.tenantId}::uuid
+          AND v."id" = ANY(${missing}::uuid[])
+          AND v."item_type" = 'stocked'
+        ORDER BY v."id"
+      ),
+      created AS (
+        INSERT INTO "InventoryStock" ("tenant_id", "warehouse_id", "variant_id", "avg_cost")
+        SELECT ${command.tenantId}::uuid, ${command.warehouseId}::uuid, "id", "cost_price" FROM stocked
+        ON CONFLICT ("warehouse_id", "variant_id") DO NOTHING
+        RETURNING "variant_id"
+      )
+      SELECT s."id" AS "variant_id", s."cost_price",
+             (s."id" IN (SELECT "variant_id" FROM created)) AS "inserted"
+      FROM stocked s
     `;
-    const createdIds = new Set(created.map((row) => row.variant_id));
-    const rest = missing.filter((id) => !createdIds.has(id));
-    // Rows created by a concurrent transaction, or non-stocked variants.
-    const relocked = created.length || rest.length ? await lockRows(tx, command, missing) : [];
-    rows = [...rows, ...relocked];
+    const zero = new Prisma.Decimal(0);
+    for (const row of stocked.filter((candidate) => candidate.inserted)) {
+      rows.set(row.variant_id, { variant_id: row.variant_id, qty_on_hand: zero, qty_reserved: zero, avg_cost: row.cost_price });
+    }
+    // Rows another transaction created a moment ago: lock them like any other row.
+    const concurrent = stocked.filter((candidate) => !candidate.inserted).map((candidate) => candidate.variant_id);
+    if (concurrent.length) {
+      for (const row of await lockRows(tx, command, concurrent)) rows.set(row.variant_id, row);
+    }
   }
-  return new Map(rows.map((row) => [row.variant_id, row]));
+  return rows;
 }
 
 async function insertMovements(tx: Tx, command: ApplyStockCommand, planned: PlannedLine[]) {
@@ -200,6 +212,13 @@ async function insertMovements(tx: Tx, command: ApplyStockCommand, planned: Plan
       ${planned.map((p) => p.line.referenceLineId ?? '')}::text[],
       ${planned.map((p) => metadataText(command, p.line))}::text[]
     ) AS u("variant_id", "delta", "after", "reserved", "line_id", "metadata")
+    -- A key that already holds rows of other variants belongs to another command.
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "InventoryMovement" other
+      WHERE other."tenant_id" = ${command.tenantId}::uuid
+        AND other."idempotency_key" = ${command.idempotencyKey}
+        AND other."variant_id" <> ALL(${planned.map((p) => p.line.variantId)}::uuid[])
+    )
     ON CONFLICT ("tenant_id", "idempotency_key", "variant_id") DO NOTHING
     RETURNING "variant_id"
   `;

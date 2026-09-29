@@ -76,8 +76,9 @@ jobs:
         working-directory: ${{ github.workspace }}
       - run: npx prisma migrate deploy
       - run: npm run prisma:seed
-      - run: npm run perf:seed
+      # perf:seed writes stock through the compiled InventoryService.
       - run: npm run build
+      - run: npm run perf:seed
       - name: Start API
         run: |
           npm run start:prod > /tmp/athr-api.log 2>&1 &

@@ -53,6 +53,15 @@ describe('InventoryService', () => {
     expect(rows[0]).toMatchObject({ branch_id: 'branch-1', branch: { name_ar: 'الفرع' } });
   });
 
+  it('never selects the warehouse average cost for a position lookup', async () => {
+    const { service, prisma } = setup();
+    await service.lookup(ctx, 'variant-1');
+
+    const { select } = prisma.inventoryStock.findMany.mock.calls[0][0];
+    expect(select).toMatchObject({ qty_on_hand: true, qty_reserved: true });
+    expect(select).not.toHaveProperty('avg_cost');
+  });
+
   it('lists immutable movements in business occurrence order', async () => {
     const { service, prisma } = setup();
     const rows = await service.movements(ctx, 'variant-1', 'branch-1', 50);

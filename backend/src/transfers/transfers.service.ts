@@ -64,6 +64,23 @@ type TransitRow = {
 
 const ZERO = new Prisma.Decimal(0);
 
+/**
+ * Transfer line columns exposed to API callers. `unit_cost` (the source average
+ * cost carried to the destination) is deliberately absent: like every cost it
+ * is not something a transfer reader may see.
+ */
+const ITEM_COLUMNS = {
+  id: true,
+  tenant_id: true,
+  transfer_id: true,
+  variant_id: true,
+  qty: true,
+  shipped_qty: true,
+  received_qty: true,
+  damaged_qty: true,
+  missing_qty: true,
+} as const;
+
 @Injectable()
 export class TransfersService {
   constructor(
@@ -79,7 +96,7 @@ export class TransfersService {
           ? { OR: [{ from_branch_id: branch_id }, { to_branch_id: branch_id }] }
           : {}),
       },
-      include: { from_branch: true, to_branch: true, items: true },
+      include: { from_branch: true, to_branch: true, items: { select: ITEM_COLUMNS } },
       orderBy: { created_at: 'desc' },
       take: 50,
     });
@@ -91,7 +108,7 @@ export class TransfersService {
       include: {
         from_branch: true,
         to_branch: true,
-        items: { include: { variant: { include: { product: true } } } },
+        items: { select: { ...ITEM_COLUMNS, variant: { include: { product: true } } } },
       },
     });
     if (!transfer) throw new NotFoundException('Transfer not found');
@@ -105,7 +122,7 @@ export class TransfersService {
     const items = await this.prisma.$queryRaw<TransferItemState[]>`
       SELECT
         "id", "variant_id", "qty", "shipped_qty", "received_qty",
-        "damaged_qty", "missing_qty", "unit_cost"
+        "damaged_qty", "missing_qty"
       FROM "TransferItem"
       WHERE "transfer_id" = ${id}::uuid
         AND "tenant_id" = ${context.tenantId}::uuid
@@ -712,7 +729,7 @@ export class TransfersService {
   ) {
     return tx.transfer.findFirstOrThrow({
       where: { id, tenant_id: context.tenantId },
-      include: { items: true, from_branch: true, to_branch: true },
+      include: { items: { select: ITEM_COLUMNS }, from_branch: true, to_branch: true },
     });
   }
 

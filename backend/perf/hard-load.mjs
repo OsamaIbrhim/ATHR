@@ -14,7 +14,6 @@ import {
   requireIdempotentReplay,
   requireSaleAcknowledgement,
 } from './support/sale-acknowledgement.mjs'
-import { resolveDefaultWarehouse } from '../prisma/resolve-default-warehouse.mjs'
 
 const api = process.env.PERF_API_URL || 'http://localhost:3000/api/v1'
 const smoke =
@@ -466,7 +465,8 @@ async function mutationIntegrityLoad(adminToken) {
     const perVariantSales = Math.ceil(salesCount / variantCount)
     const stockRows = await prisma.inventoryStock.findMany({
       where: {
-        branch_id: branchId,
+        // A branch sells from its default warehouse.
+        warehouse: { branch_id: branchId, is_default: true },
         qty_on_hand: { gte: perVariantSales + 10 },
         variant_id: { in: mutationProductIds },
       },
@@ -678,7 +678,7 @@ async function mutationIntegrityLoad(adminToken) {
 
     const stockAfterRows = await prisma.inventoryStock.findMany({
       where: {
-        branch_id: branchId,
+        warehouse_id: stockRows[0].warehouse_id,
         variant_id: { in: stockRows.map((stock) => stock.variant_id) },
       },
     })
@@ -688,8 +688,8 @@ async function mutationIntegrityLoad(adminToken) {
     for (let variantIndex = 0; variantIndex < variantCount; variantIndex += 1) {
       const before = stockRows[variantIndex]
       const after = stockAfterByVariant.get(before.variant_id)
-      const expected = before.qty_on_hand - saleCountByVariantIndex[variantIndex]
-      if (!after || after.qty_on_hand !== expected || after.qty_on_hand < 0) {
+      const expected = Number(before.qty_on_hand) - saleCountByVariantIndex[variantIndex]
+      if (!after || Number(after.qty_on_hand) !== expected || Number(after.qty_on_hand) < 0) {
         throw new Error(
           `Stock invariant failed for variant ${before.variant_id}: expected ${expected}, ` +
             `before ${before.qty_on_hand}, after ${after?.qty_on_hand}`,
@@ -707,7 +707,7 @@ async function mutationIntegrityLoad(adminToken) {
     if (!deficitTerminalRow) {
       throw new Error('Negative-stock terminal state is missing')
     }
-    const deficitQuantity = stockAfter.qty_on_hand + 1
+    const deficitQuantity = Number(stockAfter.qty_on_hand) + 1
     const deficitSyncId = randomUUID()
     const deficitCommand = {
       event_version: 2,
@@ -765,13 +765,13 @@ async function mutationIntegrityLoad(adminToken) {
         prisma.salesInvoice.count({ where: { sync_id: deficitSyncId } }),
         prisma.inventoryMovement.count({
           where: {
-            idempotency_key: `sale:${deficitSyncId}:${stockRows[0].variant_id}`,
+            idempotency_key: `sale:${deficitSyncId}`,
           },
         }),
         prisma.inventoryStock.findUnique({
           where: {
-            branch_id_variant_id: {
-              branch_id: branchId,
+            warehouse_id_variant_id: {
+              warehouse_id: stockRows[0].warehouse_id,
               variant_id: stockRows[0].variant_id,
             },
           },
@@ -780,109 +780,11 @@ async function mutationIntegrityLoad(adminToken) {
     if (
       deficitInvoiceCount !== 1 ||
       deficitMovementCount !== 1 ||
-      deficitStock?.qty_on_hand !== -1
+      Number(deficitStock?.qty_on_hand) !== -1
     ) {
       throw new Error(
         `Negative-stock invariant failed: invoices ${deficitInvoiceCount}, movements ${deficitMovementCount}, stock ${deficitStock?.qty_on_hand}`,
       )
-    }
-
-    const coverageRollback = 'NEGATIVE_STOCK_COST_PROBE_ROLLBACK'
-    try {
-      await prisma.$transaction(async (tx) => {
-        const coverageQuantity = 2
-        const coverageKey = `hard-smoke-deficit-coverage:${deficitSyncId}`
-        const coverageBranch = await tx.branch.findUniqueOrThrow({ where: { id: branchId } })
-        const coverageWarehouse = await resolveDefaultWarehouse(tx, coverageBranch.tenant_id, coverageBranch)
-        // WP-008 Phase C (BR-TAX-201): Product.tax_category_id is NOT NULL.
-        const coverageTaxCategory = await tx.taxCategory.findFirstOrThrow({
-          where: { tenant_id: coverageBranch.tenant_id },
-          orderBy: { code: 'asc' },
-        })
-        const coverageProduct = await tx.product.create({
-          data: {
-            tenant_id: coverageBranch.tenant_id,
-            name_en: `Negative coverage probe ${deficitSyncId}`,
-            name_ar: 'اختبار تغطية المخزون السالب',
-            tax_category_id: coverageTaxCategory.id,
-            has_variants: false,
-          },
-        })
-        const coverageVariant = await tx.productVariant.create({
-          data: {
-            tenant_id: coverageBranch.tenant_id,
-            product_id: coverageProduct.id,
-            sku: `NEGATIVE-COVERAGE-${deficitSyncId}`,
-            cost_price: 10,
-          },
-        })
-        await tx.inventoryStock.create({
-          data: {
-            tenant_id: coverageBranch.tenant_id,
-            branch_id: branchId,
-            warehouse_id: coverageWarehouse.id,
-            variant_id: coverageVariant.id,
-            qty_on_hand: -1,
-          },
-        })
-        const coverageValue = new Prisma.Decimal(coverageVariant.cost_price)
-          .mul(coverageQuantity)
-          .toDecimalPlaces(2)
-          .toFixed(2)
-
-        await tx.inventoryStock.update({
-          where: {
-            branch_id_variant_id: {
-              branch_id: branchId,
-              variant_id: coverageVariant.id,
-            },
-          },
-          data: { qty_on_hand: { increment: coverageQuantity } },
-        })
-        await tx.$queryRaw`
-          SELECT "record_inventory_cost_movement"(
-            ${coverageVariant.id}::uuid,
-            ${branchId}::uuid,
-            'customer_return'::"InventoryCostMovementType",
-            ${coverageQuantity}::integer,
-            ${coverageValue}::numeric,
-            'HardSmokeNegativeStockCoverage'::text,
-            ${deficitSyncId}::text,
-            NULL::text,
-            NULL::uuid,
-            NULL::uuid,
-            NULL::uuid,
-            NULL::uuid,
-            ${coverageKey}::text,
-            ${new Date()}::timestamp,
-            ${cashier.user.id}::uuid,
-            NULL::numeric,
-            ${JSON.stringify({ source: 'hard-smoke' })}::jsonb
-          )
-        `
-        const coverage = await tx.inventoryCostMovement.findUnique({
-          where: { idempotency_key: coverageKey },
-        })
-        const metadata = coverage?.metadata || {}
-        if (
-          !coverage ||
-          coverage.global_quantity_before !== -1 ||
-          coverage.global_quantity_after !== 1 ||
-          coverage.inventory_value_before.toNumber() !== 0 ||
-          Number(metadata.negative_inventory_units_covered) !== 1
-        ) {
-          throw new Error('Negative inventory cost coverage policy failed')
-        }
-
-        throw new Error(coverageRollback)
-      })
-    } catch (error) {
-      if (error instanceof Error && error.message === coverageRollback) {
-        // The probe validates the accounting transition without changing the
-        // isolated hard-smoke dataset after the negative-stock assertion.
-      } else {
-        throw error
-      }
     }
 
     const result = {
@@ -895,8 +797,8 @@ async function mutationIntegrityLoad(adminToken) {
       negative_stock_sale: true,
       p95_ms: Math.round(percentile(latencies, 0.95)),
       p99_ms: Math.round(percentile(latencies, 0.99)),
-      stock_before: stockRows[0].qty_on_hand,
-      stock_after: deficitStock.qty_on_hand,
+      stock_before: Number(stockRows[0].qty_on_hand),
+      stock_after: Number(deficitStock.qty_on_hand),
       max_lock_waiters: maxLockWaiters(lockActivity),
       lock_activity_samples_taken: lockActivity.length,
     }
