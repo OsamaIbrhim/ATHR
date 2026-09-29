@@ -1,12 +1,13 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
-import { apiGet, getStoredUser } from '@/lib/api'
+import { apiGet } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { loadDashboardData } from '@/lib/dashboard'
 import { hasCapability, type Capability } from '@/lib/permissions'
 import { businessDate } from '@/lib/business-time'
 
 export default function Dashboard(){
-  const user = getStoredUser()
+  const user = useSessionUser()
   const quickLinks: { href: string; label: string; capability: Capability; className: string }[] = [
     { href: '/products', label: 'المنتجات', capability: 'products.read', className: 'btn' },
     { href: '/sales', label: 'المبيعات', capability: 'sales.read', className: 'btn' },

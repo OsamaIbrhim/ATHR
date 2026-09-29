@@ -1,13 +1,14 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
-import { apiDelete, apiGet, apiPost, getStoredUser } from '@/lib/api'
+import { apiDelete, apiGet, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { hasCapability } from '@/lib/permissions'
 import { parseProductCost } from '@/lib/product-cost'
 
 type ProductResponse = { items:any[]; page:number; page_size:number; total:number; total_pages:number; suggestions?:{value:string;label:string}[] }
 
 export default function ProductsPage(){
-  const canManage = hasCapability(getStoredUser(), 'products.manage')
+  const canManage = hasCapability(useSessionUser(), 'products.manage')
   const [query,setQuery] = useState('')
   const [appliedQuery,setAppliedQuery] = useState('')
   const [page,setPage] = useState(1)

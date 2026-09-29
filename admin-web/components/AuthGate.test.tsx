@@ -1,11 +1,12 @@
 import React from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import AuthGate from './AuthGate'
+import AuthGate, { useSessionUser } from './AuthGate'
 
-const { apiGet, apiLogout, replace, router } = vi.hoisted(() => {
+const { apiGet, apiLogout, replace, router, nav } = vi.hoisted(() => {
   const replace = vi.fn()
   return {
+  nav: { pathname: '/reports' },
   apiGet: vi.fn(),
   apiLogout: vi.fn(),
   replace,
@@ -14,7 +15,7 @@ const { apiGet, apiLogout, replace, router } = vi.hoisted(() => {
 })
 
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/reports',
+  usePathname: () => nav.pathname,
   useRouter: () => router,
 }))
 
@@ -49,5 +50,29 @@ describe('AuthGate', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'إعادة المحاولة' }))
 
     await waitFor(() => expect(screen.getByText('بيانات مالية محمية')).toBeInTheDocument())
+  })
+
+  it('loads the session once and keeps children mounted across navigation', async () => {
+    nav.pathname = '/reports'
+    apiGet.mockResolvedValue({ id: 'owner-1', name: 'Owner', capabilities: ['reports.read', 'sales.read'] })
+    const Page = () => <div>مرحبا {useSessionUser()?.name}</div>
+    const { rerender } = render(<AuthGate><Page /></AuthGate>)
+    expect(await screen.findByText('مرحبا Owner')).toBeInTheDocument()
+
+    nav.pathname = '/sales'
+    rerender(<AuthGate><Page /></AuthGate>)
+
+    expect(screen.getByText('مرحبا Owner')).toBeInTheDocument()
+    expect(apiGet).toHaveBeenCalledTimes(1)
+    nav.pathname = '/reports'
+  })
+
+  it('redirects to login when the session is gone', async () => {
+    const { ApiError } = await import('@/lib/api')
+    apiGet.mockRejectedValue(new ApiError({ code: 'UNAUTHORIZED' }, 401))
+    render(<AuthGate><div>محمي</div></AuthGate>)
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(expect.stringContaining('/login?next=')))
+    expect(screen.queryByText('محمي')).not.toBeInTheDocument()
   })
 })
