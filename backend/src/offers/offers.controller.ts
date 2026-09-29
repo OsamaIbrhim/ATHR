@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
+import { PageQueryDto } from '../common/page-query.dto';
 import { OffersService } from './offers.service';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
@@ -17,9 +18,10 @@ export class OffersController {
   list(
     @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string | undefined,
+    @Query() paging: PageQueryDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.suggestions(ctx, req.user, resolveBranchScope(req.user, branch_id));
+    return this.svc.suggestions(ctx, req.user, resolveBranchScope(req.user, branch_id), paging);
   }
 
   @RequirePermission('promotion.approve')

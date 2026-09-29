@@ -1,3 +1,4 @@
+import { PageQueryDto } from '../common/page-query.dto';
 import {
   Body,
   Controller,
@@ -30,9 +31,10 @@ export class ShiftsController {
   list(
     @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string | undefined,
+    @Query() paging: PageQueryDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.list(ctx, resolveBranchScope(req.user, branch_id));
+    return this.svc.list(ctx, resolveBranchScope(req.user, branch_id), paging);
   }
 
   @RequirePermission('shift.view')

@@ -113,27 +113,18 @@ function setupSale(options: {
   itemType?: string;
   uomPrecision?: number;
 } = {}) {
-  let rawCall = 0;
   const tx = {
-    $queryRaw: jest.fn().mockImplementation(() => {
-      rawCall += 1;
-      if (rawCall === 1) {
-        return Promise.resolve([
-          {
-            id: terminal.id,
-            branch_id: branchId,
-            last_sale_sequence: options.lastSequence ?? 0n,
-          },
-        ]);
-      }
-      return Promise.resolve([]);
-    }),
-    branch: {
-      findFirst: jest.fn().mockResolvedValue({
-        id: branchId,
-        code: 'BOLD-01',
-      }),
-    },
+    // The terminal claim (lock + advance + branch code); the customer upsert is
+    // the only other raw statement a sale issues.
+    $queryRaw: jest.fn().mockImplementation(() =>
+      Promise.resolve([
+        {
+          branch_id: branchId,
+          branch_code: 'BOLD-01',
+          previous_sequence: options.lastSequence ?? 0n,
+        },
+      ]),
+    ),
     shift: {
       // Both the by-id lookup (sale) and the open-shift lookup (return) are
       // now tenant-scoped `findFirst` calls, so one double serves both and
@@ -161,43 +152,26 @@ function setupSale(options: {
     },
     // Staff are looked up through their Membership (role + branch scope).
     membership: {
-      findFirst: jest.fn().mockImplementation(({ where }) => {
+      findMany: jest.fn().mockImplementation(() => {
         const scope = [
           { scope_type: 'location', scope_ref_id: branchId, effective_from: new Date('2020-01-01'), effective_to: null },
         ];
-        if (where.user_id === sellerId) {
-          return Promise.resolve(
-            options.missingSeller
-              ? null
-              : { user_id: sellerId, role: 'seller', access_scope_assignments: scope },
-          );
-        }
-        return Promise.resolve(
-          options.missingCashier
-            ? null
-            : { user_id: cashierId, role: 'cashier', access_scope_assignments: scope },
-        );
+        return Promise.resolve([
+          ...(options.missingCashier ? [] : [{ user_id: cashierId, role: 'cashier', access_scope_assignments: scope }]),
+          ...(options.missingSeller ? [] : [{ user_id: sellerId, role: 'seller', access_scope_assignments: scope }]),
+        ]);
       }),
     },
-    posTerminal: {
-      update: jest.fn().mockResolvedValue({}),
-    },
     salesInvoice: {
-      // Both the sync-id replay lookup and the terminal-sequence owner check
-      // are tenant-scoped findFirst calls now; discriminate on the filter.
-      findFirst: jest.fn().mockImplementation(({ where }) =>
-        Promise.resolve(where?.sync_id ? (options.existing ?? null) : null),
+      // One lookup finds both the sync-id replay and the terminal-sequence owner.
+      findMany: jest.fn().mockImplementation(() =>
+        Promise.resolve(options.existing ? [{ sync_id: syncId, ...options.existing }] : []),
       ),
-      create: jest.fn().mockImplementation(({ data }) =>
-        Promise.resolve({
-          id: 'sale-1',
-          ...data,
-          items: data.items.create.map((item: any, index: number) => ({
-            id: `sale-item-${index + 1}`,
-            sales_invoice_id: 'sale-1',
-            ...item,
-          })),
-        }),
+      create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'sale-1', ...data })),
+    },
+    salesInvoiceItem: {
+      createManyAndReturn: jest.fn().mockImplementation(({ data }) =>
+        Promise.resolve(data.map((item: any) => ({ ...item }))),
       ),
     },
     productVariant: {
@@ -370,18 +344,18 @@ describe('SalesService acceptance-first sale synchronization', () => {
           cashier_name_snapshot: 'Cashier One',
           seller_name_snapshot: 'Seller One',
           terminal_sequence: 1n,
-          items: {
-            create: [
-              expect.objectContaining({
-                sku_snapshot: 'SKU-1',
-                name_ar_snapshot: 'قميص',
-                unit_price: expect.anything(),
-              }),
-            ],
-          },
         }),
       }),
     );
+    expect(tx.salesInvoiceItem.createManyAndReturn).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          sku_snapshot: 'SKU-1',
+          name_ar_snapshot: 'قميص',
+          unit_price: expect.anything(),
+        }),
+      ],
+    });
     expect(result.items.every((item: any) => !('unit_cost' in item))).toBe(true);
     // One statement of its own (the terminal lock); stock goes through the engine.
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
@@ -398,7 +372,7 @@ describe('SalesService acceptance-first sale synchronization', () => {
     expect(command.lines).toHaveLength(1);
     expect(command.lines[0].qtyDelta.toString()).toBe('-2');
     // The sale line is stamped with the warehouse average cost at the sale.
-    const line = tx.salesInvoice.create.mock.calls[0][0].data.items.create[0];
+    const line = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data[0];
     expect(line.unit_cost.toFixed(4)).toBe('100.0000');
     expect(line.id).toBe(command.lines[0].referenceLineId);
     expect(String(result.total)).toBe('342');
@@ -456,28 +430,25 @@ describe('SalesService acceptance-first sale synchronization', () => {
   });
 
   it('accepts a sequence gap and advances the terminal high-water mark', async () => {
-    const { service, tx } = setupSale({ lastSequence: 1n });
+    const { service } = setupSale({ lastSequence: 1n });
     const result = await service.createSale(
       saleDto({ terminal_sequence: '3' }),
       terminal,
     );
 
+    // The high-water mark itself moves in the claim statement (GREATEST in SQL),
+    // which verify-inventory-engine.cjs runs against Postgres.
     expect(result.warning_codes).toContain('SEQUENCE_GAP');
-    expect(tx.posTerminal.update).toHaveBeenCalledWith({
-      where: { id: terminal.id },
-      data: { last_sale_sequence: 3n },
-    });
   });
 
   it('accepts an older delayed sequence without moving the high-water mark back', async () => {
-    const { service, tx } = setupSale({ lastSequence: 5n });
+    const { service } = setupSale({ lastSequence: 5n });
     const result = await service.createSale(
       saleDto({ terminal_sequence: '3' }),
       terminal,
     );
 
     expect(result.warning_codes).toContain('OUT_OF_ORDER_SEQUENCE');
-    expect(tx.posTerminal.update).not.toHaveBeenCalled();
   });
 
   /**
@@ -493,7 +464,7 @@ describe('SalesService acceptance-first sale synchronization', () => {
     expect(result.items[0]).not.toHaveProperty('unit_cost');
     // The persisted line still carries it — the ledger and the margin reports
     // are built from this row, not from the response.
-    const written = tx.salesInvoice.create.mock.calls[0][0].data.items.create[0];
+    const written = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data[0];
     expect(written.unit_cost).toBeDefined();
   });
 
@@ -511,15 +482,13 @@ describe('SalesService acceptance-first sale synchronization', () => {
       warning_codes: [],
       items: [],
     };
-    tx.salesInvoice.findFirst.mockImplementation(({ where }: any) =>
-      Promise.resolve(where?.sync_id ? existing : null),
-    );
+    tx.salesInvoice.findMany.mockResolvedValue([{ ...existing, sync_id: syncId }]);
 
     // `toEqual`, not `toBe`: the replay returns the same invoice through the
     // same cost projection as a first-time post, which is a copy rather than
     // the stored row. Identity was never what this case was pinning — that the
     // replay neither re-posts inventory nor writes a second invoice is.
-    await expect(service.createSale(dto, terminal)).resolves.toEqual(existing);
+    await expect(service.createSale(dto, terminal)).resolves.toEqual({ ...existing, sync_id: syncId });
     expect(inventory.apply).not.toHaveBeenCalled();
     expect(tx.salesInvoice.create).not.toHaveBeenCalled();
   });
@@ -527,22 +496,19 @@ describe('SalesService acceptance-first sale synchronization', () => {
   it('quarantines a reused sync id carrying different financial content', async () => {
     const { service, tx } = setupSale();
     const original = saleDto();
-    tx.salesInvoice.findFirst.mockImplementation(({ where }: any) =>
-      Promise.resolve(
-        where?.sync_id
-          ? {
-              id: 'sale-1',
-              branch_id: branchId,
-              terminal_id: terminal.id,
-              shift_id: shiftId,
-              offline_session_id: sessionId,
-              terminal_sequence: 1n,
-              command_fingerprint: fingerprint(service, original),
-              items: [],
-            }
-          : null,
-      ),
-    );
+    tx.salesInvoice.findMany.mockResolvedValue([
+      {
+        id: 'sale-1',
+        sync_id: syncId,
+        branch_id: branchId,
+        terminal_id: terminal.id,
+        shift_id: shiftId,
+        offline_session_id: sessionId,
+        terminal_sequence: 1n,
+        command_fingerprint: fingerprint(service, original),
+        items: [],
+      },
+    ]);
 
     await expect(
       service.createSale(saleDto({ payment_method: 'card' }), terminal),

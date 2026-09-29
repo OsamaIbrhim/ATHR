@@ -78,9 +78,7 @@ export class SalesController {
     // No session on this route, so the subscription is checked here. A sale that
     // was completed offline before the restriction began is still accepted.
     await this.entitlements.assertCanWrite(terminal.tenant_id, new Date(dto.occurred_at))
-    const result = await this.svc.createSale(dto, terminal)
-    this.reads.invalidateCounts()
-    return result
+    return this.svc.createSale(dto, terminal)
   }
 
   @UseGuards(new PosProtocolGuard())

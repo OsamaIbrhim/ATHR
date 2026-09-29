@@ -1,3 +1,4 @@
+import type { PageQuery } from '../common/pagination';
 import {
   ConflictException,
   ForbiddenException,
@@ -135,8 +136,8 @@ export class ShiftsService {
     return this.repository.findById(context, shiftId);
   }
 
-  list(context: TenantContext, branch_id?: string) {
-    return this.repository.list(context, branch_id);
+  list(context: TenantContext, branch_id?: string, paging?: PageQuery) {
+    return this.repository.list(context, branch_id, paging);
   }
 
   current(context: TenantContext, branch_id: string) {

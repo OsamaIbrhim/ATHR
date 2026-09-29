@@ -15,13 +15,13 @@ export default function Customers() {
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
-    try { setList(await apiGet(`/customers`)) }
+    try { setList((await apiGet(`/customers?page=1&page_size=100`)).items) }
     catch (e: any) { setError(e.message || 'تعذر تحميل المنتجات') }
     finally { setLoading(false) }
   }, [])
   useEffect(() => { load() }, [load])
 
-  const search = async () => { const r = await apiGet(`/customers?q=${encodeURIComponent(phone || '')}`); const arr = Array.isArray(r) ? r : r ? [r] : []; setList(arr) }
+  const search = async () => { const r = await apiGet(`/customers?page=1&page_size=100&q=${encodeURIComponent(phone || '')}`); setList(r?.items ?? (r ? [r] : [])) }
   const create = async () => { setError(''); try { await apiPost('/customers', { name:name.trim()||undefined, phone:phone.trim(), whatsapp:whatsapp.trim()||phone.trim(), email:email.trim()||undefined }); setName(''); setPhone(''); setWhatsapp(''); setEmail(''); await load() } catch(e:any) { setError(e.message||'راجع بيانات العميل') } }
   const toggleVip = async (id: string, v: boolean) => { await apiPost(`/customers/${id}/vip`, { is_vip: v }); search() }
   const del = async (id: string) => { if (!confirm('حذف العميل؟')) return; try { await apiDelete(`/customers/${id}`); search() } catch (e: any) { alert('فشل: ' + e.message) } }

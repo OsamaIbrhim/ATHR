@@ -1,119 +1,58 @@
-import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { ReportsService } from './reports.service';
-import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
-import { aSalesInvoice, anInventoryStock } from '../identity/testing/fixture-builders';
+import { TENANT_A, TENANT_B, contextFor } from '../identity/testing/cross-tenant-harness';
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `reports` module.
  *
- * Reports are pure aggregates, so a missing tenant predicate does not throw
- * or leak a row id — it silently returns another tenant's revenue as part of
- * this tenant's totals. These assertions are on the numbers for that reason.
+ * Reports are SQL aggregates, so a missing tenant predicate would silently add
+ * another tenant's revenue to the totals. The fake in-memory Prisma cannot run
+ * those statements, so this pins that every one is issued with the calling
+ * tenant bound and filtered on `tenant_id`; the numbers themselves are proven on
+ * real Postgres by scripts/verify-raw-sql-tenant-scoping.cjs (R4).
  */
-
-const BRANCH_A = randomUUID();
-const BRANCH_B = randomUUID();
-const VARIANT = randomUUID();
+const zero = new Prisma.Decimal(0);
 
 function setup() {
-  const inWindow = new Date('2026-03-15T10:00:00.000Z');
-  const prisma = fakePrisma({
-    salesInvoice: [
-      aSalesInvoice({
-        tenant_id: TENANT_A,
-        branch_id: BRANCH_A,
-        occurred_at: inWindow,
-        total: new Prisma.Decimal(100),
-        subtotal: new Prisma.Decimal(90),
-        tax_amount: new Prisma.Decimal(10),
-        items: [{ variant_id: VARIANT, qty: 1, unit_cost: 40, unit_price: 90 }],
-      }),
-      aSalesInvoice({
-        tenant_id: TENANT_B,
-        branch_id: BRANCH_B,
-        occurred_at: inWindow,
-        total: new Prisma.Decimal(7777),
-        subtotal: new Prisma.Decimal(7000),
-        tax_amount: new Prisma.Decimal(777),
-        items: [{ variant_id: VARIANT, qty: 5, unit_cost: 10, unit_price: 1400 }],
-      }),
-    ],
-    return: [],
-    salesInvoiceItem: [],
-    returnItem: [],
-    inventoryStock: [
-      anInventoryStock({
-        tenant_id: TENANT_A,
-        variant_id: VARIANT,
-        qty_on_hand: 2,
-        avg_cost: 40,
-        // Pre-hydrated relations: the valuation projects both.
-        variant: { sku: 'S1', cost_price: 40, product: { name_en: 'A' } },
-        warehouse: { name: 'wA', branch_id: BRANCH_A, branch: { name_ar: 'A' } },
-      }),
-      anInventoryStock({
-        tenant_id: TENANT_B,
-        variant_id: VARIANT,
-        qty_on_hand: 100,
-        avg_cost: 10,
-        variant: { sku: 'S1', cost_price: 10, product: { name_en: 'B' } },
-        warehouse: { name: 'wB', branch_id: BRANCH_B, branch: { name_ar: 'B' } },
-      }),
-    ],
-  }, {
-    // Lets the nested `invoice: { tenant_id }` / `return_record: { tenant_id }`
-    // predicates actually be evaluated rather than silently ignored.
-    salesInvoiceItem: { invoice: { table: 'salesInvoice', localKey: 'sales_invoice_id' } },
-    returnItem: { return_record: { table: 'return', localKey: 'return_id' } },
-  });
-  return { prisma, service: new ReportsService(prisma) };
+  const queryRaw = jest.fn().mockImplementation(() =>
+    Promise.resolve([
+      { variant_id: 'v', count: 0, total: 0, gross: zero, subtotal: zero, tax: zero, cost: zero, qty: zero, value: zero, revenue: zero, profit: zero },
+    ]),
+  );
+  const prisma = {
+    $queryRaw: queryRaw,
+    productVariant: { findMany: jest.fn().mockResolvedValue([]) },
+    inventoryStock: { findMany: jest.fn().mockResolvedValue([]) },
+  };
+  return { queryRaw, prisma, service: new ReportsService(prisma as any) };
 }
 
 describe('reports — cross-tenant isolation', () => {
-  it('reports only the calling tenant\'s sales totals', async () => {
-    const { service } = setup();
-    const forA: any = await service.sales(contextFor(TENANT_A), '2026-03-01', '2026-03-31');
-    const forB: any = await service.sales(contextFor(TENANT_B), '2026-03-01', '2026-03-31');
+  it.each([
+    ['sales', (s: ReportsService, tenant: string) => s.sales(contextFor(tenant), '2026-03-01', '2026-03-31')],
+    ['best sellers', (s: ReportsService, tenant: string) => s.bestSellers(contextFor(tenant), '2026-03-01', '2026-03-31')],
+    ['profit by item', (s: ReportsService, tenant: string) => s.profitByItem(contextFor(tenant), '2026-03-01', '2026-03-31')],
+    ['inventory valuation', (s: ReportsService, tenant: string) => s.inventoryValuation(contextFor(tenant))],
+  ])('%s binds only the calling tenant', async (_name, run) => {
+    for (const [tenant, other] of [[TENANT_A, TENANT_B], [TENANT_B, TENANT_A]]) {
+      const { service, queryRaw } = setup();
+      await run(service, tenant);
 
-    // 100, not 7877 — tenant B's revenue must not appear in tenant A's report.
-    expect(Number(forA.gross_sales ?? forA.total_sales)).toBe(100);
-    expect(Number(forB.gross_sales ?? forB.total_sales)).toBe(7777);
+      for (const [strings, ...parts] of queryRaw.mock.calls) {
+        const { sql, values } = Prisma.sql(strings, ...parts); // flattens the nested fragments
+        expect(values).toContain(tenant);
+        expect(values).not.toContain(other);
+        expect(sql).toContain('"tenant_id"');
+      }
+    }
   });
 
-  it('values only the calling tenant\'s inventory', async () => {
-    const { service } = setup();
-    const forA: any = await service.inventoryValuation(contextFor(TENANT_A));
-    const rows = forA.rows ?? forA.items ?? [];
-    expect(rows).toHaveLength(1);
-    expect(rows[0].branch).toBe('A');
-  });
-
-  it('does not attribute another tenant\'s best sellers', async () => {
+  it('values only the calling tenant\'s stock rows', async () => {
     const { service, prisma } = setup();
-    prisma.salesInvoiceItem.rows = [
-      {
-        tenant_id: TENANT_A,
-        variant_id: VARIANT,
-        qty: 1,
-        unit_cost: 40,
-        unit_price: 90,
-        invoice: { tenant_id: TENANT_A, status: 'completed', branch_id: BRANCH_A },
-        variant: { id: VARIANT, product: { name_en: 'A widget' } },
-      },
-      {
-        tenant_id: TENANT_B,
-        variant_id: VARIANT,
-        qty: 500,
-        unit_cost: 10,
-        unit_price: 1400,
-        invoice: { tenant_id: TENANT_B, status: 'completed', branch_id: BRANCH_B },
-        variant: { id: VARIANT, product: { name_en: 'B widget' } },
-      },
-    ];
+    await service.inventoryValuation(contextFor(TENANT_A));
 
-    const forA: any = await service.bestSellers(contextFor(TENANT_A));
-    expect(forA).toHaveLength(1);
-    expect(forA[0].qty).toBe(1);
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ tenant_id: TENANT_A }) }),
+    );
   });
 });

@@ -73,10 +73,10 @@ export default function Users() {
   const actor = useSessionUser()
 
   const load = () => Promise.all([
-    apiGet('/users'),
+    apiGet('/users?page=1&page_size=100'),
     actor?.role === 'owner' ? apiGet('/branches') : Promise.resolve([]),
   ]).then(([users, branchList]) => {
-      setItems(users)
+      setItems(users.items)
       setBranches(branchList)
     })
     .catch((loadError: any) => setError(loadError.message))

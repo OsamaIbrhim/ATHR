@@ -25,8 +25,6 @@ import { readTenantSettings } from '../catalog/tenant-settings';
 
 @Injectable()
 export class ProductsService {
-  private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
-
   constructor(
     private readonly repository: ProductsRepository,
     private readonly brands: BrandsRepository,
@@ -80,7 +78,7 @@ export class ProductsService {
     // additional parallel database wave. Prisma's nested include strategy used
     // sequential relation queries and paid the remote DB round-trip repeatedly.
     const [total, baseVariants] = await Promise.all([
-      this.cachedCount(context, query, where),
+      this.repository.countVariants(context, where),
       this.repository.listVariants(context, where, page, pageSize),
     ]);
     const variants = await this.hydrateVariants(context, baseVariants, branchId);
@@ -138,37 +136,6 @@ export class ProductsService {
       inventory: inventoryByVariant.get(variant.id) || [],
       barcodes: barcodesByVariant.get(variant.id) || [],
     }));
-  }
-
-  /**
-   * Blueprint §125 "Cache Tests — keys contain Tenant": this cache was keyed
-   * on the search string alone, so with more than one tenant the first
-   * tenant's result count would be served to the second. The tenant id is now
-   * part of the key.
-   */
-  private cachedCount(context: TenantContext, query: string, where: any) {
-    const key = `${context.tenantId}:${query.toLocaleLowerCase('en-US')}`;
-    const now = Date.now();
-    const cached = this.countCache.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
-    const ttl = Math.min(30_000, Math.max(0, Number(process.env.LIST_COUNT_CACHE_MS || 5_000)));
-    let value: Promise<number>;
-    value = this.repository.countVariants(context, where).then((total) => {
-      if (this.countCache.get(key)?.value === value) {
-        this.countCache.set(key, { expiresAt: Date.now() + ttl, value: Promise.resolve(total) });
-      }
-      return total;
-    }).catch((error) => {
-      if (this.countCache.get(key)?.value === value) this.countCache.delete(key);
-      throw error;
-    });
-    this.countCache.set(key, { expiresAt: Number.POSITIVE_INFINITY, value });
-    if (this.countCache.size > 200) this.countCache.delete(this.countCache.keys().next().value!);
-    return value;
-  }
-
-  private invalidateCounts() {
-    this.countCache.clear();
   }
 
   async search(context: TenantContext, q: string, branchId?: string, includeCost = false) {
@@ -229,7 +196,6 @@ export class ProductsService {
       },
       variants.map(({ variant, barcodes }) => ({ ...variant, barcodes })),
     );
-    this.invalidateCounts();
     return product;
   }
 
@@ -317,7 +283,6 @@ export class ProductsService {
       category_id: dto.category_id,
       tax_category_id: taxCategoryId,
     });
-    this.invalidateCounts();
     return product;
   }
 
@@ -333,7 +298,6 @@ export class ProductsService {
       throw new AthrDomainError('REQUEST_FIELD_VALUE_INVALID', 'This product already has a variant with this attribute combination.');
     }
     const created = await this.repository.addVariant(context, productId, variant, barcodes);
-    this.invalidateCounts();
     return created;
   }
 
@@ -366,7 +330,6 @@ export class ProductsService {
       item_type: dto.item_type,
       base_uom_id: dto.base_uom_id,
     });
-    this.invalidateCounts();
     return updated;
   }
 
@@ -390,7 +353,6 @@ export class ProductsService {
     const exists = await this.repository.findVariantById(context, id);
     if (!exists) throw new NotFoundException('Variant not found');
     const removed = await this.repository.updateVariant(context, id, { is_active: false });
-    this.invalidateCounts();
     return removed;
   }
 }

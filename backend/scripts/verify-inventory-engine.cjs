@@ -534,12 +534,19 @@ async function verifySale() {
   process.stdout.write(`INFO  sale statements: 1 line=${statementsOne}, 30 lines=${statementsMany}\n`);
   if (process.env.INVENTORY_ENGINE_PRINT_SQL) lastStatements.forEach((sql, index) => process.stdout.write(`SQL ${index + 1}: ${sql.replace(/\s+/g, ' ').slice(0, 110)}\n`));
   check('E9 a sale issues the same number of statements for 1 line and for 30 lines', statementsOne === statementsMany, `1 line=${statementsOne}, 30 lines=${statementsMany}`);
+  // Ceiling, so the hot path cannot quietly regain round trips (docs/design/W1-W2-data-core.md section 8).
+  const SALE_STATEMENT_CEILING = 16;
+  check(`E9 a sale stays within ${SALE_STATEMENT_CEILING} statements`, statementsMany <= SALE_STATEMENT_CEILING, `1 line=${statementsOne}, 30 lines=${statementsMany}`);
+  const [withCustomer, statementsCustomer] = await counted(() => sales.createSale({ ...saleDto(stockedVariants.slice(6, 7)), customer_phone: '01099999999' }, { id: terminal.id, branch_id: world.branch.id, tenant_id: world.tenant.id }));
+  check(`E9 a sale with a customer costs one extra statement (${statementsCustomer})`, statementsCustomer <= SALE_STATEMENT_CEILING + 1 && !!withCustomer.customer_id);
   check('E9 the sale invoice keeps its lines and costs them at the warehouse average (60)', thirtyLines.items.length === 30 && oneLine.items.length === 1);
   const persisted = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: thirtyLines.id } });
   check('E9 the sale line is stamped with the average cost', persisted.unit_cost.equals(60), `unit_cost=${persisted.unit_cost}`);
   check('E9 the sale moved stock and wrote the ledger', (await stockOf(world, stockedVariants[5])).qty_on_hand.equals(9) &&
     (await prisma.inventoryMovement.count({ where: { tenant_id: world.tenant.id, movement_type: 'sale', reference_id: thirtyLines.id } })) === 30);
 
+  const claimed = await prisma.posTerminal.findUniqueOrThrow({ where: { id: terminal.id } });
+  check('E9 the terminal high-water mark follows the sale sequence', claimed.last_sale_sequence === BigInt(sequence), `last=${claimed.last_sale_sequence} sequence=${sequence}`);
   const withService = await sell([stockedVariants[0], serviceVariant]);
   check('E9 a sale accepts a service item without any stock row', withService.items.length === 2 && (await prisma.inventoryStock.count({ where: { tenant_id: world.tenant.id, variant_id: serviceVariant.id } })) === 0);
 

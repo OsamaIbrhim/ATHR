@@ -1,3 +1,4 @@
+import { FIRST_PAGE, pageOf, type PageQuery } from '../common/pagination';
 import {
   BadRequestException, ForbiddenException, Injectable, NotFoundException,
 } from '@nestjs/common';
@@ -22,16 +23,16 @@ export class UsersService {
     private readonly limits: LimitService,
   ) {}
 
-  findAll(context: TenantContext, actor: AuthenticatedUser) {
+  findAll(context: TenantContext, actor: AuthenticatedUser, paging?: PageQuery) {
     if (canAccessAllBranches(actor)) {
-      return this.repository.list(context, { role: { not: 'tenant_owner' } });
+      return this.repository.list(context, { role: { not: 'tenant_owner' } }, paging);
     }
     const branchId = primaryBranchId(actor);
-    if (!branchId) return Promise.resolve([]);
+    if (!branchId) return Promise.resolve(pageOf([], 0, paging ?? FIRST_PAGE));
     return this.repository.list(context, {
       role: { in: [...BRANCH_MANAGEABLE_ROLES] },
       access_scope_assignments: { some: { scope_type: 'location', scope_ref_id: branchId } },
-    });
+    }, paging);
   }
 
   async create(context: TenantContext, data: CreateUserDto, actor: AuthenticatedUser) {

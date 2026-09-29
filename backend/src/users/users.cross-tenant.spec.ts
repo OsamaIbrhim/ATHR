@@ -42,8 +42,8 @@ const tenantWideOwner = actorFor('tenant_owner', { tenantWide: true });
 describe('users — cross-tenant isolation', () => {
   it('lists only users with a Membership in the calling tenant', async () => {
     const { service } = setup();
-    expect((await service.findAll(contextFor(TENANT_A), tenantWideOwner)).map((row) => row.id)).toEqual([USER_A]);
-    expect((await service.findAll(contextFor(TENANT_B), tenantWideOwner)).map((row) => row.id)).toEqual([USER_B]);
+    expect((await service.findAll(contextFor(TENANT_A), tenantWideOwner)).items.map((row) => row.id)).toEqual([USER_A]);
+    expect((await service.findAll(contextFor(TENANT_B), tenantWideOwner)).items.map((row) => row.id)).toEqual([USER_B]);
   });
 
   it('does not resolve a user from another tenant', async () => {

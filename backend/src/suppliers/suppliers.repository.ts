@@ -3,6 +3,7 @@ import type { Prisma, Supplier } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantScope } from '../identity/tenant-context.type';
+import { FIRST_PAGE, pageArgs, pageOf, type PageQuery } from '../common/pagination'
 
 export interface SupplierFilters {
   readonly search?: string;
@@ -30,20 +31,33 @@ export class SuppliersRepository {
     });
   }
 
-  async list(context: TenantScope, filters: SupplierFilters = {}): Promise<Supplier[]> {
+  async list(context: TenantScope, filters: SupplierFilters = {}, paging: PageQuery = FIRST_PAGE) {
     const search = filters.search;
-    return this.prisma.supplier.findMany({
+    const where: Prisma.SupplierWhereInput = {
+      tenant_id: context.tenantId,
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' as Prisma.QueryMode } },
+              { company_name: { contains: search, mode: 'insensitive' as Prisma.QueryMode } },
+              { alias_names: { has: search } },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.supplier.findMany({ where, orderBy: [{ name: 'asc' }, { id: 'asc' }], ...pageArgs(paging) }),
+      this.prisma.supplier.count({ where }),
+    ]);
+    return pageOf(items, total, paging);
+  }
+
+  /** The supplier an OCR'd name refers to: its name, company name or a recorded alias. */
+  findByAnyName(context: TenantScope, name: string): Promise<Supplier | null> {
+    return this.prisma.supplier.findFirst({
       where: {
         tenant_id: context.tenantId,
-        ...(search
-          ? {
-              OR: [
-                { name: { contains: search, mode: 'insensitive' as Prisma.QueryMode } },
-                { company_name: { contains: search, mode: 'insensitive' as Prisma.QueryMode } },
-                { alias_names: { has: search } },
-              ],
-            }
-          : {}),
+        OR: [{ name }, { company_name: name }, { alias_names: { has: name } }],
       },
       orderBy: { name: 'asc' },
     });

@@ -53,16 +53,16 @@ describe('customers — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s customers', async () => {
     const { repository } = setup();
     const listedForA = await repository.list(contextFor(TENANT_A));
-    expect(listedForA.map((row) => row.id)).toEqual([CUSTOMER_A]);
+    expect(listedForA.items.map((row) => row.id)).toEqual([CUSTOMER_A]);
 
     const listedForB = await repository.list(contextFor(TENANT_B));
-    expect(listedForB.map((row) => row.id)).toEqual([CUSTOMER_B]);
+    expect(listedForB.items.map((row) => row.id)).toEqual([CUSTOMER_B]);
   });
 
   it('does not leak another tenant\'s customer through search', async () => {
     const { repository } = setup();
     const hits = await repository.list(contextFor(TENANT_B), { search: 'Tenant A' });
-    expect(hits).toEqual([]);
+    expect(hits.items).toEqual([]);
   });
 
   /**

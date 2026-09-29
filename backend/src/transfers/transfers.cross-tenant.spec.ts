@@ -71,8 +71,8 @@ const warehouseFor = (branchId: string) =>
 describe('transfers — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s transfers', async () => {
     const { service } = setup();
-    expect((await service.list(contextFor(TENANT_A))).map((t: any) => t.id)).toEqual([TRANSFER_A]);
-    expect((await service.list(contextFor(TENANT_B))).map((t: any) => t.id)).toEqual([TRANSFER_B]);
+    expect((await service.list(contextFor(TENANT_A))).items.map((t: any) => t.id)).toEqual([TRANSFER_A]);
+    expect((await service.list(contextFor(TENANT_B))).items.map((t: any) => t.id)).toEqual([TRANSFER_B]);
   });
 
   it('does not return another tenant\'s transfer by id', async () => {

@@ -31,12 +31,18 @@ export class ReportsController {
   @RequirePermission('reports.sales.view')
   @Get('best-sellers') best(
     @TenantCtx() ctx: TenantContext,
+    @Query('from') from: string,
+    @Query('to') to: string,
     @Query('branch_id') branch_id: string | undefined,
+    @Query('limit') limit: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     return this.svc.bestSellers(
       ctx,
+      from,
+      to,
       resolveBranchScope(req.user, branch_id),
+      limit,
     );
   }
 
@@ -46,6 +52,7 @@ export class ReportsController {
     @Query('from') from: string,
     @Query('to') to: string,
     @Query('branch_id') branch_id: string | undefined,
+    @Query('limit') limit: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     return this.svc.profitByItem(
@@ -53,6 +60,7 @@ export class ReportsController {
       from,
       to,
       resolveBranchScope(req.user, branch_id),
+      limit,
     );
   }
 
@@ -60,11 +68,15 @@ export class ReportsController {
   @Get('inventory-valuation') inventoryValuation(
     @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string | undefined,
+    @Query('page') page: string | undefined,
+    @Query('page_size') page_size: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     return this.svc.inventoryValuation(
       ctx,
       resolveBranchScope(req.user, branch_id),
+      page,
+      page_size,
     );
   }
 

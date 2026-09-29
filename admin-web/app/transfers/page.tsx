@@ -31,11 +31,11 @@ export default function Transfers() {
     setError('')
     try {
       const [transferRows,branchRows,productRows] = await Promise.all([
-        apiGet('/transfers'),
+        apiGet('/transfers?page=1&page_size=100'),
         apiGet('/branches'),
         apiGet('/products?page=1&page_size=200'),
       ])
-      setRows(transferRows||[])
+      setRows(transferRows.items||[])
       setBranches(branchRows||[])
       setProducts(productRows.items||[])
     } catch(loadError:any) { setError(loadError.message) }

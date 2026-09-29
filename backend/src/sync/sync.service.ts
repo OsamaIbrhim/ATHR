@@ -260,7 +260,6 @@ export class SyncService {
     const variants = usable.map((variant) => ({ ...variant, product: productsById.get(variant.product_id)! }));
 
     const uomIds = [...new Set(variants.map((v) => v.base_uom_id).filter((id): id is string => !!id))];
-    const scopeIds = [...variants.map((v) => v.id), ...productsById.keys()];
     const [barcodes, uoms, rules, taxCodes] = await Promise.all([
       this.prisma.productBarcode.findMany({
         where: { tenant_id: context.tenantId, variant_id: { in: variants.map((v) => v.id) } },
@@ -269,7 +268,7 @@ export class SyncService {
       uomIds.length
         ? this.prisma.unitOfMeasure.findMany({ where: { tenant_id: context.tenantId, id: { in: uomIds } } })
         : Promise.resolve([] as UnitOfMeasure[]),
-      this.pricing.loadActiveRules(context, undefined, scopeIds),
+      this.pricing.loadActiveRules(context, undefined, variants),
       this.tax.loadActiveCodeIndex(context),
     ]);
     const barcodesByVariant = new Map<string, ProductBarcode[]>();

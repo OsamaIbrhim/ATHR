@@ -266,7 +266,7 @@ async function main() {
             base_uom_id: piece.id,
             cost_price: v.cost,
             return_count: 0,
-            barcodes: { create: [{ tenant_id, code: v.ean }, { tenant_id, code: v.sku }] },
+            barcodes: { create: [{ code: v.ean }, { code: v.sku }] },
           }))
         }
       },
@@ -299,7 +299,7 @@ async function main() {
             sku: p.sku,
             base_uom_id: p.uom.id,
             cost_price: p.cost,
-            barcodes: { create: p.barcodes.map((b) => ({ tenant_id, ...b })) },
+            barcodes: { create: p.barcodes },
           }],
         },
       },
