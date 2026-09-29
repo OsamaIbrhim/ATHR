@@ -102,8 +102,7 @@ enum Role {
 }
 
 // WP-005 Phase B (MT-MIG-001/002/003): Tenant/Organization/LegalEntity/Location/
-// Warehouse/Membership foundation. Additive only — see docs/adr/0002-0006 and
-// docs/runbooks/tenant-migration-backfill-rollback.md.
+// Warehouse/Membership foundation. See docs/adr/0002-0006.
 enum TenantAccessMode {
   provisioning
   internal_demo
@@ -159,9 +158,9 @@ model LegalEntity {
 }
 
 // NOTE: tenantId/identityId are camelCase (not this file's usual snake_case)
-// because docs/runbooks/tenant-migration-backfill-rollback.md's Accepted,
-// literal validation queries reference them as `l."tenantId"`, `m."tenantId"`,
-// `m."identityId"` — matched exactly so those queries run unmodified.
+// because they were fixed by the original tenant foundation design and
+// existing queries reference them as `l."tenantId"`, `m."tenantId"`,
+// `m."identityId"`.
 model Location {
   id              String      @id @default(uuid()) @db.Uuid
   tenantId        String      @db.Uuid

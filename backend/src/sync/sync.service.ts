@@ -13,7 +13,7 @@ import type { TenantContext } from '../identity/tenant-context.type';
  * shape that does not hit this. Batch defensively rather than assume an
  * unbounded array is safe at any catalog size.
  *
- * Exported so `verify-sync-snapshot-behaviour.cjs` (migration-gate) imports
+ * Exported so `verify-sync-snapshot-behaviour.cjs` (`npm run test:db`) imports
  * this value instead of restating it -- a copy in two files can drift
  * silently and the CI proof would then be checking a different chunk size
  * than the one actually shipped.

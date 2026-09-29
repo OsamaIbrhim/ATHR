@@ -117,7 +117,7 @@ athr/
 │   └── testing/
 ├── backend/                   # NestJS API and Prisma data model
 │   ├── prisma/
-│   │   ├── migrations/        # Ordered PostgreSQL migrations
+│   │   ├── migrations/        # Baseline + forward-only PostgreSQL migrations
 │   │   ├── schema.prisma      # Current database schema
 │   │   └── seed.ts            # Destructive development seed
 │   ├── src/                   # API modules
@@ -364,33 +364,15 @@ npx prisma generate
 
 Commit both the schema change and the generated migration directory.
 
-### Important migration preconditions
+### Baseline migration
 
-The integrity migrations intentionally surface invalid historical data rather
-than assigning it to arbitrary branches. Before production migration, check for:
-
-- Returns whose original invoice no longer exists.
-- Transfers containing unknown status strings.
-- Transfer items with zero or negative quantities.
-- Multiple open shifts for the same branch.
-- Duplicate pending offer suggestions for the same branch and variant.
-- User references that point to deleted users.
-
-The terminal-observability migration creates `PosTerminal` and restores the
-`SalesInvoice(branch_id, created_at)` index used by the paginated Admin invoice
-query. It does not rewrite existing invoice or stock data.
-
-The performance migrations enable PostgreSQL `pg_trgm`, add search/list and
-hot pagination/relation indexes, add one-use terminal enrollment, create
-`SyncChange` triggers, and record the enrolled terminal on every new POS sale.
-Existing invoices keep a nullable terminal field because their physical source
-cannot be reconstructed.
-The migration user therefore needs permission to install `pg_trgm`; most hosted
-PostgreSQL providers expose it as an allowed extension. Existing automatically
-registered terminals have no device credential and must be enrolled once after
-this upgrade. No sales or outbox rows are deleted by that process.
-
-Always rehearse migrations against a recent restored production backup first.
+The former incremental migration history was collapsed into a single
+`prisma/migrations/000000000000_baseline` migration (there was no production
+data to preserve). It creates the whole schema, including the SQL functions,
+triggers and the partial/trigram indexes that live only in SQL. The migration
+user needs permission to install the `pg_trgm` and `pgcrypto` extensions; most
+hosted PostgreSQL providers expose them as allowed extensions. Later changes
+are new forward-only migrations.
 
 ### Prisma commands
 
@@ -857,6 +839,15 @@ The repository has two deliberately separate gates. **Soft** checks answer
 correct and responsive under volume and concurrency?". A performance failure
 must not be hidden inside an ordinary unit-test run.
 
+### Real-PostgreSQL suite
+
+`npm run test:db` (in `backend/`) builds the API and runs the verifiers that
+only a real database can prove: tenant constraints, SQL triggers, price
+books, tax codes, promotions, the sync snapshot, raw-SQL tenant scoping and
+nested creates. Run it once against a freshly migrated and seeded database
+(`DATABASE_URL` set); it creates fixed-key fixtures and is not re-runnable on
+the same database.
+
 ### Soft suite
 
 Run every foundational check from the repository root:
@@ -1012,23 +1003,28 @@ critical advisories.
 
 ### GitHub Actions
 
-`.github/workflows/ci.yml` runs on pull requests and pushes to `master`. It:
+`.github/workflows/ci.yml` runs on pull requests and pushes to `master`. Its
+jobs are:
 
-1. Installs each application from its lockfile with `npm ci`.
-2. Validates the Prisma schema.
-3. Runs all soft tests and builds.
-4. Starts a real PostgreSQL 16 service, deploys migrations, seeds test data,
-   starts the API, and runs the hard smoke thresholds.
-5. Runs high-severity dependency audit gates.
-6. On a nightly schedule or manual dispatch, adds the large deterministic
-   dataset and runs the full hard load profile.
+- `workspace`: workspace validation and shared-package tests.
+- `backend`: Prisma validation, the migration policy check, migrations applied
+  to a clean PostgreSQL 16 database plus a schema drift check, the development
+  seed, `npm run test:db` (real-PostgreSQL verifiers), unit tests, typecheck,
+  build and a high-severity dependency audit.
+- `admin` and `pos`: tests, build and dependency audit.
+- `e2e-smoke`: seeded API plus Admin browser smoke test.
+- `docker`: builds the production image once and checks its health endpoint.
+- `release-gate`: requires all of the above.
+
+`.github/workflows/hard-load.yml` runs the large deterministic dataset and the
+full hard load profile on a nightly schedule or manual dispatch.
 
 ## Production deployment
 
 ### Before the first deployment
 
 - Create a PostgreSQL backup and prove it can be restored.
-- Rehearse all migrations against a restored copy of real data.
+- Rehearse any new migration against a restored copy of the target data.
 - Replace all development seed users and passwords.
 - Generate a unique production `JWT_SECRET`.
 - Configure HTTPS for both Admin and API endpoints.
@@ -1368,7 +1364,8 @@ The following work is still required or intentionally incomplete:
     UI calculations still convert to JavaScript numbers. Continue moving every
     financial formula into the shared server boundary.
 13. **End-to-end coverage is incomplete.** CI now deploys migrations to real
-    PostgreSQL and runs hard smoke/load gates, but browser automation, packaged
+    PostgreSQL, runs real-PostgreSQL verifiers and a browser smoke test, and the
+    nightly hard-load profile exists, but broader browser automation, packaged
     Electron printer tests, and a concurrent mutation/soak environment on
     production-equivalent hardware are still required.
 14. **Admin has two moderate transitive PostCSS advisories.** npm reports no fix

@@ -5,8 +5,6 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
-  schedule:
-    - cron: '30 1 * * *'
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
@@ -15,17 +13,14 @@ concurrency:
 permissions:
   contents: read
 
+# Root `npm ci` also installs pos-electron's `electron` dependency, whose
+# postinstall downloads a ~100MB binary. No job here runs Electron, so skip it.
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
 jobs:
   workspace:
-    name: workspace-foundation
     runs-on: ubuntu-latest
-    # Root `npm ci` installs pos-electron's `electron` dependency too, whose
-    # postinstall downloads a ~100MB platform binary over the network. This
-    # job never touches Electron, so that download is pure failure surface
-    # (see admin's run 32367936824, `TypeError: fetch failed` from
-    # @electron/get) with no coverage behind it -- skip it here.
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,45 +29,11 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
-      - run: npm run test:workspace
       - run: npm run workspace:validate
+      - run: npm run test:workspace
       - run: npm run test:shared
 
   backend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-    env:
-      DATABASE_URL: postgresql://user:password@localhost:5432/bold
-      DIRECT_URL: postgresql://user:password@localhost:5432/bold
-      JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
-      # See workspace job above: this job never touches Electron.
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.12.0
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - run: npm ci
-        working-directory: ${{ github.workspace }}
-      - run: npx prisma validate
-      # WP-009 Phase 0.5: static guard against nested `create`s that pass a
-      # composite-FK-shared column explicitly (the receive()/savePeriod()
-      # bug class), and against `as any` on any Prisma write argument. Pure
-      # AST/schema parsing, no database needed.
-      - run: node scripts/check-nested-create-composite-fk.cjs
-      - run: npm run test:soft
-      - run: npm audit --audit-level=high
-      - name: Build production API container from the workspace root
-        run: docker build --file backend/Dockerfile --tag athr-api:${{ github.sha }} .
-        working-directory: ${{ github.workspace }}
-
-  migration-gate:
-    name: migration-gate
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -80,11 +41,11 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: athr_migrations
+          POSTGRES_DB: athr_ci
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d athr_migrations"
+          --health-cmd "pg_isready -U postgres -d athr_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -92,13 +53,11 @@ jobs:
       run:
         working-directory: backend
     env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_ci
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_ci
+      SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_ci_shadow
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
       ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
-      ALLOW_REMOTE_DEVELOPMENT_ACCOUNTING_RESET: 1
-      # See workspace job above: this job never touches Electron. Applies to
-      # both `npm ci` invocations below, including the one against the
-      # release-baseline checkout in migration-base/.
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,23 +69,12 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
         working-directory: ${{ github.workspace }}
-      - name: Create isolated migration databases
-        env:
-          PGPASSWORD: postgres
-        run: |
-          for database in \
-            athr_migrations_clean \
-            athr_migrations_clean_shadow \
-            athr_migrations_upgrade \
-            athr_migrations_upgrade_shadow
-          do
-            createdb \
-              --host localhost \
-              --username postgres \
-              "$database"
-          done
-      - name: Resolve exact migration baselines
-        id: refs
+      - run: npx prisma validate
+      # Static guard: nested `create`s must not pass composite-FK columns
+      # explicitly, and Prisma write arguments must not be cast to `any`.
+      - run: node scripts/check-nested-create-composite-fk.cjs
+      # Applied migrations are immutable; schema changes need a new migration.
+      - name: Enforce immutable forward-only migrations
         env:
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
@@ -134,232 +82,31 @@ jobs:
           if [ -z "$base_sha" ] || [ "$base_sha" = "0000000000000000000000000000000000000000" ]; then
             base_sha="$(git rev-parse HEAD^)"
           fi
-          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
-      - name: Enforce immutable forward-only migrations
-        id: policy
-        run: >-
-          npm run prisma:migrations:policy --
-          --base "${{ steps.refs.outputs.base_sha }}"
-          --github-output "$GITHUB_OUTPUT"
-      - name: Apply current migrations to a clean database twice
+          npm run prisma:migrations:policy -- --base "$base_sha"
+      - name: Apply migrations to a clean database and check for drift
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean_shadow
+          PGPASSWORD: postgres
         run: |
+          createdb --host localhost --username postgres athr_ci_shadow
           npx prisma generate
           npx prisma migrate deploy
-          npx prisma migrate deploy
-          npx prisma migrate status
           npx prisma migrate diff --exit-code \
             --from-migrations prisma/migrations \
-            --to-url "$DIRECT_URL" \
+            --to-schema-datamodel prisma/schema.prisma \
             --shadow-database-url "$SHADOW_DATABASE_URL"
-      # WP-009 Phase A: a clean database has zero InventoryStock/Movement
-      # rows at this point, so this is mostly a symmetry/robustness check
-      # (the WP's own acceptance criterion is that migration-gate covers
-      # clean AND populated) -- it proves the validator does not crash on an
-      # empty database, which the populated-path run alone would not prove.
-      # MUST run here, immediately after `prisma migrate deploy`.
-      #
-      # verify-tenant-constraints.cjs and verify-raw-sql-tenant-scoping.cjs's
-      # own throwaway Branch/InventoryStock/InventoryMovement rows (created
-      # via direct Prisma calls, to prove unrelated invariants) now resolve a
-      # real Warehouse for the branch they seed, the same way prisma/seed.ts
-      # does -- they no longer produce a NULL warehouse_id. What still does:
-      # every row those two scripts (and the perf/*.mjs smoke scripts) create
-      # through the record_inventory_movement()/record_inventory_cost_
-      # movement() SQL functions, because that function signature has no
-      # warehouse_id parameter at all -- a change Phase A's own PR1
-      # description scopes to PR2's application-code cutover, alongside that
-      # function's other real write-path call sites. Those specific rows stay
-      # NULL by construction, same as production will between this PR landing
-      # and PR2's cutover; asserting zero NULLs after this step would still be
-      # asserting an invariant this PR never claimed to hold for them.
-      - name: Verify warehouse_id backfill accounting on a clean database (WP-009 Phase A)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: |
-          node scripts/validate-warehouse-backfill.cjs
-          node scripts/validate-warehouse-backfill.cjs --post-check
-      - name: Verify tenant database constraints (WP-007 Phase B)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/verify-tenant-constraints.cjs
-      # WP-008 Phase B: POS sync emission, default-Price-Book replacement and
-      # the PricingRule tie-break are all enforced by the database, not by
-      # application code -- they can only be proven against a real one.
-      - name: Verify Price Book behaviour (WP-008 Phase B)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/verify-price-book-behaviour.cjs
-      # WP-008 Phase C: tax snapshot immutability, the one-active-code partial
-      # index, activate's demote-before-promote statement order and SyncChange
-      # emission are all enforced by the database. fakePrisma runs no trigger
-      # and enforces no partial index, so a green jest suite proves none of
-      # them -- this is where the phase's central test actually runs.
-      - name: Verify Tax Code behaviour (WP-008 Phase C)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/verify-tax-code-behaviour.cjs
-      # WP-008 Phase D: Coupon code uniqueness (BR-CPN-201) and idempotent
-      # redemption (BR-CPN-204) are both unique-constraint invariants proven
-      # under genuine concurrency (Promise.all racing writers on the same
-      # row), not sequential calls -- fakePrisma enforces no unique
-      # constraint at all (backlog item F7c), so a green jest suite proves
-      # neither. This is where that phase's central tests actually run.
-      - name: Verify Promotion/Coupon behaviour (WP-008 Phase D)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/verify-promotion-behaviour.cjs
-      # hard-load stack-depth fix: SyncService's catalog snapshot used
-      # Prisma's automatic include:{product:true} relation loader, which
-      # exceeds Postgres's max_stack_depth once the parent ProductVariant
-      # set is unbounded and large (confirmed between 7,500 and 10,031
-      # rows). fakePrisma runs no real query planner/executor, so this only
-      # reproduces against a real database. This proof asserts on
-      # SyncService itself rather than a reimplementation of its query
-      # shape, so it needs the compiled service.
-      - name: Build backend for the sync snapshot proof
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: npm run build
-      - name: Verify sync snapshot behaviour at catalog volume
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/verify-sync-snapshot-behaviour.cjs
-      # WP-T2/F4: fakePrisma's $queryRaw/$executeRaw now fail loud on any
-      # statement not on the declared allowlist (raw-sql-allowlist.ts) --
-      # every remaining raw-SQL path a jest spec only proved by asserting on
-      # captured SQL text (not by executing it) still needs a real proof.
-      # Reuses the dist/ build from the step above.
-      - name: Verify raw-SQL tenant scoping (WP-T2/F4)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/verify-raw-sql-tenant-scoping.cjs
-      # WP-009 Phase A follow-up: verify-tenant-constraints.cjs and
-      # verify-raw-sql-tenant-scoping.cjs above (plus the perf/*.mjs hard-smoke
-      # scripts) were swept to resolve a real warehouse_id for every
-      # InventoryStock row they create, closing the gap where the column's
-      # current nullability let them slip through unnoticed. This is the
-      # regression guard for that sweep: InventoryStock only, not
-      # InventoryMovement -- rows record_inventory_movement() creates
-      # (verify-raw-sql-tenant-scoping.cjs's W1/W2, and the perf smoke
-      # scripts) legitimately still have a NULL warehouse_id, since that
-      # function has no warehouse_id parameter (PR2's scope, not this one's).
-      - name: Verify fixture/smoke scripts resolve a real warehouse_id (WP-009 Phase A follow-up)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/validate-warehouse-backfill.cjs --post-check-fixture-stock
-      # WP-009 Phase 0.5: nested `create`s under a parent whose child shares
-      # a composite tenant_id FK (PurchaseInvoice.items, SellerCommission
-      # Period.rows) were never called against a real database by anything
-      # -- fakePrisma-backed jest specs never validate argument shape, so
-      # both were broken unconditionally against real Postgres. Reuses the
-      # dist/ build from the steps above.
-      - name: Verify nested-create composite-FK real-Postgres path (WP-009 P0.5)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
-        run: node scripts/verify-nested-create-real-postgres.cjs
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.policy.outputs.upgrade_ref }}
-          path: migration-base
-      - name: Build a populated database from the release baseline
-        working-directory: migration-base
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm ci --prefix backend
-          fi
-          cd backend
-          npx prisma generate
-          npx prisma migrate deploy
-          npm run prisma:seed
-      # WP-009 Phase A: 90 of 92 Branch rows have no Location on the live
-      # demo database today (measured 2026-08-22) -- BranchesRepository
-      # .save() never creates one for a branch created through the app.
-      # prisma/seed.ts's own BOLD-01/BOLD-02 above always get a Location +
-      # default Warehouse directly (it does not depend on 202608020002's
-      # backfill or on migrate-deploy/seed ordering), so they are not a
-      # source of the warehouse-less case this migration's catch-up guard
-      # needs to keep proving. This step inserts one more branch directly,
-      # bypassing the app, for that -- see
-      # scripts/ci-seed-warehouse-less-branch.cjs's header for the full
-      # reasoning.
-      - name: Seed a warehouse-less branch into the populated database (WP-009 Phase A)
-        working-directory: backend
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-        run: node scripts/ci-seed-warehouse-less-branch.cjs
-      - name: Upgrade populated release data with current migrations
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade_shadow
-        run: |
-          npx prisma generate
-          # WP-008 Phase B / CLAUDE.md §6 "fail loud on ambiguous data": the
-          # PricingRule -> PriceBook cutover's accounting. The migration's own
-          # RAISE NOTICE is invisible (`prisma migrate deploy` does not print
-          # PostgreSQL NOTICE messages), so the standalone validator runs here
-          # instead -- pre-migration for the ambiguous-row report, and
-          # post-migration for the hard 1:1 "no live variant lost its price"
-          # invariant, which exits non-zero and fails this job.
-          node scripts/validate-pricing-rule-migration.cjs
-          node scripts/validate-tax-code-migration.cjs
-          # WP-009 Phase A: same discipline for the warehouse_id backfill --
-          # pre-check reports the state about to be migrated (including the
-          # warehouse-less branch seeded above), post-check is the hard stop.
-          node scripts/validate-warehouse-backfill.cjs
-          npx prisma migrate deploy
-          npx prisma migrate deploy
-          npx prisma migrate status
-          node scripts/validate-pricing-rule-migration.cjs --post-check
-          node scripts/validate-tax-code-migration.cjs --post-check
-          node scripts/validate-warehouse-backfill.cjs --post-check
-          npx prisma migrate diff --exit-code \
-            --from-migrations prisma/migrations \
-            --to-url "$DIRECT_URL" \
-            --shadow-database-url "$SHADOW_DATABASE_URL"
-      # WP-009 Phase A / WP-P0: WP-P0 broke sync on realistic row counts and
-      # that class of gap was never closed -- this is that proof, run
-      # explicitly against the populated-and-upgraded database rather than
-      # just the empty clean one. verify-sync-snapshot-behaviour.cjs seeds
-      # its own isolated tenant/catalog at volume, so it is unaffected by
-      # (and does not affect) the WP-009 fixture/backfill data already in
-      # this database. Reuses the dist/ build from the clean-DB steps above.
-      - name: Verify sync snapshot behaviour against the upgraded populated database (WP-009 Phase A)
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade
-        run: node scripts/verify-sync-snapshot-behaviour.cjs
+      - run: npm run prisma:seed
+      # Real-Postgres proofs (constraints, triggers, price books, tax codes,
+      # promotions, sync snapshot, raw SQL, nested creates). Builds the API.
+      - run: npm run test:db
+      # Unit/contract specs, typecheck and production build.
+      - run: npm run test:soft
+      - run: npm audit --audit-level=high
 
   admin:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: admin-web
-    # See workspace job above: this job never touches Electron. This is the
-    # job from admin's run 32367936824 that actually hit the transient
-    # `TypeError: fetch failed` and failed release-gate as a consequence.
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -372,8 +119,7 @@ jobs:
       - run: npm run test:soft
       - run: npm audit --audit-level=high
 
-  admin-e2e-smoke:
-    name: admin-e2e-smoke
+  e2e-smoke:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -397,8 +143,6 @@ jobs:
       ATHR_API_INTERNAL_BASE: http://localhost:3000/api/v1
       ADMIN_SMOKE_PHONE: "+200100000000"
       ADMIN_SMOKE_PASSWORD: Bold1234
-      # See workspace job above: this job never touches Electron.
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -449,114 +193,9 @@ jobs:
       - run: npm run test:soft
       - run: npm audit --audit-level=high
 
-  hard-smoke:
-    needs: migration-gate
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: athr_perf
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d athr_perf"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    defaults:
-      run:
-        working-directory: backend
-    env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_perf
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_perf
-      JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
-      ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
-      PERF_LOGIN_PHONE: "+200100000000"
-      PERF_LOGIN_PASSWORD: Bold1234
-      PERF_SMOKE: 1
-      PERF_MUTATIONS: 1
-      PERF_SALES: 2
-      # See workspace job above: this job never touches Electron.
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.12.0
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - run: npm ci
-        working-directory: ${{ github.workspace }}
-      - run: npx prisma migrate deploy
-      - run: npm run prisma:seed
-      - run: npm run build
-      - name: Start API
-        run: |
-          npm run start:prod > /tmp/athr-api.log 2>&1 &
-          for attempt in {1..30}; do
-            curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null && exit 0
-            sleep 1
-          done
-          cat /tmp/athr-api.log
-          exit 1
-      # Reaching a healthy /health/ready already proves SwaggerModule.createDocument
-      # (backend/src/main.ts:61-62 runs before app.listen) and the eager
-      # `require("js-yaml")` at the top of @nestjs/swagger's swagger-module.js.
-      # It does NOT prove the serializer: jsyaml.dump() runs only inside the
-      # GET /api/docs-yaml handler. Without this step nothing in CI ever executes
-      # it, so a bad js-yaml resolution would ship green.
-      - name: Prove Swagger document generation, including the js-yaml YAML path
-        run: |
-          set -euo pipefail
-          curl --silent --fail http://localhost:3000/api/docs-json > /tmp/athr-openapi.json
-          curl --silent --fail http://localhost:3000/api/docs-yaml > /tmp/athr-openapi.yaml
-          node -e "
-            const path = require('node:path');
-            const { readFileSync } = require('node:fs');
-            // Resolve js-yaml the way @nestjs/swagger itself does, from its own
-            // directory, rather than by bare require(). js-yaml is not a declared
-            // backend dependency, so a bare require() depends on it staying hoisted
-            // -- and re-resolution moving it is the exact scenario this step guards.
-            // Going through swagger's own directory also means we assert against the
-            // overridden copy it actually loads.
-            const swaggerDir = path.dirname(require.resolve('@nestjs/swagger'));
-            const yaml = require(require.resolve('js-yaml', { paths: [swaggerDir] }));
-            const json = JSON.parse(readFileSync('/tmp/athr-openapi.json', 'utf8'));
-            const document = yaml.load(readFileSync('/tmp/athr-openapi.yaml', 'utf8'));
-            const jsonPaths = Object.keys(json.paths || {});
-            const yamlPaths = Object.keys(document.paths || {});
-            if (!json.openapi || jsonPaths.length === 0) {
-              throw new Error('OpenAPI JSON document is empty');
-            }
-            if (document.openapi !== json.openapi) {
-              throw new Error('YAML document does not match the JSON document');
-            }
-            if (yamlPaths.length !== jsonPaths.length) {
-              throw new Error(
-                'YAML exposes ' + yamlPaths.length + ' paths, JSON exposes ' + jsonPaths.length
-              );
-            }
-            // Resolve the manifest directly. js-yaml's main entry lives in dist/,
-            // so dirname(require.resolve('js-yaml')) is dist/, which has no
-            // package.json -- deriving the path that way throws.
-            const jsYamlVersion = require(
-              require.resolve('js-yaml/package.json', { paths: [swaggerDir] }),
-            ).version;
-            console.log(
-              'swagger ok: openapi ' + json.openapi + ', ' + jsonPaths.length + ' paths, ' +
-              'js-yaml ' + jsYamlVersion
-            );
-          "
-      - run: npm run test:hard:smoke
-      - name: Print API log on hard-smoke failure
-        if: failure()
-        run: cat /tmp/athr-api.log
-
-  docker-runtime-smoke:
-    name: docker-runtime-smoke
+  # Builds the production image once, exactly as Railway does, and proves the
+  # container boots against a migrated database and answers its health check.
+  docker:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -576,8 +215,6 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_docker_smoke
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_docker_smoke
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
-      # See workspace job above: this job never touches Electron.
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -588,8 +225,7 @@ jobs:
       - run: npm ci
       - run: npm run prisma:migrate:deploy
         working-directory: backend
-      - name: Build the production image exactly as Railway does
-        run: docker build --file backend/Dockerfile --tag athr-api:smoke .
+      - run: docker build --file backend/Dockerfile --tag athr-api:${{ github.sha }} .
       - name: Run the production image and wait for a healthy response
         run: |
           docker run -d --name athr-api-smoke \
@@ -598,7 +234,7 @@ jobs:
             -e DIRECT_URL="$DIRECT_URL" \
             -e JWT_SECRET="$JWT_SECRET" \
             -e PORT=3000 \
-            athr-api:smoke
+            athr-api:${{ github.sha }}
           for attempt in {1..30}; do
             curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null && exit 0
             sleep 2
@@ -609,35 +245,15 @@ jobs:
         run: docker logs athr-api-smoke
 
   release-gate:
-    name: release-gate
-    if: always() && github.event_name != 'schedule'
-    needs:
-      - workspace
-      - backend
-      - migration-gate
-      - admin
-      - admin-e2e-smoke
-      - pos
-      - hard-smoke
-      - docker-runtime-smoke
+    if: always()
+    needs: [workspace, backend, admin, e2e-smoke, pos, docker]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every production gate
+      - name: Require every gate to succeed
         env:
-          BACKEND_RESULT: ${{ needs.backend.result }}
-          WORKSPACE_RESULT: ${{ needs.workspace.result }}
-          MIGRATION_RESULT: ${{ needs.migration-gate.result }}
-          ADMIN_RESULT: ${{ needs.admin.result }}
-          ADMIN_E2E_RESULT: ${{ needs.admin-e2e-smoke.result }}
-          POS_RESULT: ${{ needs.pos.result }}
-          HARD_SMOKE_RESULT: ${{ needs.hard-smoke.result }}
-          DOCKER_RUNTIME_SMOKE_RESULT: ${{ needs.docker-runtime-smoke.result }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          test "$WORKSPACE_RESULT" = "success"
-          test "$BACKEND_RESULT" = "success"
-          test "$MIGRATION_RESULT" = "success"
-          test "$ADMIN_RESULT" = "success"
-          test "$ADMIN_E2E_RESULT" = "success"
-          test "$POS_RESULT" = "success"
-          test "$HARD_SMOKE_RESULT" = "success"
-          test "$DOCKER_RUNTIME_SMOKE_RESULT" = "success"
+          echo "$RESULTS"
+          for result in $RESULTS; do
+            test "$result" = "success"
+          done

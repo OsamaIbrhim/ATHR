@@ -88,6 +88,10 @@ function evaluateMigrationChanges({ changes, readBaseFile, readCurrentFile }) {
       continue;
     }
 
+    if (change.status === 'D' && isRebaseline) {
+      continue;
+    }
+
     const match = MIGRATION_PATH_PATTERN.exec(change.path);
     if (!match) {
       errors.push(
