@@ -57,7 +57,7 @@ DIRECT_URL=postgresql://...
 JWT_SECRET=<unique random value of at least 32 characters>
 CORS_ORIGINS=https://bold-system.vercel.app
 POS_PROTOCOL_MIN=2
-POS_PROTOCOL_MAX=2
+POS_PROTOCOL_MAX=3
 POS_MIN_APP_VERSION=1.4.0
 ```
 

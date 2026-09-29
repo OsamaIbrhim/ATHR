@@ -13,6 +13,10 @@ for API/database setup, deployment, recovery, and security guidance.
 - Multi-page change pulls must reach a strictly advancing final cursor before
   catalog validity is restored. A partial, stalled, or excessive pull keeps
   checkout blocked instead of exposing a half-applied catalog.
+- The catalog syncs by protocol 3: a paged snapshot that can resume after a
+  crash (the cursor is stored only after the last page), then entity deltas.
+  Scan resolves exact barcode (pack size), SKU, scale label, then text search.
+  Quantities are decimal per the item's unit precision.
 - The header shows real API online/offline state, last successful sync, pending
   sale count, and the last error.
 - A manager-issued, one-use code enrolls the stable device ID. The resulting
