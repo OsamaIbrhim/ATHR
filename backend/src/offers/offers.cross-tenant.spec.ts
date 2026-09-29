@@ -57,10 +57,10 @@ describe('offers — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s pending suggestions', async () => {
     const { service } = setup();
     const forA = await service.suggestions(contextFor(TENANT_A), ownerFor(BRANCH_A));
-    expect(forA.map((row: any) => row.id)).toEqual([SUGGESTION_A]);
+    expect(forA.items.map((row: any) => row.id)).toEqual([SUGGESTION_A]);
 
     const forB = await service.suggestions(contextFor(TENANT_B), ownerFor(BRANCH_B));
-    expect(forB.map((row: any) => row.id)).toEqual([SUGGESTION_B]);
+    expect(forB.items.map((row: any) => row.id)).toEqual([SUGGESTION_B]);
   });
 
   it('does not review another tenant\'s suggestion', async () => {

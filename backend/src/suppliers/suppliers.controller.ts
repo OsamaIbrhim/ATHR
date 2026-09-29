@@ -3,6 +3,7 @@ import { SuppliersService } from './suppliers.service';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { PageQueryDto } from '../common/pagination';
 import { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
 
 @Controller('suppliers')
@@ -10,8 +11,8 @@ export class SuppliersController {
   constructor(private svc: SuppliersService) {}
 
   @RequirePermission('supplier.view')
-  @Get() list(@TenantCtx() ctx: TenantContext, @Query('q') q?: string) {
-    return this.svc.findAll(ctx, q);
+  @Get() list(@TenantCtx() ctx: TenantContext, @Query() paging: PageQueryDto, @Query('q') q?: string) {
+    return this.svc.findAll(ctx, q, paging);
   }
 
   @RequirePermission('supplier.view')

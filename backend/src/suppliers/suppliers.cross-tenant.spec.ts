@@ -44,14 +44,14 @@ describe('suppliers — cross-tenant isolation', () => {
 
   it('lists only the calling tenant\'s suppliers', async () => {
     const { repository } = setup();
-    expect((await repository.list(contextFor(TENANT_A))).map((row) => row.id)).toEqual([SUPPLIER_A]);
-    expect((await repository.list(contextFor(TENANT_B))).map((row) => row.id)).toEqual([SUPPLIER_B]);
+    expect((await repository.list(contextFor(TENANT_A))).items.map((row) => row.id)).toEqual([SUPPLIER_A]);
+    expect((await repository.list(contextFor(TENANT_B))).items.map((row) => row.id)).toEqual([SUPPLIER_B]);
   });
 
   it('does not match another tenant\'s supplier on an identical name', async () => {
     const { repository } = setup();
     const hits = await repository.list(contextFor(TENANT_B), { search: 'Shared Name' });
-    expect(hits.map((row) => row.id)).toEqual([SUPPLIER_B]);
+    expect(hits.items.map((row) => row.id)).toEqual([SUPPLIER_B]);
   });
 
   /** The OCR alias resolver scans the whole supplier list — a classic leak point. */

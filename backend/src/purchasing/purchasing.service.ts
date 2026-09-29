@@ -1,3 +1,4 @@
+import { FIRST_PAGE, pageArgs, pageOf, type PageQuery } from '../common/pagination'
 import {
   BadRequestException,
   ConflictException,
@@ -69,22 +70,26 @@ export class PurchasingService {
     private inventory: InventoryService,
   ) {}
 
-  list(context: TenantContext, branch_id?: string, take = 50) {
-    const safeTake = Math.min(200, Math.max(1, Number(take) || 50))
-    return this.prisma.purchaseInvoice.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        ...(branch_id ? { branch_id } : {}),
-      },
-      include: {
-        branch: true,
-        supplier: true,
-        creator: { select: { id: true, name: true } },
-        items: { include: { variant: { include: { product: true } } } },
-      },
-      orderBy: [{ received_at: 'desc' }, { id: 'desc' }],
-      take: safeTake,
-    })
+  async list(context: TenantContext, branch_id?: string, paging: PageQuery = FIRST_PAGE) {
+    const where = {
+      tenant_id: context.tenantId,
+      ...(branch_id ? { branch_id } : {}),
+    }
+    const [items, total] = await Promise.all([
+      this.prisma.purchaseInvoice.findMany({
+        where,
+        include: {
+          branch: true,
+          supplier: true,
+          creator: { select: { id: true, name: true } },
+          items: { include: { variant: { include: { product: true } } } },
+        },
+        orderBy: [{ received_at: 'desc' }, { id: 'desc' }],
+        ...pageArgs(paging),
+      }),
+      this.prisma.purchaseInvoice.count({ where }),
+    ])
+    return pageOf(items, total, paging)
   }
 
   get(context: TenantContext, id: string) {

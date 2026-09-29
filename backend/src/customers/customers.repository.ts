@@ -3,10 +3,10 @@ import type { Customer, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantScope } from '../identity/tenant-context.type';
+import { FIRST_PAGE, PageQueryDto, pageArgs, pageOf, type PageQuery } from '../common/pagination';
 
 export interface CustomerFilters {
   readonly search?: string;
-  readonly take?: number;
 }
 
 /**
@@ -42,24 +42,29 @@ export class CustomersRepository {
     });
   }
 
-  async list(context: TenantScope, filters: CustomerFilters = {}): Promise<Customer[]> {
+  async list(context: TenantScope, filters: CustomerFilters = {}, paging: PageQuery = FIRST_PAGE) {
     const search = filters.search;
-    return this.prisma.customer.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        ...(search
-          ? {
-              OR: [
-                { phone: { contains: search } },
-                { name: { contains: search, mode: 'insensitive' as Prisma.QueryMode } },
-                { email: { contains: search, mode: 'insensitive' as Prisma.QueryMode } },
-              ],
-            }
-          : {}),
-      },
-      take: filters.take ?? 50,
-      orderBy: { total_spent: 'desc' },
-    });
+    const where: Prisma.CustomerWhereInput = {
+      tenant_id: context.tenantId,
+      ...(search
+        ? {
+            OR: [
+              { phone: { contains: search } },
+              { name: { contains: search, mode: 'insensitive' as Prisma.QueryMode } },
+              { email: { contains: search, mode: 'insensitive' as Prisma.QueryMode } },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.customer.findMany({
+        where,
+        orderBy: [{ total_spent: 'desc' }, { id: 'asc' }],
+        ...pageArgs(paging),
+      }),
+      this.prisma.customer.count({ where }),
+    ]);
+    return pageOf(items, total, paging);
   }
 
   async findByPhone(context: TenantScope, phone: string): Promise<Customer | null> {

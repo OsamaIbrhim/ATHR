@@ -4,7 +4,7 @@ import { apiGet, apiPost } from '@/lib/api'
 
 export default function Offers(){
   const [rows,setRows] = useState<any[]>([])
-  const load = async ()=> { try { const r = await apiGet('/offers/suggestions'); setRows(r) } catch{ setRows([])} }
+  const load = async ()=> { try { const r = await apiGet('/offers/suggestions?page=1&page_size=100'); setRows(r.items) } catch{ setRows([])} }
   useEffect(()=>{ load() },[])
   const review = async (id: string, status: 'approved'|'rejected') => {
     try { await apiPost(`/offers/${id}/review`, { status }); load() } catch(e:any){ alert('فشل: '+e.message) }

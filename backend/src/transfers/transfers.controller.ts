@@ -1,3 +1,4 @@
+import { PageQueryDto } from '../common/pagination';
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { TransfersService } from './transfers.service';
@@ -22,11 +23,13 @@ export class TransfersController {
   list(
     @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string | undefined,
+    @Query() paging: PageQueryDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     return this.svc.list(
       ctx,
       resolveBranchScope(req.user, branch_id),
+      paging,
     );
   }
 

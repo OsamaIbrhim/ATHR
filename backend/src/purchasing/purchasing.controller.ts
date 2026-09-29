@@ -9,6 +9,7 @@ import {
   Req,
 } from '@nestjs/common';
 import { Request } from 'express';
+import { PageQueryDto } from '../common/pagination';
 import { PurchasingService } from './purchasing.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import {
@@ -34,13 +35,13 @@ export class PurchasingController {
   list(
     @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string | undefined,
-    @Query('take') take: string | undefined,
+    @Query() paging: PageQueryDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     return this.svc.list(
       ctx,
       resolveBranchScope(req.user, branch_id),
-      Number(take) || 50,
+      paging,
     );
   }
 

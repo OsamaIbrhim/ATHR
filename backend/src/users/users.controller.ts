@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post, Req } from '@nestjs/common';
+import { PageQueryDto } from '../common/pagination';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { UsersService } from './users.service';
 import { RequirePermission } from '../identity/permission.guard';
@@ -13,8 +14,12 @@ export class UsersController {
   constructor(private svc: UsersService) {}
 
   @RequirePermission('tenant.membership.view')
-  @Get() list(@TenantCtx() ctx: TenantContext, @Req() req: Request & { user: AuthenticatedUser }) {
-    return this.svc.findAll(ctx, req.user);
+  @Get() list(
+    @TenantCtx() ctx: TenantContext,
+    @Query() paging: PageQueryDto,
+    @Req() req: Request & { user: AuthenticatedUser },
+  ) {
+    return this.svc.findAll(ctx, req.user, paging);
   }
 
   @RequirePermission('membership.invite')

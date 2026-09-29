@@ -1,3 +1,4 @@
+import { FIRST_PAGE, pageArgs, pageOf, type PageQuery } from '../common/pagination';
 import { Injectable } from '@nestjs/common';
 import type { MembershipRole, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -57,13 +58,18 @@ export class UsersRepository {
     return membership && toView(membership);
   }
 
-  async list(context: TenantScope, where: Prisma.MembershipWhereInput) {
-    const memberships = await this.prisma.membership.findMany({
-      where: { ...where, tenant_id: context.tenantId },
-      select: MEMBERSHIP_VIEW,
-      orderBy: { user: { created_at: 'desc' } },
-    });
-    return memberships.map(toView);
+  async list(context: TenantScope, filter: Prisma.MembershipWhereInput, paging: PageQuery = FIRST_PAGE) {
+    const where = { ...filter, tenant_id: context.tenantId };
+    const [memberships, total] = await Promise.all([
+      this.prisma.membership.findMany({
+        where,
+        select: MEMBERSHIP_VIEW,
+        orderBy: [{ user: { created_at: 'desc' } }, { id: 'asc' }],
+        ...pageArgs(paging),
+      }),
+      this.prisma.membership.count({ where }),
+    ]);
+    return pageOf(memberships.map(toView), total, paging);
   }
 
   /**

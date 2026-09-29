@@ -1,3 +1,4 @@
+import type { PageQuery } from '../common/pagination';
 import { Injectable } from '@nestjs/common';
 import { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
 import { SuppliersRepository } from './suppliers.repository';
@@ -7,8 +8,8 @@ import type { TenantContext } from '../identity/tenant-context.type';
 export class SuppliersService {
   constructor(private readonly repository: SuppliersRepository) {}
 
-  findAll(context: TenantContext, q?: string) {
-    return this.repository.list(context, { search: q });
+  findAll(context: TenantContext, q?: string, paging?: PageQuery) {
+    return this.repository.list(context, { search: q }, paging);
   }
 
   findOne(context: TenantContext, id: string) {
@@ -33,15 +34,7 @@ export class SuppliersService {
   }
 
   // alias resolver for OCR – "Mohamed Trading Co." -> Supplier Mohamed
-  async resolveAlias(context: TenantContext, name: string) {
-    const all = await this.repository.list(context);
-    return (
-      all.find(
-        (supplier) =>
-          supplier.name === name ||
-          supplier.company_name === name ||
-          supplier.alias_names.includes(name),
-      ) || null
-    );
+  resolveAlias(context: TenantContext, name: string) {
+    return this.repository.findByAnyName(context, name);
   }
 }

@@ -232,6 +232,11 @@ export class FakeTable {
     return { count: items.length };
   };
 
+  createManyAndReturn = async ({ data }: any) => {
+    const items = Array.isArray(data) ? data : [data];
+    return Promise.all(items.map((item) => this.create({ data: item })));
+  };
+
   upsert = async ({ where, create, update, include }: any) => {
     const existing = this.rows.find((row) => this.match(row, where));
     if (existing) {

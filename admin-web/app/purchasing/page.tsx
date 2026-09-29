@@ -40,14 +40,14 @@ export default function Purchasing() {
     setError('')
     try {
       const [invoiceRows, supplierRows, branchRows, productRows, returnRows] = await Promise.all([
-        apiGet('/purchasing/invoices'),
-        apiGet('/suppliers'),
+        apiGet('/purchasing/invoices?page=1&page_size=100'),
+        apiGet('/suppliers?page=1&page_size=100'),
         apiGet('/branches'),
         apiGet('/products?page=1&page_size=200'),
         apiGet('/purchasing/supplier-returns'),
       ])
-      setInvoices(invoiceRows || [])
-      setSuppliers(supplierRows || [])
+      setInvoices(invoiceRows.items || [])
+      setSuppliers(supplierRows.items || [])
       setBranches(branchRows || [])
       setProducts(productRows.items || [])
       setReturns(returnRows || [])

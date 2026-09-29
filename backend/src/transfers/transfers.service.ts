@@ -1,3 +1,4 @@
+import { FIRST_PAGE, pageArgs, pageOf, type PageQuery } from '../common/pagination';
 import {
   BadRequestException,
   ConflictException,
@@ -88,18 +89,23 @@ export class TransfersService {
     private inventory: InventoryService,
   ) {}
 
-  list(context: TenantContext, branch_id?: string) {
-    return this.prisma.transfer.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        ...(branch_id
-          ? { OR: [{ from_branch_id: branch_id }, { to_branch_id: branch_id }] }
-          : {}),
-      },
-      include: { from_branch: true, to_branch: true, items: { select: ITEM_COLUMNS } },
-      orderBy: { created_at: 'desc' },
-      take: 50,
-    });
+  async list(context: TenantContext, branch_id?: string, paging: PageQuery = FIRST_PAGE) {
+    const where: Prisma.TransferWhereInput = {
+      tenant_id: context.tenantId,
+      ...(branch_id
+        ? { OR: [{ from_branch_id: branch_id }, { to_branch_id: branch_id }] }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.transfer.findMany({
+        where,
+        include: { from_branch: true, to_branch: true, items: { select: ITEM_COLUMNS } },
+        orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
+        ...pageArgs(paging),
+      }),
+      this.prisma.transfer.count({ where }),
+    ]);
+    return pageOf(items, total, paging);
   }
 
   async get(context: TenantContext, id: string, actor: AuthenticatedUser) {

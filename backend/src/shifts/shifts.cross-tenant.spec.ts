@@ -64,8 +64,8 @@ const ownerFor = (branchId: string) =>
 describe('shifts — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s shifts', async () => {
     const { service } = setup();
-    expect((await service.list(contextFor(TENANT_A))).map((row) => row.id)).toEqual([SHIFT_A]);
-    expect((await service.list(contextFor(TENANT_B))).map((row) => row.id)).toEqual([SHIFT_B]);
+    expect((await service.list(contextFor(TENANT_A))).items.map((row) => row.id)).toEqual([SHIFT_A]);
+    expect((await service.list(contextFor(TENANT_B))).items.map((row) => row.id)).toEqual([SHIFT_B]);
   });
 
   it('does not resolve another tenant\'s open shift for a branch', async () => {

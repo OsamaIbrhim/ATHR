@@ -199,6 +199,22 @@ export class PricingService {
   }
 
   /**
+   * Quotes each variant at qty 1 in one pass and simply leaves out those it
+   * cannot price (no Price Book entry, BR-PSL-101, or no active tax code) —
+   * for batch callers such as offer suggestions, where one unpriced variant
+   * must not abort the rest. A sale uses `calculateMany`, which throws.
+   */
+  async quoteAvailable(
+    context: TenantScope,
+    variants: readonly PriceableVariant[],
+    transaction?: Prisma.TransactionClient,
+  ): Promise<Map<string, PriceQuote>> {
+    if (!variants.length) return new Map();
+    const [index, taxCodes] = await this.loadFor(context, variants, transaction);
+    return this.quoteMany(variants, index, taxCodes);
+  }
+
+  /**
    * Loads every currently-effective `PriceBookEntry` for the tenant's active
    * **default** Price Book. Scoped so another tenant's entries can never win
    * this tenant's resolution (Multi-tenancy Blueprint §32/§120 precedent —

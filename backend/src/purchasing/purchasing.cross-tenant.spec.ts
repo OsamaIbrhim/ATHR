@@ -73,8 +73,8 @@ const actor = actorFor('warehouse_manager', { sub: randomUUID(), tenantWide: tru
 describe('purchasing — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s purchase invoices', async () => {
     const { service } = setup();
-    expect((await service.list(contextFor(TENANT_A))).map((i: any) => i.id)).toEqual([INVOICE_A]);
-    expect((await service.list(contextFor(TENANT_B))).map((i: any) => i.id)).toEqual([INVOICE_B]);
+    expect((await service.list(contextFor(TENANT_A))).items.map((i: any) => i.id)).toEqual([INVOICE_A]);
+    expect((await service.list(contextFor(TENANT_B))).items.map((i: any) => i.id)).toEqual([INVOICE_B]);
   });
 
   it('does not return another tenant\'s invoice by id', async () => {

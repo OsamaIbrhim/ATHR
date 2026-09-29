@@ -5,7 +5,7 @@ import { useSessionUser } from '@/components/AuthGate'
 
 export default function Shifts(){
   const user=useSessionUser(); const [items,setItems]=useState<any[]>([]),[branches,setBranches]=useState<any[]>([]),[branch,setBranch]=useState(user?.branch_id||''),[opening,setOpening]=useState('0'),[error,setError]=useState('')
-  const load=async()=>{try{const [s,b]=await Promise.all([apiGet(`/shifts${branch?`?branch_id=${branch}`:''}`),apiGet('/branches')]);setItems(s);setBranches(b)}catch(e:any){setError(e.message)}}
+  const load=async()=>{try{const [s,b]=await Promise.all([apiGet(`/shifts?page=1&page_size=100${branch?`&branch_id=${branch}`:''}`),apiGet('/branches')]);setItems(s.items);setBranches(b)}catch(e:any){setError(e.message)}}
   useEffect(()=>{load()},[branch])
   const open=async()=>{if(!branch)return;try{await apiPost('/shifts/open',{branch_id:branch,opening_cash:Number(opening)});load()}catch(e:any){setError(e.message)}}
   const close=async(s:any)=>{const amount=prompt('النقد الفعلي عند الإغلاق:');if(amount===null)return;try{await apiPost(`/shifts/${s.id}/close`,{closing_cash:Number(amount)});load()}catch(e:any){setError(e.message)}}

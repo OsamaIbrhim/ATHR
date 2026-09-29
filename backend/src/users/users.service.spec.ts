@@ -76,7 +76,7 @@ describe('UsersService', () => {
     it('shows a tenant-wide actor everyone except owners', async () => {
       repository.list.mockResolvedValue([]);
       await service.findAll(ctx, owner);
-      expect(repository.list).toHaveBeenCalledWith(ctx, { role: { not: 'tenant_owner' } });
+      expect(repository.list).toHaveBeenCalledWith(ctx, { role: { not: 'tenant_owner' } }, undefined);
     });
 
     it('shows a branch manager only subordinates scoped to their branch', async () => {
@@ -85,11 +85,11 @@ describe('UsersService', () => {
       expect(repository.list).toHaveBeenCalledWith(ctx, {
         role: { in: ['cashier', 'warehouse_manager', 'seller'] },
         access_scope_assignments: { some: { scope_type: 'location', scope_ref_id: 'branch-1' } },
-      });
+      }, undefined);
     });
 
     it('shows nothing to a scoped actor with no branch', async () => {
-      expect(await service.findAll(ctx, actorFor('location_manager'))).toEqual([]);
+      expect(await service.findAll(ctx, actorFor('location_manager'))).toMatchObject({ items: [], total: 0 });
       expect(repository.list).not.toHaveBeenCalled();
     });
   });
