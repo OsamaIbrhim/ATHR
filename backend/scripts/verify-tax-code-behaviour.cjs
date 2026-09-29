@@ -77,7 +77,8 @@ async function expectRejected(name, attempt, expectedFragment) {
     record(name, false, 'expected the write to be rejected but it succeeded');
   } catch (error) {
     const message = String(error?.message ?? error);
-    const ok = message.includes(expectedFragment);
+    const ok =
+      expectedFragment instanceof RegExp ? expectedFragment.test(message) : message.includes(expectedFragment);
     record(name, ok, ok ? undefined : `unexpected error: ${message.slice(0, 200)}`);
   }
 }
@@ -262,11 +263,13 @@ async function verifySnapshotImmutability(tenant) {
   );
 
   // A superseded TaxCode that a document snapshotted must remain deletable
-  // only by breaking the evidence -- which the RESTRICT FK forbids.
+  // only by breaking the evidence -- which the RESTRICT FK forbids. Postgres 16
+  // reports it as a foreign key violation (Prisma P2003); Postgres 17+ raises
+  // restrict_violation ("violates RESTRICT setting of foreign key constraint").
   await expectRejected(
     'C1 a TaxCode a document snapshotted cannot be deleted out from under it',
     () => prisma.taxCode.delete({ where: { id: v1.id } }),
-    'Foreign key constraint',
+    /foreign key constraint/i,
   );
 
   return { category, v1, v2, variant, product };

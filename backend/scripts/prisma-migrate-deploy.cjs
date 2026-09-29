@@ -69,8 +69,10 @@ function isAdvisoryLockTimeout(output) {
 }
 
 function runPrisma(argumentsList, environment) {
-  const executable = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  const result = spawnSync(executable, ['prisma', ...argumentsList], {
+  // Run the Prisma CLI with this Node directly: no npx/shell, so Windows
+  // (which refuses to spawn .cmd files without a shell) behaves like Linux.
+  const prismaCli = require.resolve('prisma/build/index.js', { paths: [backendRoot] });
+  const result = spawnSync(process.execPath, [prismaCli, ...argumentsList], {
     cwd: backendRoot,
     env: environment,
     encoding: 'utf8',
