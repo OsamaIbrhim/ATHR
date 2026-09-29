@@ -329,7 +329,6 @@ export class SalesService {
             user_id: { in: [dto.origin_cashier_id, dto.seller_id] },
           },
           select: { user_id: true, role: true, access_scope_assignments: true },
-          relationLoadStrategy: 'join',
         }),
       ]);
       if (claimed.branch_code === null) throw new NotFoundException('Branch not found');
@@ -378,7 +377,6 @@ export class SalesService {
           product: { tenant_id: context.tenantId },
         },
         include: { product: true, base_uom: { select: { precision: true } } },
-        relationLoadStrategy: 'join',
       });
       if (variants.length !== variantIds.length) {
         const found = new Set(variants.map((variant) => variant.id));

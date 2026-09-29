@@ -101,7 +101,6 @@ export class OffersService {
     const variants = await this.prisma.productVariant.findMany({
       where: { tenant_id: context.tenantId, id: { in: [...new Set(fresh.map((stock) => stock.variant_id))] } },
       include: { product: true },
-      relationLoadStrategy: 'join',
     });
     // WP-008 Phase B: BR-PSL-101 -- a variant with no resolvable Price Book
     // entry is not eligible for a suggestion; one unpriced slow-mover must not

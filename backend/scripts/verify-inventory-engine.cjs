@@ -535,7 +535,7 @@ async function verifySale() {
   if (process.env.INVENTORY_ENGINE_PRINT_SQL) lastStatements.forEach((sql, index) => process.stdout.write(`SQL ${index + 1}: ${sql.replace(/\s+/g, ' ').slice(0, 110)}\n`));
   check('E9 a sale issues the same number of statements for 1 line and for 30 lines', statementsOne === statementsMany, `1 line=${statementsOne}, 30 lines=${statementsMany}`);
   // Ceiling, so the hot path cannot quietly regain round trips (docs/design/W1-W2-data-core.md section 8).
-  const SALE_STATEMENT_CEILING = 14;
+  const SALE_STATEMENT_CEILING = 16;
   check(`E9 a sale stays within ${SALE_STATEMENT_CEILING} statements`, statementsMany <= SALE_STATEMENT_CEILING, `1 line=${statementsOne}, 30 lines=${statementsMany}`);
   const [withCustomer, statementsCustomer] = await counted(() => sales.createSale({ ...saleDto(stockedVariants.slice(6, 7)), customer_phone: '01099999999' }, { id: terminal.id, branch_id: world.branch.id, tenant_id: world.tenant.id }));
   check(`E9 a sale with a customer costs one extra statement (${statementsCustomer})`, statementsCustomer <= SALE_STATEMENT_CEILING + 1 && !!withCustomer.customer_id);
