@@ -1,9 +1,10 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { apiGet, apiPost, getStoredUser } from '@/lib/api'
+import { apiGet, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 
 export default function Shifts(){
-  const user=getStoredUser(); const [items,setItems]=useState<any[]>([]),[branches,setBranches]=useState<any[]>([]),[branch,setBranch]=useState(user?.branch_id||''),[opening,setOpening]=useState('0'),[error,setError]=useState('')
+  const user=useSessionUser(); const [items,setItems]=useState<any[]>([]),[branches,setBranches]=useState<any[]>([]),[branch,setBranch]=useState(user?.branch_id||''),[opening,setOpening]=useState('0'),[error,setError]=useState('')
   const load=async()=>{try{const [s,b]=await Promise.all([apiGet(`/shifts${branch?`?branch_id=${branch}`:''}`),apiGet('/branches')]);setItems(s);setBranches(b)}catch(e:any){setError(e.message)}}
   useEffect(()=>{load()},[branch])
   const open=async()=>{if(!branch)return;try{await apiPost('/shifts/open',{branch_id:branch,opening_cash:Number(opening)});load()}catch(e:any){setError(e.message)}}

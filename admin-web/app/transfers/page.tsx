@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { apiGet, apiPost, getStoredUser } from '@/lib/api'
+import { apiGet, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 
 type DraftLine = { variant_id: string; qty: string }
 const newLine = (): DraftLine => ({ variant_id: '', qty: '1' })
@@ -14,7 +15,7 @@ const statusLabel: Record<string,string> = {
 }
 
 export default function Transfers() {
-  const user = getStoredUser()
+  const user = useSessionUser()
   const [rows,setRows] = useState<any[]>([])
   const [branches,setBranches] = useState<any[]>([])
   const [products,setProducts] = useState<any[]>([])

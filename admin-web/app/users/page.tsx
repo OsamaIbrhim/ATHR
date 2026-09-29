@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { apiGet, apiPatch, apiPost, getStoredUser } from '@/lib/api'
+import { apiGet, apiPatch, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { normalizeUserPhone, validateUserPhone } from '@/lib/user-form'
 
 const roleNames: Record<string, string> = {
@@ -55,7 +56,7 @@ export default function Users() {
   const [editing, setEditing] = useState<any | null>(null)
   const [grants, setGrants] = useState<string[]>([])
   const [revokes, setRevokes] = useState<string[]>([])
-  const actor = getStoredUser()
+  const actor = useSessionUser()
 
   const load = () => Promise.all([
     apiGet('/users'),

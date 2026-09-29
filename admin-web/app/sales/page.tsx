@@ -1,7 +1,8 @@
 'use client'
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
-import { apiGet, getStoredUser } from '@/lib/api'
+import { apiGet } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { saleWarningCodes, saleWarningLabel } from '@/lib/sale-warnings'
 
 type SalesResponse = { items:any[]; page:number; page_size:number; total:number; total_pages:number; server_time:string }
@@ -12,7 +13,7 @@ export default function Sales(){
   const [from,setFrom]=useState(''), [to,setTo]=useState(''), [payment,setPayment]=useState(''), [branch,setBranch]=useState('')
   const [warningsOnly,setWarningsOnly]=useState(false)
   const [branches,setBranches]=useState<any[]>([]), [loading,setLoading]=useState(true), [error,setError]=useState('')
-  const owner = getStoredUser()?.role === 'owner'
+  const owner = useSessionUser()?.role === 'owner'
   const load=useCallback(async()=>{
     setLoading(true); setError('')
     const params=new URLSearchParams({page:String(page),page_size:'20'})

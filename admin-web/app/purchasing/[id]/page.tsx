@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
-import { apiGet, apiPost, getStoredUser } from '@/lib/api'
+import { apiGet, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { hasCapability } from '@/lib/permissions'
 
 export default function PurchaseDetail() {
   const { id } = useParams<{ id: string }>()
-  const canManage = hasCapability(getStoredUser(), 'purchasing.manage')
+  const canManage = hasCapability(useSessionUser(), 'purchasing.manage')
   const [invoice, setInvoice] = useState<any|null>(null)
   const [returnQty, setReturnQty] = useState<Record<string,string>>({})
   const [returnReason, setReturnReason] = useState('')

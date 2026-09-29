@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { apiGet, apiPost, getStoredUser } from '@/lib/api'
+import { apiGet, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { businessDate } from '@/lib/business-time'
 import { hasCapability } from '@/lib/permissions'
 
@@ -10,7 +11,7 @@ type PurchaseLine = { variant_id: string; qty: string; unit_cost: string }
 const emptyLine = (): PurchaseLine => ({ variant_id: '', qty: '1', unit_cost: '' })
 
 export default function Purchasing() {
-  const user = getStoredUser()
+  const user = useSessionUser()
   const canManage = hasCapability(user, 'purchasing.manage')
   const [invoices, setInvoices] = useState<any[]>([])
   const [suppliers, setSuppliers] = useState<any[]>([])
