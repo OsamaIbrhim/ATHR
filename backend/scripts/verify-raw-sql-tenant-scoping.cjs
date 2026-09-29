@@ -40,8 +40,9 @@ const distInventoryRepo = path.join(__dirname, '..', 'dist', 'src', 'inventory',
 const distInventoryService = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.service.js');
 const distApiErrorFilter = path.join(__dirname, '..', 'dist', 'src', 'common', 'api-error.filter.js');
 
-let PurchasingService, TransfersService, InventoryRepository, InventoryService, toFriendlyError;
+let ReportsService, PurchasingService, TransfersService, InventoryRepository, InventoryService, toFriendlyError;
 try {
+  ({ ReportsService } = require(path.join(__dirname, '..', 'dist', 'src', 'reports', 'reports.service.js')));
   ({ PurchasingService } = require(distPurchasing));
   ({ TransfersService } = require(distTransfers));
   ({ InventoryRepository } = require(distInventoryRepo));
@@ -408,10 +409,66 @@ async function verifyReconciliationMismatchesScoping() {
   );
 }
 
+// R4: the reports are GROUP BY statements; a missing tenant predicate would add
+// another tenant's revenue to these totals. Also pins the per-line rounding.
+async function seedReportTenant(label, qty, unitPrice, unitCost) {
+  const tenant = await createTenant(`report-${label}`);
+  const { branch, warehouse } = await createBranchWithWarehouse(tenant.id, label);
+  const variant = await createVariant(tenant.id, await createCategory(tenant.id));
+  const at = new Date('2026-03-15T10:00:00.000Z');
+  const invoice = await prisma.salesInvoice.create({
+    data: {
+      tenant_id: tenant.id, invoice_number: `R4-${randomUUID()}`, branch_id: branch.id, status: 'completed',
+      occurred_at: at, subtotal: 90, tax_amount: 10, total: 100, payment_method: 'cash', language: 'ar',
+      items: { create: [{ variant_id: variant.id, qty, unit_price: unitPrice, unit_cost: unitCost, unit_tax: 0 }] },
+    },
+    include: { items: true },
+  });
+  await prisma.return.create({
+    data: {
+      tenant_id: tenant.id, original_invoice_id: invoice.id, branch_id: branch.id, return_invoice_number: `R4R-${randomUUID()}`,
+      refund_subtotal: 30, refund_tax: 3, refund_total: 33, status: 'completed', created_at: at,
+      items: { create: [{ sales_invoice_item_id: invoice.items[0].id, variant_id: variant.id, qty: 1, unit_price: unitPrice, unit_cost: unitCost, unit_tax: 0 }] },
+    },
+  });
+  await prisma.inventoryStock.create({
+    data: { tenant_id: tenant.id, warehouse_id: warehouse.id, variant_id: variant.id, qty_on_hand: 4, avg_cost: '2.5' },
+  });
+  return { tenant, branch, variant };
+}
+
+async function verifyReportsScoping() {
+  const a = await seedReportTenant('a', 3, '30.00', '0.3333');
+  const b = await seedReportTenant('b', 500, '1400.00', '10.0000');
+  const reports = new ReportsService(prisma);
+  const contextA = { tenantId: a.tenant.id };
+
+  const sales = await reports.sales(contextA, '2026-03-01', '2026-03-31');
+  // cost: round(0.3333*3,2)=1.00 sold minus round(0.3333*1,2)=0.33 returned
+  expectTrue('R4 sales(tenant A) totals only tenant A', sales.count === 1 && sales.return_count === 1 && sales.gross_sales === 100 && sales.refunds === 33 && sales.total_sales === 67 && sales.total_cost === 0.67, JSON.stringify(sales));
+  const branchOnly = await reports.sales(contextA, '2026-03-01', '2026-03-31', b.branch.id);
+  expectTrue("R4 sales(tenant A, tenant B's branch) is empty", branchOnly.count === 0 && branchOnly.gross_sales === 0);
+  const outside = await reports.sales(contextA, '2026-04-01', '2026-04-30');
+  expectTrue('R4 sales outside the window is empty', outside.count === 0 && outside.return_count === 0);
+
+  const best = await reports.bestSellers(contextA, '2026-03-01', '2026-03-31');
+  expectTrue('R4 bestSellers(tenant A) is net of returns and only tenant A', best.length === 1 && best[0].variant_id === a.variant.id && best[0].qty === 2 && best[0].profit === 59.33, JSON.stringify(best));
+
+  const profit = await reports.profitByItem(contextA, '2026-03-01', '2026-03-31');
+  expectTrue('R4 profitByItem(tenant A) nets the return and only lists tenant A', profit.length === 1 && profit[0].qty === 2 && profit[0].revenue === 60 && profit[0].cost === 0.67 && profit[0].profit === 59.33, JSON.stringify(profit));
+
+  const valuation = await reports.inventoryValuation(contextA);
+  expectTrue('R4 inventoryValuation(tenant A) totals only tenant A stock', valuation.total_qty === 4 && valuation.total_value === 10 && valuation.total === 1 && valuation.rows.length === 1, JSON.stringify(valuation));
+
+  const tooWide = await reports.sales(contextA, '2024-01-01', '2026-03-31').then(() => null, (error) => error);
+  expectTrue('R4 a window over the maximum span is refused', tooWide?.getStatus?.() === 400);
+}
+
 async function main() {
   await verifyCostReconciliationScoping();
   await verifyReconcileInTransitScoping();
   await verifyReconciliationMismatchesScoping();
+  await verifyReportsScoping();
   await createVerifyActorUser();
   await verifySupplierReturnScoping();
   await verifyPurchaseReversalScoping();
