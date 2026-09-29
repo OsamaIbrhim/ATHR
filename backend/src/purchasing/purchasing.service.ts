@@ -21,6 +21,14 @@ import {
   calculateSupplierReturnCredit,
   preparePurchaseReceipt,
 } from './purchasing-accounting'
+import { InventoryService } from '../inventory/inventory.service'
+import { MAX_MONEY, unitCost } from '../common/money'
+import {
+  assertQuantityPrecision,
+  quantity,
+  quantityNumber,
+  variantQuantityPrecision,
+} from '../common/quantity'
 
 const purchaseInclude = {
   branch: true,
@@ -56,7 +64,10 @@ const purchaseInclude = {
 
 @Injectable()
 export class PurchasingService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private inventory: InventoryService,
+  ) {}
 
   list(context: TenantContext, branch_id?: string, take = 50) {
     const safeTake = Math.min(200, Math.max(1, Number(take) || 50))
@@ -153,12 +164,17 @@ export class PurchasingService {
 
         const variants = await tx.productVariant.findMany({
           where: { id: { in: variantIds }, tenant_id: context.tenantId },
-          select: { id: true },
+          select: { id: true, sku: true, base_uom: { select: { precision: true } } },
         })
         if (variants.length !== variantIds.length) {
           throw new NotFoundException(
             'One or more product variants were not found',
           )
+        }
+        const variantById = new Map(variants.map((variant) => [variant.id, variant]))
+        for (const line of prepared.lines) {
+          const variant = variantById.get(line.variant_id)!
+          assertQuantityPrecision(line.qty, variantQuantityPrecision(variant), variant.sku)
         }
 
         const invoice = await tx.purchaseInvoice.create({
@@ -203,91 +219,52 @@ export class PurchasingService {
           include: { items: true },
         })
 
-        const itemByVariant = new Map<
-          string,
-          { id: string; variant_id: string }
-        >(
-          invoice.items.map((item) => [
-            item.variant_id,
-            { id: item.id, variant_id: item.variant_id },
-          ]),
+        const itemIdByVariant = new Map(
+          invoice.items.map((item) => [item.variant_id, item.id]),
         )
-
-        for (const line of prepared.lines) {
-          const invoiceItem = itemByVariant.get(line.variant_id)
-          if (!invoiceItem) {
-            throw new NotFoundException(
-              `Created purchase line is missing for variant ${line.variant_id}`,
-            )
-          }
-
-          await tx.inventoryStock.upsert({
-            where: {
-              branch_id_variant_id: {
-                branch_id: dto.branch_id,
-                variant_id: line.variant_id,
-              },
-            },
-            update: { qty_on_hand: { increment: line.qty } },
-            create: {
-              tenant_id: context.tenantId,
-              branch_id: dto.branch_id,
-              variant_id: line.variant_id,
-              qty_on_hand: line.qty,
-            },
-          })
-
-          await tx.$queryRaw`
-            SELECT "record_inventory_movement"(
-              ${dto.branch_id}::uuid,
-              ${line.variant_id}::uuid,
-              'purchase_receipt'::"InventoryMovementType",
-              ${line.qty}::integer,
-              0::integer,
-              'PurchaseInvoice'::text,
-              ${invoice.id}::text,
-              ${invoiceItem.id}::text,
-              ${`purchase-receipt:${invoiceItem.id}`}::text,
-              ${receivedAt}::timestamp,
-              ${actor.sub}::uuid,
-              ${JSON.stringify({
-                supplier_id: dto.supplier_id,
-                invoice_number: dto.invoice_number || null,
+        // The receipt moves the branch's default warehouse and its
+        // moving-average cost, all lines in one inventory command.
+        await this.inventory.apply(tx, {
+          tenantId: context.tenantId,
+          warehouseId: await this.inventory.defaultWarehouseId(
+            tx,
+            context.tenantId,
+            dto.branch_id,
+          ),
+          occurredAt: receivedAt,
+          actorId: actor.sub,
+          type: 'purchase_receipt',
+          costType: 'purchase_receipt',
+          reference: { type: 'PurchaseInvoice', id: invoice.id },
+          idempotencyKey: `purchase-receipt:${invoice.id}`,
+          allowNegative: true,
+          metadata: {
+            supplier_id: dto.supplier_id,
+            invoice_number: dto.invoice_number || null,
+          },
+          lines: prepared.lines.map((line) => {
+            const itemId = itemIdByVariant.get(line.variant_id)
+            if (!itemId) {
+              throw new NotFoundException(
+                `Created purchase line is missing for variant ${line.variant_id}`,
+              )
+            }
+            return {
+              variantId: line.variant_id,
+              qtyDelta: line.qty,
+              referenceLineId: itemId,
+              unitCost: line.net_unit_cost,
+              value: line.net_line_total,
+              links: { purchaseInvoiceId: invoice.id, purchaseInvoiceItemId: itemId },
+              metadata: {
                 net_line_total: line.net_line_total.toFixed(2),
-                net_unit_cost: line.net_unit_cost.toFixed(6),
-              })}::jsonb
-            )
-          `
-
-          await tx.$queryRaw`
-            SELECT "record_inventory_cost_movement"(
-              ${line.variant_id}::uuid,
-              ${dto.branch_id}::uuid,
-              'purchase_receipt'::"InventoryCostMovementType",
-              ${line.qty}::integer,
-              ${line.net_line_total.toFixed(2)}::numeric,
-              'PurchaseInvoice'::text,
-              ${invoice.id}::text,
-              ${invoiceItem.id}::text,
-              ${invoice.id}::uuid,
-              ${invoiceItem.id}::uuid,
-              NULL::uuid,
-              NULL::uuid,
-              ${`purchase-cost:${invoiceItem.id}`}::text,
-              ${receivedAt}::timestamp,
-              ${actor.sub}::uuid,
-              NULL::numeric,
-              ${JSON.stringify({
-                supplier_id: dto.supplier_id,
-                invoice_number: dto.invoice_number || null,
+                net_unit_cost: line.net_unit_cost.toFixed(4),
                 gross_line_total: line.line_subtotal.toFixed(2),
-                allocated_discount:
-                  line.allocated_discount.toFixed(2),
-              })}::jsonb
-            )
-          `
-
-        }
+                allocated_discount: line.allocated_discount.toFixed(2),
+              },
+            }
+          }),
+        })
 
         await tx.auditLog.create({
           data: {
@@ -364,15 +341,12 @@ export class PurchasingService {
       )
     }
 
-    const requested = new Map<string, number>()
+    const requested = new Map<string, Prisma.Decimal>()
     for (const item of dto.items) {
-      const next =
-        (requested.get(item.purchase_invoice_item_id) || 0) +
-        item.qty
-      if (
-        !Number.isSafeInteger(next) ||
-        next > 2_147_483_647
-      ) {
+      const next = (
+        requested.get(item.purchase_invoice_item_id) ?? new Prisma.Decimal(0)
+      ).plus(quantity(item.qty))
+      if (next.gt(99_999_999.999)) {
         throw new BadRequestException(
           'Supplier return quantity exceeds supported range',
         )
@@ -398,7 +372,10 @@ export class PurchasingService {
           occurred_at: dto.occurred_at
             ? occurredAt.toISOString()
             : null,
-          items: canonicalItems,
+          items: canonicalItems.map((item) => ({
+            ...item,
+            qty: quantityNumber(item.qty),
+          })),
         }),
       )
       .digest('hex')
@@ -470,7 +447,7 @@ export class PurchasingService {
         type PurchaseLine = {
           id: string
           variant_id: string
-          qty: number
+          qty: Prisma.Decimal
           unit_cost: Prisma.Decimal
           net_unit_cost: Prisma.Decimal | null
           net_line_total: Prisma.Decimal | null
@@ -508,10 +485,17 @@ export class PurchasingService {
         ].sort()
         await this.lockVariants(tx, context, variantIds)
 
-        const [variants, returned] = await Promise.all([
+        // The goods leave the branch's default warehouse at its current
+        // moving-average cost, which the removal is priced with below.
+        const warehouseId = await this.inventory.defaultWarehouseId(
+          tx,
+          context.tenantId,
+          invoice.branch_id,
+        )
+        const [variants, returned, averageCosts] = await Promise.all([
           tx.productVariant.findMany({
             where: { tenant_id: context.tenantId, id: { in: variantIds } },
-            select: { id: true, cost_price: true },
+            select: { id: true, sku: true, cost_price: true, base_uom: { select: { precision: true } } },
           }),
           tx.supplierReturnItem.groupBy({
             by: ['purchase_invoice_item_id'],
@@ -524,27 +508,17 @@ export class PurchasingService {
             },
             _sum: { qty: true, credit_total: true },
           }),
+          this.inventory.averageCosts(tx, context.tenantId, warehouseId, variantIds),
         ])
-        const variantById = new Map<
-          string,
-          { id: string; cost_price: Prisma.Decimal }
-        >(
-          variants.map((variant) => [
-            variant.id,
-            {
-              id: variant.id,
-              cost_price: variant.cost_price,
-            },
-          ]),
-        )
+        const variantById = new Map(variants.map((variant) => [variant.id, variant]))
         const returnedByLine = new Map<
           string,
-          { qty: number; creditTotal: Prisma.Decimal }
+          { qty: Prisma.Decimal; creditTotal: Prisma.Decimal }
         >(
           returned.map((row) => [
             row.purchase_invoice_item_id,
             {
-              qty: row._sum.qty || 0,
+              qty: new Prisma.Decimal(row._sum.qty ?? 0),
               creditTotal: new Prisma.Decimal(
                 row._sum.credit_total || 0,
               ),
@@ -559,7 +533,7 @@ export class PurchasingService {
           const previousReturn = returnedByLine.get(
             purchaseItem.id,
           ) || {
-            qty: 0,
+            qty: new Prisma.Decimal(0),
             creditTotal: new Prisma.Decimal(0),
           }
           const variant = variantById.get(purchaseItem.variant_id)
@@ -568,6 +542,7 @@ export class PurchasingService {
               `Variant not found: ${purchaseItem.variant_id}`,
             )
           }
+          assertQuantityPrecision(request.qty, variantQuantityPrecision(variant), variant.sku)
 
           const originalLineCredit = new Prisma.Decimal(
             purchaseItem.net_line_total ||
@@ -598,9 +573,9 @@ export class PurchasingService {
           }
           const creditTotal = credit.creditTotal
           const creditUnitCost = credit.creditUnitCost
-          const inventoryUnitCost = new Prisma.Decimal(
-            variant.cost_price,
-          ).toDecimalPlaces(2)
+          const inventoryUnitCost = unitCost(
+            averageCosts.get(purchaseItem.variant_id) ?? variant.cost_price,
+          )
           const inventoryValueRemoved = inventoryUnitCost
             .mul(request.qty)
             .toDecimalPlaces(2)
@@ -634,13 +609,10 @@ export class PurchasingService {
         const variance = creditTotal
           .minus(inventoryValueRemoved)
           .toDecimalPlaces(2)
-        const maximumAccountingValue = new Prisma.Decimal(
-          '9999999999999999.99',
-        )
         if (
-          creditTotal.greaterThan(maximumAccountingValue) ||
-          inventoryValueRemoved.greaterThan(maximumAccountingValue) ||
-          variance.abs().greaterThan(maximumAccountingValue)
+          creditTotal.greaterThan(MAX_MONEY) ||
+          inventoryValueRemoved.greaterThan(MAX_MONEY) ||
+          variance.abs().greaterThan(MAX_MONEY)
         ) {
           throw new BadRequestException(
             'Supplier return exceeds supported accounting value range',
@@ -681,100 +653,45 @@ export class PurchasingService {
           },
           include: { items: true },
         })
-        const returnItemByPurchaseLine = new Map<
-          string,
-          {
-            id: string
-            purchase_invoice_item_id: string
-          }
-        >(
-          returnRecord.items.map((item) => [
-            item.purchase_invoice_item_id,
-            {
-              id: item.id,
-              purchase_invoice_item_id:
-                item.purchase_invoice_item_id,
-            },
-          ]),
+        const returnItemByPurchaseLine = new Map(
+          returnRecord.items.map((item) => [item.purchase_invoice_item_id, item.id]),
         )
 
-        for (const item of preparedItems) {
-          const returnItem = returnItemByPurchaseLine.get(
-            item.purchaseItem.id,
-          )
-          if (!returnItem) {
-            throw new ConflictException(
-              'Created supplier return line is missing',
-            )
-          }
-
-          const stockChanged = await tx.$executeRaw`
-            UPDATE "InventoryStock"
-            SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
-            WHERE "branch_id" = ${invoice.branch_id}::uuid
-              AND "tenant_id" = ${context.tenantId}::uuid
-              AND "variant_id" = ${item.purchaseItem.variant_id}::uuid
-              AND "qty_on_hand" >= ${item.qty}
-              AND ("qty_on_hand" - ${item.qty}) >= "qty_reserved"
-          `
-          if (stockChanged !== 1) {
-            throw new ConflictException({
-              code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
-              message: `Insufficient unreserved stock to return variant ${item.purchaseItem.variant_id}`,
-              message_ar: 'الكمية غير المحجوزة من المخزون غير كافية لإتمام مرتجع المورد.',
-            })
-          }
-
-          await tx.$queryRaw`
-            SELECT "record_inventory_movement"(
-              ${invoice.branch_id}::uuid,
-              ${item.purchaseItem.variant_id}::uuid,
-              'reversal'::"InventoryMovementType",
-              ${-item.qty}::integer,
-              0::integer,
-              'SupplierReturn'::text,
-              ${returnRecord.id}::text,
-              ${returnItem.id}::text,
-              ${`supplier-return-stock:${returnItem.id}`}::text,
-              ${occurredAt}::timestamp,
-              ${actor.sub}::uuid,
-              ${JSON.stringify({
-                purchase_invoice_id: invoice.id,
-                purchase_invoice_item_id:
-                  item.purchaseItem.id,
+        await this.inventory.apply(tx, {
+          tenantId: context.tenantId,
+          warehouseId,
+          occurredAt,
+          actorId: actor.sub,
+          type: 'reversal',
+          costType: 'supplier_return',
+          reference: { type: 'SupplierReturn', id: returnRecord.id },
+          idempotencyKey: `supplier-return-stock:${returnRecord.id}`,
+          allowNegative: false,
+          metadata: { purchase_invoice_id: invoice.id },
+          lines: preparedItems.map((item) => {
+            const returnItemId = returnItemByPurchaseLine.get(item.purchaseItem.id)
+            if (!returnItemId) {
+              throw new ConflictException('Created supplier return line is missing')
+            }
+            return {
+              variantId: item.purchaseItem.variant_id,
+              qtyDelta: item.qty.negated(),
+              referenceLineId: returnItemId,
+              value: item.inventoryValueRemoved.negated(),
+              links: {
+                purchaseInvoiceId: invoice.id,
+                purchaseInvoiceItemId: item.purchaseItem.id,
+                supplierReturnId: returnRecord.id,
+                supplierReturnItemId: returnItemId,
+              },
+              metadata: {
                 credit_total: item.creditTotal.toFixed(2),
-              })}::jsonb
-            )
-          `
-
-          await tx.$queryRaw`
-            SELECT "record_inventory_cost_movement"(
-              ${item.purchaseItem.variant_id}::uuid,
-              ${invoice.branch_id}::uuid,
-              'supplier_return'::"InventoryCostMovementType",
-              ${-item.qty}::integer,
-              ${item.inventoryValueRemoved.negated().toFixed(2)}::numeric,
-              'SupplierReturn'::text,
-              ${returnRecord.id}::text,
-              ${returnItem.id}::text,
-              ${invoice.id}::uuid,
-              ${item.purchaseItem.id}::uuid,
-              ${returnRecord.id}::uuid,
-              ${returnItem.id}::uuid,
-              ${`supplier-return-cost:${returnItem.id}`}::text,
-              ${occurredAt}::timestamp,
-              ${actor.sub}::uuid,
-              NULL::numeric,
-              ${JSON.stringify({
-                credit_total: item.creditTotal.toFixed(2),
-                inventory_value_removed:
-                  item.inventoryValueRemoved.toFixed(2),
-                purchase_price_variance:
-                  item.variance.toFixed(2),
-              })}::jsonb
-            )
-          `
-        }
+                inventory_value_removed: item.inventoryValueRemoved.toFixed(2),
+                purchase_price_variance: item.variance.toFixed(2),
+              },
+            }
+          }),
+        })
 
         await tx.auditLog.create({
           data: {
@@ -951,155 +868,116 @@ export class PurchasingService {
       await this.lockVariants(tx, context, variantIds)
 
       const reversedAt = new Date()
-      for (const item of invoice.items) {
-        const [receiptCostMovement, receiptStockMovement] =
-          await Promise.all([
-            tx.inventoryCostMovement.findFirst({
-              where: {
-                tenant_id: context.tenantId,
-                idempotency_key: `purchase-cost:${item.id}`,
-              },
-            }),
-            tx.inventoryMovement.findFirst({
-              where: {
-                tenant_id: context.tenantId,
-                idempotency_key: `purchase-receipt:${item.id}`,
-              },
-            }),
-          ])
-        if (!receiptCostMovement || !receiptStockMovement) {
+      const [receiptCosts, receiptStocks, variantRows] = await Promise.all([
+        tx.inventoryCostMovement.findMany({
+          where: {
+            tenant_id: context.tenantId,
+            purchase_invoice_id: invoice.id,
+            movement_type: 'purchase_receipt',
+          },
+        }),
+        tx.inventoryMovement.findMany({
+          where: {
+            tenant_id: context.tenantId,
+            reference_type: 'PurchaseInvoice',
+            reference_id: invoice.id,
+            movement_type: 'purchase_receipt',
+          },
+        }),
+        tx.productVariant.findMany({
+          where: { tenant_id: context.tenantId, id: { in: variantIds } },
+          select: { id: true, item_type: true },
+        }),
+      ])
+      const stocked = new Set(
+        variantRows.filter((variant) => variant.item_type === 'stocked').map((variant) => variant.id),
+      )
+      const costByItem = new Map(receiptCosts.map((movement) => [movement.purchase_invoice_item_id, movement]))
+      const stockByVariant = new Map(receiptStocks.map((movement) => [movement.variant_id, movement]))
+      // Non-stocked lines never moved stock, so there is nothing to reverse for them.
+      const reversible = invoice.items.filter((item) => stocked.has(item.variant_id))
+      for (const item of reversible) {
+        if (!costByItem.has(item.id) || !stockByVariant.has(item.variant_id)) {
           throw new ConflictException(
             'Legacy or incomplete purchase receipts cannot be reversed automatically',
           )
         }
+      }
 
-        const [
-          downstreamCostMovement,
-          downstreamStockMovement,
-          currentGlobalQty,
-          currentVariant,
-        ] = await Promise.all([
-          tx.inventoryCostMovement.findFirst({
-            where: {
-              variant_id: item.variant_id,
-              sequence: { gt: receiptCostMovement.sequence },
-            },
-            select: { id: true },
-          }),
-          tx.inventoryMovement.findFirst({
-            where: {
-              variant_id: item.variant_id,
-              sequence: { gt: receiptStockMovement.sequence },
-            },
-            select: { id: true },
-          }),
-          tx.$queryRaw<Array<{ quantity: bigint }>>`
-            SELECT (
-              COALESCE((
-                SELECT SUM(stock."qty_on_hand")
-                FROM "InventoryStock" stock
-                WHERE stock."variant_id" = ${item.variant_id}::uuid
-              ), 0)
-              +
-              COALESCE((
-                SELECT SUM(
-                  transfer_item."shipped_qty" -
-                  transfer_item."received_qty" -
-                  transfer_item."damaged_qty" -
-                  transfer_item."missing_qty"
-                )
-                FROM "TransferItem" transfer_item
-                WHERE transfer_item."variant_id" =
-                  ${item.variant_id}::uuid
-              ), 0)
-            )::bigint AS quantity
+      if (reversible.length) {
+        // Only an untouched latest receipt can be reversed: the warehouse must
+        // hold exactly what the receipt left (quantity and average cost) and
+        // nothing may have been posted against the variant since.
+        const warehouseId = costByItem.get(reversible[0].id)!.warehouse_id
+        const variants = reversible.map((item) => item.variant_id)
+        const [downstream, stockRows] = await Promise.all([
+          tx.$queryRaw<Array<{ variant_id: string }>>`
+            SELECT DISTINCT r."variant_id"
+            FROM unnest(
+              ${variants}::uuid[],
+              ${reversible.map((item) => costByItem.get(item.id)!.sequence.toString())}::bigint[],
+              ${reversible.map((item) => stockByVariant.get(item.variant_id)!.sequence.toString())}::bigint[]
+            ) AS r("variant_id", "cost_sequence", "stock_sequence")
+            WHERE EXISTS (
+                SELECT 1 FROM "InventoryCostMovement" m
+                WHERE m."warehouse_id" = ${warehouseId}::uuid
+                  AND m."variant_id" = r."variant_id"
+                  AND m."sequence" > r."cost_sequence"
+              )
+              OR EXISTS (
+                SELECT 1 FROM "InventoryMovement" m
+                WHERE m."warehouse_id" = ${warehouseId}::uuid
+                  AND m."variant_id" = r."variant_id"
+                  AND m."sequence" > r."stock_sequence"
+              )
           `,
-          tx.productVariant.findFirst({
-            where: { id: item.variant_id, tenant_id: context.tenantId },
-            select: { cost_price: true },
+          tx.inventoryStock.findMany({
+            where: { tenant_id: context.tenantId, warehouse_id: warehouseId, variant_id: { in: variants } },
           }),
         ])
-
-        if (
-          downstreamCostMovement ||
-          downstreamStockMovement ||
-          Number(currentGlobalQty[0]?.quantity || 0n) !==
-            receiptCostMovement.global_quantity_after ||
-          !currentVariant ||
-          !new Prisma.Decimal(currentVariant.cost_price).equals(
-            receiptCostMovement.cost_after,
+        const stockByItemVariant = new Map(stockRows.map((row) => [row.variant_id, row]))
+        const untouched = reversible.every((item) => {
+          const receipt = costByItem.get(item.id)!
+          const current = stockByItemVariant.get(item.variant_id)
+          return (
+            current &&
+            current.qty_on_hand.equals(receipt.quantity_after) &&
+            current.avg_cost.equals(receipt.cost_after)
           )
-        ) {
+        })
+        if (downstream.length || !untouched) {
           throw new ConflictException(
             'Purchase receipt has downstream inventory activity and cannot be fully reversed',
           )
         }
 
-
-        const stockChanged = await tx.$executeRaw`
-          UPDATE "InventoryStock"
-          SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
-          WHERE "branch_id" = ${invoice.branch_id}::uuid
-            AND "tenant_id" = ${context.tenantId}::uuid
-            AND "variant_id" = ${item.variant_id}::uuid
-            AND "qty_on_hand" >= ${item.qty}
-            AND ("qty_on_hand" - ${item.qty}) >= "qty_reserved"
-        `
-        if (stockChanged !== 1) {
-          throw new ConflictException({
-            code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
-            message: `Insufficient unreserved stock to reverse variant ${item.variant_id}`,
-            message_ar: 'الكمية غير المحجوزة من المخزون غير كافية لعكس عملية الشراء.',
-          })
-        }
-
-        await tx.$queryRaw`
-          SELECT "record_inventory_movement"(
-            ${invoice.branch_id}::uuid,
-            ${item.variant_id}::uuid,
-            'reversal'::"InventoryMovementType",
-            ${-item.qty}::integer,
-            0::integer,
-            'PurchaseInvoice'::text,
-            ${invoice.id}::text,
-            ${item.id}::text,
-            ${`purchase-reversal-stock:${item.id}`}::text,
-            ${reversedAt}::timestamp,
-            ${actor.sub}::uuid,
-            ${JSON.stringify({
-              reason,
-              original_movement_id: receiptStockMovement.id,
-            })}::jsonb
-          )
-        `
-
-        await tx.$queryRaw`
-          SELECT "record_inventory_cost_movement"(
-            ${item.variant_id}::uuid,
-            ${invoice.branch_id}::uuid,
-            'purchase_reversal'::"InventoryCostMovementType",
-            ${-item.qty}::integer,
-            ${new Prisma.Decimal(
-              receiptCostMovement.movement_value,
-            ).negated().toFixed(2)}::numeric,
-            'PurchaseInvoice'::text,
-            ${invoice.id}::text,
-            ${item.id}::text,
-            ${invoice.id}::uuid,
-            ${item.id}::uuid,
-            NULL::uuid,
-            NULL::uuid,
-            ${`purchase-cost-reversal:${item.id}`}::text,
-            ${reversedAt}::timestamp,
-            ${actor.sub}::uuid,
-            ${receiptCostMovement.cost_before.toString()}::numeric,
-            ${JSON.stringify({
-              reason,
-              original_cost_movement_id:
-                receiptCostMovement.id,
-            })}::jsonb
-          )
-        `
+        await this.inventory.apply(tx, {
+          tenantId: context.tenantId,
+          warehouseId,
+          occurredAt: reversedAt,
+          actorId: actor.sub,
+          type: 'reversal',
+          costType: 'purchase_reversal',
+          reference: { type: 'PurchaseInvoice', id: invoice.id },
+          idempotencyKey: `purchase-reversal-stock:${invoice.id}`,
+          allowNegative: false,
+          metadata: { reason },
+          lines: reversible.map((item) => {
+            const receipt = costByItem.get(item.id)!
+            return {
+              variantId: item.variant_id,
+              qtyDelta: item.qty.negated(),
+              referenceLineId: item.id,
+              value: receipt.movement_value.negated(),
+              restoreCost: receipt.cost_before,
+              links: { purchaseInvoiceId: invoice.id, purchaseInvoiceItemId: item.id },
+              metadata: {
+                original_movement_id: stockByVariant.get(item.variant_id)!.id,
+                original_cost_movement_id: receipt.id,
+              },
+            }
+          }),
+        })
       }
 
       await tx.$queryRaw`
@@ -1161,12 +1039,12 @@ export class PurchasingService {
     return this.prisma.inventoryCostMovement.findMany({
       where: {
         tenant_id: context.tenantId,
-        ...(branchId ? { branch_id: branchId } : {}),
+        ...(branchId ? { warehouse: { branch_id: branchId } } : {}),
         ...(variantId ? { variant_id: variantId } : {}),
       },
       include: {
         variant: { include: { product: true } },
-        branch: true,
+        warehouse: { include: { branch: true } },
         purchase_invoice: {
           include: { supplier: true },
         },
@@ -1187,7 +1065,7 @@ export class PurchasingService {
         product_name: string
         materialized_cost: Prisma.Decimal
         ledger_cost: Prisma.Decimal | null
-        current_global_qty: bigint
+        current_global_qty: Prisma.Decimal
         reconciled: boolean
       }>
     >`
@@ -1204,32 +1082,13 @@ export class PurchasingService {
       on_hand AS (
         SELECT
           record."variant_id",
-          COALESCE(SUM(record."qty_on_hand"), 0)::bigint AS "qty"
+          COALESCE(SUM(record."qty_on_hand"), 0) AS "qty"
         FROM "InventoryStock" record
         WHERE record."tenant_id" = ${context.tenantId}::uuid
         GROUP BY record."variant_id"
       ),
-      in_transit AS (
-        SELECT
-          item."variant_id",
-          COALESCE(SUM(
-            item."shipped_qty" - item."received_qty" -
-            item."damaged_qty" - item."missing_qty"
-          ), 0)::bigint AS "qty"
-        FROM "TransferItem" item
-        WHERE item."tenant_id" = ${context.tenantId}::uuid
-        GROUP BY item."variant_id"
-      ),
       stock AS (
-        SELECT
-          COALESCE(on_hand."variant_id", in_transit."variant_id") AS "variant_id",
-          (
-            COALESCE(on_hand."qty", 0) +
-            COALESCE(in_transit."qty", 0)
-          )::bigint AS "qty"
-        FROM on_hand
-        FULL OUTER JOIN in_transit
-          ON in_transit."variant_id" = on_hand."variant_id"
+        SELECT "variant_id", "qty" FROM on_hand
       )
       SELECT
         variant."id" AS "variant_id",
@@ -1237,7 +1096,7 @@ export class PurchasingService {
         product."name_en" AS "product_name",
         variant."cost_price" AS "materialized_cost",
         latest."cost_after" AS "ledger_cost",
-        COALESCE(stock."qty", 0)::bigint AS "current_global_qty",
+        COALESCE(stock."qty", 0) AS "current_global_qty",
         (
           (
             latest."cost_after" IS NULL

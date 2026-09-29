@@ -2,21 +2,19 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
-  IsInt,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
-  Min,
   ValidateNested,
 } from 'class-validator';
+import { IsNonNegativeQuantity, IsQuantity } from '../../common/quantity';
 
 export class TransferItemDto {
   @IsUUID()
   variant_id: string;
 
-  @IsInt()
-  @Min(1)
+  @IsQuantity()
   qty: number;
 }
 
@@ -53,18 +51,15 @@ export class ReceiveTransferItemDto {
   @IsUUID()
   transfer_item_id: string;
 
-  @IsInt()
-  @Min(0)
+  @IsNonNegativeQuantity()
   received_qty: number;
 
   @IsOptional()
-  @IsInt()
-  @Min(0)
+  @IsNonNegativeQuantity()
   damaged_qty?: number;
 
   @IsOptional()
-  @IsInt()
-  @Min(0)
+  @IsNonNegativeQuantity()
   missing_qty?: number;
 }
 

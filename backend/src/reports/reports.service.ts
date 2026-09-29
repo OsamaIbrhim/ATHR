@@ -9,6 +9,7 @@ import {
   sumMoney,
 } from '../common/money';
 import { businessDateRange } from '../common/business-time';
+import { quantityNumber } from '../common/quantity';
 import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
@@ -115,12 +116,12 @@ export class ReportsService {
     });
     const map = new Map<
       string,
-      { qty: number; name: string; profit: Prisma.Decimal }
+      { qty: Prisma.Decimal; name: string; profit: Prisma.Decimal }
     >();
     for (const item of items) {
       const key = item.variant_id;
       const previous = map.get(key) || {
-        qty: 0,
+        qty: new Prisma.Decimal(0),
         name: item.variant?.product?.name_en || key,
         profit: new Prisma.Decimal(0),
       };
@@ -129,7 +130,7 @@ export class ReportsService {
         item.qty,
       );
       map.set(key, {
-        qty: previous.qty + item.qty,
+        qty: previous.qty.plus(item.qty),
         name: previous.name,
         profit: previous.profit.plus(profit),
       });
@@ -137,7 +138,7 @@ export class ReportsService {
     for (const item of returnedItems) {
       const key = item.variant_id;
       const previous = map.get(key) || {
-        qty: 0,
+        qty: new Prisma.Decimal(0),
         name: item.variant?.product?.name_en || key,
         profit: new Prisma.Decimal(0),
       };
@@ -146,7 +147,7 @@ export class ReportsService {
         item.qty,
       );
       map.set(key, {
-        qty: previous.qty - item.qty,
+        qty: previous.qty.minus(item.qty),
         name: previous.name,
         profit: previous.profit.minus(profit),
       });
@@ -155,6 +156,7 @@ export class ReportsService {
       .map(([variant_id, value]) => ({
         variant_id,
         ...value,
+        qty: quantityNumber(value.qty),
         profit: moneyNumber(value.profit),
       }))
       .filter((item) => item.qty > 0)
@@ -191,7 +193,7 @@ export class ReportsService {
       {
         variant_id: string;
         name: string;
-        qty: number;
+        qty: Prisma.Decimal;
         revenue: Prisma.Decimal;
         cost: Prisma.Decimal;
         profit: Prisma.Decimal;
@@ -209,7 +211,7 @@ export class ReportsService {
         const previous = map.get(key) || {
           variant_id: key,
           name,
-          qty: 0,
+          qty: new Prisma.Decimal(0),
           revenue: new Prisma.Decimal(0),
           cost: new Prisma.Decimal(0),
           profit: new Prisma.Decimal(0),
@@ -217,7 +219,7 @@ export class ReportsService {
         map.set(key, {
           variant_id: key,
           name,
-          qty: previous.qty + item.qty,
+          qty: previous.qty.plus(item.qty),
           revenue: previous.revenue.plus(revenue),
           cost: previous.cost.plus(cost),
           profit: previous.profit.plus(revenue).minus(cost),
@@ -235,7 +237,7 @@ export class ReportsService {
       const previous = map.get(key) || {
         variant_id: key,
         name,
-        qty: 0,
+        qty: new Prisma.Decimal(0),
         revenue: new Prisma.Decimal(0),
         cost: new Prisma.Decimal(0),
         profit: new Prisma.Decimal(0),
@@ -243,7 +245,7 @@ export class ReportsService {
       map.set(key, {
         variant_id: key,
         name,
-        qty: previous.qty - item.qty,
+        qty: previous.qty.minus(item.qty),
         revenue: previous.revenue.minus(revenue),
         cost: previous.cost.minus(cost),
         profit: previous.profit.minus(revenue).plus(cost),
@@ -253,6 +255,7 @@ export class ReportsService {
       .sort((a, b) => b.profit.comparedTo(a.profit))
       .map((item) => ({
         ...item,
+        qty: quantityNumber(item.qty),
         revenue: moneyNumber(item.revenue),
         cost: moneyNumber(item.cost),
         profit: moneyNumber(item.profit),
@@ -264,30 +267,34 @@ export class ReportsService {
       where: {
         tenant_id: context.tenantId,
         qty_on_hand: { gt: 0 },
-        ...(branch_id ? { branch_id } : {}),
+        ...(branch_id ? { warehouse: { branch_id } } : {}),
       },
       include: {
         variant: { include: { product: true } },
-        branch: true,
+        warehouse: { include: { branch: true } },
       },
     });
+    // Valued at each warehouse's own moving-average cost.
     const preciseRows = stock.map((record) => ({
-      branch: record.branch.name_ar,
+      branch: record.warehouse.branch?.name_ar ?? record.warehouse.name,
       sku: record.variant.sku,
       product: record.variant.product.name_en,
       size: record.variant.size,
       color: record.variant.color,
       qty: record.qty_on_hand,
-      cost_price: money(record.variant.cost_price),
-      value: lineMoney(record.variant.cost_price, record.qty_on_hand),
+      cost_price: money(record.avg_cost),
+      value: lineMoney(record.avg_cost, record.qty_on_hand),
     }));
     const totalValue = sumMoney(preciseRows.map((row) => row.value));
     const rows = preciseRows.map((row) => ({
       ...row,
+      qty: quantityNumber(row.qty),
       cost_price: moneyNumber(row.cost_price),
       value: moneyNumber(row.value),
     }));
-    const total_qty = rows.reduce((sum, row) => sum + row.qty, 0);
+    const total_qty = quantityNumber(
+      preciseRows.reduce((sum, row) => sum.plus(row.qty), new Prisma.Decimal(0)),
+    );
     return { total_qty, total_value: moneyNumber(totalValue), rows };
   }
 }

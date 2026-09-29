@@ -66,13 +66,15 @@ const { PrismaClient, Prisma } = require('@prisma/client');
 const distPurchasing = path.join(__dirname, '..', 'dist', 'src', 'purchasing', 'purchasing.service.js');
 const distTransfers = path.join(__dirname, '..', 'dist', 'src', 'transfers', 'transfers.service.js');
 const distInventoryRepo = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.repository.js');
+const distInventoryService = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.service.js');
 const distApiErrorFilter = path.join(__dirname, '..', 'dist', 'src', 'common', 'api-error.filter.js');
 
-let PurchasingService, TransfersService, InventoryRepository, toFriendlyError;
+let PurchasingService, TransfersService, InventoryRepository, InventoryService, toFriendlyError;
 try {
   ({ PurchasingService } = require(distPurchasing));
   ({ TransfersService } = require(distTransfers));
   ({ InventoryRepository } = require(distInventoryRepo));
+  ({ InventoryService } = require(distInventoryService));
   ({ toFriendlyError } = require(distApiErrorFilter));
 } catch (error) {
   console.error(
@@ -84,6 +86,7 @@ try {
 }
 
 const prisma = new PrismaClient();
+const inventoryService = new InventoryService(new InventoryRepository(prisma));
 
 let failed = 0;
 
@@ -108,21 +111,11 @@ async function createBranch(tenantId, label) {
   });
 }
 
-// WP-009 Phase A: warehouse_id is nullable only until PR2's InventoryStock
-// primary-key swap makes it NOT NULL -- W1/W2/R3's InventoryStock rows below
-// need a real Warehouse for the branch they seed, the same way
-// prisma/seed.ts resolves one, not a NULL that works today only because
-// nothing enforces it yet.
+// A branch's stock lives in its default warehouse.
 async function createBranchWithWarehouse(tenantId, label) {
   const branch = await createBranch(tenantId, label);
-  const legalEntity = await prisma.legalEntity.create({
-    data: { tenant_id: tenantId, legal_name: `${label} legal entity`, is_primary: true },
-  });
-  const location = await prisma.location.create({
-    data: { id: branch.id, tenantId, legal_entity_id: legalEntity.id, code: branch.code, name_ar: branch.name_ar },
-  });
   const warehouse = await prisma.warehouse.create({
-    data: { tenant_id: tenantId, location_id: location.id, name: `${label} default warehouse`, is_default: true },
+    data: { tenant_id: tenantId, branch_id: branch.id, name: `${label} default warehouse`, is_default: true },
   });
   return { branch, warehouse };
 }
@@ -192,100 +185,24 @@ async function seedPurchasingTenant(label) {
   return { tenant, branch, warehouse, supplier, variantOk, variantShort };
 }
 
-// Deliberately does NOT call PurchasingService.receive(): that method's
-// `tx.purchaseInvoice.create({ data: { items: { create: [{ tenant_id, ... }] } } })`
-// throws `PrismaClientValidationError: Unknown argument tenant_id` against
-// real Postgres/Prisma (confirmed by isolated repro -- the generated
-// `PurchaseInvoiceItemUncheckedCreateWithoutPurchase_invoiceInput` type does
-// not carry `tenant_id`, unlike a top-level `purchaseInvoiceItem.create()`,
-// which does). fakePrisma never validates argument shape, so no jest spec
-// has ever caught this; `prisma/seed.ts`'s own nested items independently
-// omit `tenant_id` (matching the type), which is what exposed the
-// discrepancy. This is a real, separate, out-of-scope defect -- reported in
-// the PR description, not fixed here. This helper reproduces `receive()`'s
-// net effect (posted invoice + item + InventoryStock + the same
-// record_inventory_movement/record_inventory_cost_movement calls with the
-// same idempotency-key convention `purchase-receipt:`/`purchase-cost:` that
-// reverse() looks up) via the same DB functions, split across two `create`
-// calls instead of one nested call, so W1/W2 below can still exercise the
-// real `returnToSupplier()`/`reverse()` code under test.
+// Receives stock through the real PurchasingService.receive() (which posts the
+// stock and cost ledgers through InventoryService), 10.00 per unit.
 async function receiveStock(tenant, fixture, variant, qty) {
-  const unitCost = new Prisma.Decimal('10.00');
-  const lineTotal = unitCost.mul(qty);
-  const invoice = await prisma.purchaseInvoice.create({
-    data: {
-      tenant_id: tenant.id,
-      supplier_id: fixture.supplier.id,
-      branch_id: fixture.branch.id,
-      status: 'posted',
-      accounting_version: 2,
-      subtotal: lineTotal,
-      total: lineTotal,
-    },
-  });
-  const item = await prisma.purchaseInvoiceItem.create({
-    data: {
-      tenant_id: tenant.id,
-      purchase_invoice_id: invoice.id,
-      variant_id: variant.id,
-      qty,
-      unit_cost: unitCost,
-      line_subtotal: lineTotal,
-      allocated_discount: new Prisma.Decimal('0'),
-      net_line_total: lineTotal,
-      net_unit_cost: unitCost,
-    },
-  });
-  const receivedAt = new Date();
-  await prisma.inventoryStock.upsert({
-    where: { branch_id_variant_id: { branch_id: fixture.branch.id, variant_id: variant.id } },
-    update: { qty_on_hand: { increment: qty } },
-    create: { tenant_id: tenant.id, branch_id: fixture.branch.id, warehouse_id: fixture.warehouse.id, variant_id: variant.id, qty_on_hand: qty },
-  });
-  // WP-009 Phase A: unlike the InventoryStock upsert above, record_inventory_
-  // movement()/record_inventory_cost_movement() have no warehouse_id
-  // parameter at all -- Phase A's own PR1 description scopes that function
-  // signature change to PR2's "application-code cutover", alongside the same
-  // function's other 8 call sites in real write paths (transfers.service.ts,
-  // sales.service.ts, purchasing.service.ts). The InventoryMovement/
-  // InventoryCostMovement rows these calls create keep warehouse_id NULL
-  // until then. ci.yml's clean-scenario comment calls rows like this
-  // "legitimately unbackfilled" -- true today (the column is nullable), but
-  // that framing does not survive PR2's NOT NULL constraint on
-  // InventoryMovement: these two calls will start raising a NOT NULL
-  // violation, not just leaving a null column, unless PR2 updates this
-  // function's signature (InventoryCostMovement stays nullable there,
-  // mirroring branch_id, so it is unaffected).
-  await prisma.$queryRaw`
-    SELECT "record_inventory_movement"(
-      ${fixture.branch.id}::uuid, ${variant.id}::uuid, 'purchase_receipt'::"InventoryMovementType",
-      ${qty}::integer, 0::integer, 'PurchaseInvoice'::text, ${invoice.id}::text, ${item.id}::text,
-      ${`purchase-receipt:${item.id}`}::text, ${receivedAt}::timestamp, ${ownerActor.sub}::uuid, '{}'::jsonb
-    )
-  `;
-  await prisma.$queryRaw`
-    SELECT "record_inventory_cost_movement"(
-      ${variant.id}::uuid, ${fixture.branch.id}::uuid, 'purchase_receipt'::"InventoryCostMovementType",
-      ${qty}::integer, ${lineTotal.toFixed(2)}::numeric, 'PurchaseInvoice'::text, ${invoice.id}::text, ${item.id}::text,
-      ${invoice.id}::uuid, ${item.id}::uuid, NULL::uuid, NULL::uuid, ${`purchase-cost:${item.id}`}::text,
-      ${receivedAt}::timestamp, ${ownerActor.sub}::uuid, NULL::numeric, '{}'::jsonb
-    )
-  `;
-  return prisma.purchaseInvoice.findFirstOrThrow({ where: { id: invoice.id }, include: { items: true } });
+  const service = new PurchasingService(prisma, inventoryService);
+  return service.receive(
+    { tenantId: tenant.id },
+    { command_id: randomUUID(), supplier_id: fixture.supplier.id, branch_id: fixture.branch.id, items: [{ variant_id: variant.id, qty, unit_cost: 10 }] },
+    ownerActor,
+  );
 }
 
-async function forceInsufficientUnreservedStock(branchId, variantId) {
+async function forceInsufficientUnreservedStock(warehouseId, variantId) {
   // Bumps qty_reserved without touching qty_on_hand, so
   // InventoryStock_reserved_not_above_available_on_hand stays satisfied
-  // (qty_reserved=1 <= qty_on_hand) while the raw UPDATE's own
-  // `(qty_on_hand - qty) >= qty_reserved` predicate fails for a full-qty
-  // return/reversal. Chosen over reducing qty_on_hand directly because
-  // reverse() separately verifies the global on-hand aggregate matches the
-  // receipt's recorded snapshot (purchasing.service.ts:1000-1039) before it
-  // ever reaches the raw UPDATE -- reducing qty_on_hand out of band would
-  // trip that unrelated guard instead of the one this check targets.
+  // (qty_reserved=1 <= qty_on_hand) while InventoryService's availability
+  // check (on_hand - qty >= reserved) fails for a full-qty return/reversal.
   await prisma.inventoryStock.update({
-    where: { branch_id_variant_id: { branch_id: branchId, variant_id: variantId } },
+    where: { warehouse_id_variant_id: { warehouse_id: warehouseId, variant_id: variantId } },
     data: { qty_reserved: 1 },
   });
 }
@@ -295,13 +212,13 @@ async function forceInsufficientUnreservedStock(branchId, variantId) {
 async function verifySupplierReturnScoping() {
   const a = await seedPurchasingTenant('w1a');
   const b = await seedPurchasingTenant('w1b');
-  const service = new PurchasingService(prisma);
+  const service = new PurchasingService(prisma, inventoryService);
   const contextA = { tenantId: a.tenant.id };
 
   const invoiceA = await receiveStock(a.tenant, a, a.variantOk, 5);
   await receiveStock(b.tenant, b, b.variantOk, 5);
   const bStockBefore = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: b.branch.id, variant_id: b.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: b.warehouse.id, variant_id: b.variantOk.id } },
   });
 
   await service.returnToSupplier(
@@ -312,25 +229,25 @@ async function verifySupplierReturnScoping() {
   );
 
   const aStockAfter = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: a.branch.id, variant_id: a.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: a.warehouse.id, variant_id: a.variantOk.id } },
   });
   const bStockAfter = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: b.branch.id, variant_id: b.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: b.warehouse.id, variant_id: b.variantOk.id } },
   });
 
   expectTrue(
     "W1 returnToSupplier(tenant A) decrements exactly tenant A's own row",
-    aStockAfter.qty_on_hand === 3,
+    Number(aStockAfter.qty_on_hand) === 3,
     `expected 3, got ${aStockAfter.qty_on_hand}`,
   );
   expectTrue(
     "W1 returnToSupplier(tenant A) does not touch tenant B's identically-shaped row",
-    bStockAfter.qty_on_hand === bStockBefore.qty_on_hand,
+    bStockAfter.qty_on_hand.equals(bStockBefore.qty_on_hand),
     `tenant B qty_on_hand moved from ${bStockBefore.qty_on_hand} to ${bStockAfter.qty_on_hand}`,
   );
 
   const invoiceA2 = await receiveStock(a.tenant, a, a.variantShort, 5);
-  await forceInsufficientUnreservedStock(a.branch.id, a.variantShort.id);
+  await forceInsufficientUnreservedStock(a.warehouse.id, a.variantShort.id);
 
   let caught = null;
   try {
@@ -359,37 +276,37 @@ async function verifySupplierReturnScoping() {
 async function verifyPurchaseReversalScoping() {
   const a = await seedPurchasingTenant('w2a');
   const b = await seedPurchasingTenant('w2b');
-  const service = new PurchasingService(prisma);
+  const service = new PurchasingService(prisma, inventoryService);
   const contextA = { tenantId: a.tenant.id };
 
   const invoiceA = await receiveStock(a.tenant, a, a.variantOk, 5);
   await receiveStock(b.tenant, b, b.variantOk, 5);
   const bStockBefore = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: b.branch.id, variant_id: b.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: b.warehouse.id, variant_id: b.variantOk.id } },
   });
 
   await service.reverse(contextA, invoiceA.id, { reason: 'verify tenant scoping' }, ownerActor);
 
   const aStockAfter = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: a.branch.id, variant_id: a.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: a.warehouse.id, variant_id: a.variantOk.id } },
   });
   const bStockAfter = await prisma.inventoryStock.findUniqueOrThrow({
-    where: { branch_id_variant_id: { branch_id: b.branch.id, variant_id: b.variantOk.id } },
+    where: { warehouse_id_variant_id: { warehouse_id: b.warehouse.id, variant_id: b.variantOk.id } },
   });
 
   expectTrue(
     "W2 reverse(tenant A) decrements exactly tenant A's own row",
-    aStockAfter.qty_on_hand === 0,
+    Number(aStockAfter.qty_on_hand) === 0,
     `expected 0, got ${aStockAfter.qty_on_hand}`,
   );
   expectTrue(
     "W2 reverse(tenant A) does not touch tenant B's identically-shaped row",
-    bStockAfter.qty_on_hand === bStockBefore.qty_on_hand,
+    bStockAfter.qty_on_hand.equals(bStockBefore.qty_on_hand),
     `tenant B qty_on_hand moved from ${bStockBefore.qty_on_hand} to ${bStockAfter.qty_on_hand}`,
   );
 
   const invoiceA2 = await receiveStock(a.tenant, a, a.variantShort, 5);
-  await forceInsufficientUnreservedStock(a.branch.id, a.variantShort.id);
+  await forceInsufficientUnreservedStock(a.warehouse.id, a.variantShort.id);
 
   let caught = null;
   try {
@@ -423,7 +340,7 @@ async function seedCostReconciliationTenant(label) {
 async function verifyCostReconciliationScoping() {
   const a = await seedCostReconciliationTenant('a');
   const b = await seedCostReconciliationTenant('b');
-  const service = new PurchasingService(prisma);
+  const service = new PurchasingService(prisma, inventoryService);
 
   const resultA = await service.costReconciliation({ tenantId: a.tenant.id });
   const variantIdsA = resultA.map((row) => row.variant_id);
@@ -468,7 +385,7 @@ async function seedInTransitMismatchTenant(label) {
 async function verifyReconcileInTransitScoping() {
   const a = await seedInTransitMismatchTenant('a');
   const b = await seedInTransitMismatchTenant('b');
-  const service = new TransfersService(prisma);
+  const service = new TransfersService(prisma, inventoryService);
   const actor = { sub: randomUUID(), membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
 
   const resultA = await service.reconcileInTransit({ tenantId: a.tenant.id }, actor);
@@ -495,7 +412,7 @@ async function seedStockMismatchTenant(label) {
   // qty_on_hand=5 with zero InventoryMovement rows -> ledger_on_hand
   // COALESCEs to 0. 5 != 0 is exactly the mismatch the query selects.
   await prisma.inventoryStock.create({
-    data: { tenant_id: tenant.id, branch_id: branch.id, warehouse_id: warehouse.id, variant_id: variant.id, qty_on_hand: 5 },
+    data: { tenant_id: tenant.id, warehouse_id: warehouse.id, variant_id: variant.id, qty_on_hand: 5 },
   });
   return { tenant, branch, warehouse, variant };
 }
@@ -506,17 +423,17 @@ async function verifyReconciliationMismatchesScoping() {
   const repository = new InventoryRepository(prisma);
 
   const resultA = await repository.reconciliationMismatches({ tenantId: a.tenant.id });
-  const keysA = resultA.map((row) => `${row.branch_id}:${row.variant_id}`);
-  const bKey = `${b.branch.id}:${b.variant.id}`;
+  const keysA = resultA.map((row) => `${row.warehouse_id}:${row.variant_id}`);
+  const bKey = `${b.warehouse.id}:${b.variant.id}`;
 
   expectTrue(
     "R3 reconciliationMismatches(tenant A) includes tenant A's own mismatch",
-    keysA.includes(`${a.branch.id}:${a.variant.id}`),
+    keysA.includes(`${a.warehouse.id}:${a.variant.id}`),
   );
   expectTrue(
     "R3 reconciliationMismatches(tenant A) does not include tenant B's mismatch",
     !keysA.includes(bKey),
-    keysA.includes(bKey) ? `leaked branch/variant pair ${bKey}` : undefined,
+    keysA.includes(bKey) ? `leaked warehouse/variant pair ${bKey}` : undefined,
   );
 }
 

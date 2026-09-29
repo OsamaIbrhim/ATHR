@@ -6,6 +6,9 @@ import { aTaxCode } from '../identity/testing/fixture-builders';
 // WP-007 Phase A: pull() takes the resolved TenantContext first.
 const ctx = contextFor(TENANT_A);
 
+// A branch syncs the stock of its default warehouse.
+const inventory = { defaultWarehouseId: jest.fn().mockResolvedValue('warehouse-1') } as any;
+
 describe('SyncService incremental synchronization', () => {
   const variant = {
     id: 'variant-1',
@@ -44,9 +47,10 @@ describe('SyncService incremental synchronization', () => {
       inventoryStock: {
         findMany: jest.fn().mockResolvedValue([
           {
-            branch_id: 'branch-1',
             variant_id: variant.id,
             qty_on_hand: 5,
+            qty_reserved: 0,
+            last_sold_at: null,
           },
         ]),
       },
@@ -62,6 +66,7 @@ describe('SyncService incremental synchronization', () => {
       prisma as any,
       pricing as any,
       new TaxResolutionService(prisma as any),
+      inventory,
     ).pull(ctx, 'branch-1');
 
     expect(result).toMatchObject({
@@ -102,6 +107,7 @@ describe('SyncService incremental synchronization', () => {
       prisma as any,
       pricing as any,
       new TaxResolutionService(prisma as any),
+      inventory,
     ).pull(ctx, 'branch-1');
 
     await Promise.resolve();
@@ -137,9 +143,10 @@ describe('SyncService incremental synchronization', () => {
       inventoryStock: {
         findMany: jest.fn().mockResolvedValue([
           {
-            branch_id: 'branch-1',
             variant_id: variant.id,
             qty_on_hand: 4,
+            qty_reserved: 0,
+            last_sold_at: null,
           },
         ]),
       },
@@ -155,6 +162,7 @@ describe('SyncService incremental synchronization', () => {
       prisma as any,
       pricing as any,
       new TaxResolutionService(prisma as any),
+      inventory,
     ).pull(ctx, 'branch-1', '42');
 
     expect(result).toMatchObject({
@@ -183,6 +191,7 @@ describe('SyncService incremental synchronization', () => {
       prisma as any,
       {} as any,
       new TaxResolutionService(prisma as any),
+      inventory,
     ).pull(ctx, 'branch-1', '43');
 
     expect(result).toMatchObject({
@@ -233,7 +242,7 @@ describe('SyncService.attachProducts (chunked product batching)', () => {
         new Map(variants.map((variant) => [variant.id, { net_price: 150, tax_amount: 21 }])),
       ),
     };
-    return new SyncService(prisma as any, pricing as any, new TaxResolutionService(prisma as any));
+    return new SyncService(prisma as any, pricing as any, new TaxResolutionService(prisma as any), inventory);
   }
 
   it('does not query product.findMany at all for zero variants', async () => {

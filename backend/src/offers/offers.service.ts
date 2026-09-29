@@ -21,14 +21,17 @@ export class OffersService {
 
   async suggestions(context: TenantContext, actor: AuthenticatedUser, branch_id?: string) {
     const cutoff = new Date(Date.now() - 90 * 86400000);
-    const slow = await this.prisma.inventoryStock.findMany({
+    // Offers are per branch: the stock of each branch's default (selling) warehouse.
+    const slowRows = await this.prisma.inventoryStock.findMany({
       where: {
         tenant_id: context.tenantId,
         OR: [{ last_sold_at: { lt: cutoff } }, { last_sold_at: null }],
         qty_on_hand: { gt: 0 },
-        ...(branch_id ? { branch_id } : {}),
+        warehouse: { is_default: true, branch_id: branch_id ?? { not: null } },
       },
+      include: { warehouse: { select: { branch_id: true } } },
     });
+    const slow = slowRows.map(({ warehouse, ...stock }) => ({ ...stock, branch_id: warehouse.branch_id! }));
     const pending = await this.prisma.offerSuggestion.findMany({
       where: {
         tenant_id: context.tenantId,

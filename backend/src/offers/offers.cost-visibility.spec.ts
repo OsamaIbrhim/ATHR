@@ -28,6 +28,7 @@ import { TaxResolutionService } from '../tax/tax-resolution.service';
 const ctx = contextFor(TENANT_A);
 const VARIANT_ID = randomUUID();
 const BRANCH_ID = randomUUID();
+const WAREHOUSE_ID = randomUUID();
 const UNIT_PRICE = 100;
 /** Floor loses the max: suggested = max(50, 100 x 0.90) = 90, strictly above cost. */
 const COST_PRICE = 50;
@@ -62,14 +63,18 @@ function setup(
       inventoryStock: options.existingSuggestion
         ? []
         : [
-            anInventoryStock({
+            {
+              ...anInventoryStock({
               tenant_id: TENANT_A,
-              branch_id: BRANCH_ID,
+              warehouse_id: WAREHOUSE_ID,
               variant_id: VARIANT_ID,
               qty_on_hand: 7,
               // Comfortably past the 90-day slow-mover cutoff.
               last_sold_at: new Date(Date.now() - 200 * 86400000),
-            }),
+              }),
+              // Pre-hydrated relation (the fake has no `include`): the branch default warehouse.
+              warehouse: { branch_id: BRANCH_ID, is_default: true },
+            },
           ],
       offerSuggestion: options.existingSuggestion
         ? [
@@ -116,7 +121,10 @@ function setup(
       ],
       auditLog: [],
     },
-    { priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } } },
+    {
+      priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } },
+      inventoryStock: { warehouse: { table: 'warehouse', localKey: 'warehouse_id' } },
+    },
   );
   canSeeCost = options.hasCostView;
   const costVisibility = new CostVisibilityService();

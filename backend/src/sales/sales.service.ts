@@ -36,7 +36,18 @@ import {
   moneyString,
   sameMoney,
   sumMoney,
+  unitCost,
 } from '../common/money';
+import {
+  assertQuantityPrecision,
+  quantity,
+  quantityNumber,
+  variantQuantityPrecision,
+} from '../common/quantity';
+import { InventoryService } from '../inventory/inventory.service';
+
+/** A sale line after merging duplicate variants; the quantity is exact (Decimal(14,3)). */
+type SaleLine = Omit<CreateSaleItemDto, 'qty'> & { qty: Prisma.Decimal };
 
 @Injectable()
 export class SalesService {
@@ -48,6 +59,7 @@ export class SalesService {
     private pricing: PricingService,
     private costVisibility: CostVisibilityService,
     private taxSnapshots: SalesTaxSnapshotService,
+    private inventory: InventoryService,
   ) {}
 
   async listSales(context: TenantContext, dto: ListSalesDto, branchId?: string) {
@@ -197,7 +209,7 @@ export class SalesService {
       items: normalized.lines
         .map((item) => ({
           variant_id: item.variant_id,
-          qty: item.qty,
+          qty: quantityNumber(item.qty),
           unit_price: canonicalMoney(item.unit_price),
           unit_tax: canonicalMoney(item.unit_tax),
           sku_snapshot: item.sku_snapshot.trim(),
@@ -214,10 +226,10 @@ export class SalesService {
   }
 
   private normalizeLines(items: CreateSaleItemDto[]) {
-    const lines = new Map<string, CreateSaleItemDto>();
+    const lines = new Map<string, SaleLine>();
     for (const item of items) {
       const existing = lines.get(item.variant_id);
-      if (!existing) lines.set(item.variant_id, { ...item });
+      if (!existing) lines.set(item.variant_id, { ...item, qty: quantity(item.qty) });
       else {
         if (
           !sameMoney(existing.unit_price, item.unit_price) ||
@@ -234,7 +246,7 @@ export class SalesService {
             message: 'The same variant has conflicting historical snapshots',
           });
         }
-        existing.qty += item.qty;
+        existing.qty = existing.qty.plus(quantity(item.qty));
       }
     }
     return { lines: [...lines.values()] };
@@ -428,7 +440,7 @@ export class SalesService {
           tenant_id: context.tenantId,
           product: { tenant_id: context.tenantId },
         },
-        include: { product: true },
+        include: { product: true, base_uom: { select: { precision: true } } },
       });
       if (variants.length !== variantIds.length) {
         const found = new Set(variants.map((variant) => variant.id));
@@ -438,6 +450,10 @@ export class SalesService {
       const variantsById = new Map<string, any>(
         variants.map((variant: any) => [variant.id, variant]),
       );
+      for (const line of normalized.lines) {
+        const variant = variantsById.get(line.variant_id)!;
+        assertQuantityPrecision(line.qty, variantQuantityPrecision(variant), line.sku_snapshot);
+      }
       // WP-008 Phase B: `calculateMany` now prices per (variant, qty) pair
       // (BR-PSL-104 quantity breaks) -- `normalized.lines` already merges
       // duplicate variant_ids into one line with a summed qty
@@ -446,7 +462,7 @@ export class SalesService {
         context,
         normalized.lines.map((line) => ({
           variant: variantsById.get(line.variant_id)!,
-          qty: line.qty,
+          qty: line.qty.toNumber(),
         })),
         tx,
       );
@@ -466,7 +482,6 @@ export class SalesService {
           variant_id: line.variant_id,
           qty: line.qty,
           unit_price: unitPrice,
-          unit_cost: money(variant.cost_price),
           tax: unitTax,
           sku_snapshot: line.sku_snapshot.trim(),
           name_ar_snapshot: line.name_ar_snapshot.trim(),
@@ -496,32 +511,44 @@ export class SalesService {
         });
       }
 
-      const stockAfter = new Map<string, number>();
-      for (const item of saleItems) {
-        const stock = await tx.inventoryStock.upsert({
-          where: {
-            branch_id_variant_id: {
-              branch_id: dto.branch_id,
-              variant_id: item.variant_id,
+      // Acceptance-first: the sale is recorded even when it drives stock below
+      // zero (NEGATIVE_STOCK). Only `stocked` variants move stock; the writer
+      // ignores service/non_stock lines, so they are not even sent.
+      const invoiceId = randomUUID();
+      const itemIds = new Map(saleItems.map((item) => [item.variant_id, randomUUID()]));
+      const warehouseId = await this.inventory.defaultWarehouseId(tx, context.tenantId, dto.branch_id);
+      const stockAfter = new Map(
+        (
+          await this.inventory.apply(tx, {
+            tenantId: context.tenantId,
+            warehouseId,
+            occurredAt,
+            actorId: linkedCashier?.id,
+            type: 'sale',
+            reference: { type: 'SalesInvoice', id: invoiceId },
+            idempotencyKey: `sale:${dto.sync_id}`,
+            allowNegative: true,
+            metadata: {
+              sync_id: dto.sync_id,
+              terminal_id: terminal.id,
+              terminal_sequence: dto.terminal_sequence,
             },
-          },
-          update: {
-            qty_on_hand: { decrement: item.qty },
-            last_sold_at: receivedAt,
-          },
-          create: {
-            tenant_id: context.tenantId,
-            branch_id: dto.branch_id,
-            variant_id: item.variant_id,
-            qty_on_hand: -item.qty,
-            last_sold_at: receivedAt,
-          },
-        });
-        stockAfter.set(item.variant_id, stock.qty_on_hand);
-        if (stock.qty_on_hand - stock.qty_reserved < 0) {
-          warningCodes.add('NEGATIVE_STOCK');
-        }
+            lines: saleItems
+              .filter((item) => variantsById.get(item.variant_id).item_type === 'stocked')
+              .map((item) => ({
+                variantId: item.variant_id,
+                qtyDelta: item.qty.negated(),
+                referenceLineId: itemIds.get(item.variant_id),
+              })),
+          })
+        ).map((stock) => [stock.variantId, stock]),
+      );
+      for (const stock of stockAfter.values()) {
+        if (stock.qtyAfter.minus(stock.reserved).isNegative()) warningCodes.add('NEGATIVE_STOCK');
       }
+      // Cost of goods at the moment of sale: the warehouse average; catalog cost for items without stock.
+      const costOf = (variantId: string) =>
+        unitCost(stockAfter.get(variantId)?.avgCost ?? variantsById.get(variantId).cost_price);
 
       let customerId: string | undefined;
       if (dto.customer_phone) {
@@ -547,6 +574,7 @@ export class SalesService {
         `B-${branch.code}-${receivedAt.getTime()}-${randomUUID().slice(0, 8)}`;
       const invoice = await tx.salesInvoice.create({
         data: {
+          id: invoiceId,
           tenant_id: context.tenantId,
           invoice_number: invoiceNumber,
           event_version: dto.event_version,
@@ -573,10 +601,11 @@ export class SalesService {
           sync_id: dto.sync_id,
           items: {
             create: saleItems.map((item) => ({
+              id: itemIds.get(item.variant_id),
               variant_id: item.variant_id,
               qty: item.qty,
               unit_price: item.unit_price,
-              unit_cost: item.unit_cost,
+              unit_cost: costOf(item.variant_id),
               unit_tax: item.tax,
               sku_snapshot: item.sku_snapshot,
               name_ar_snapshot: item.name_ar_snapshot,
@@ -633,36 +662,6 @@ export class SalesService {
           };
         }),
       );
-
-      for (const item of saleItems) {
-        const invoiceItem = invoiceItemByVariant.get(item.variant_id);
-        if (!invoiceItem) {
-          throw new NotFoundException(
-            `Created sale line is missing for variant ${item.variant_id}`,
-          );
-        }
-        await tx.$queryRaw`
-          SELECT "record_inventory_movement"(
-            ${dto.branch_id}::uuid,
-            ${item.variant_id}::uuid,
-            'sale'::"InventoryMovementType",
-            ${-item.qty}::integer,
-            0::integer,
-            'SalesInvoice'::text,
-            ${invoice.id}::text,
-            ${invoiceItem.id}::text,
-            ${`sale:${dto.sync_id}:${item.variant_id}`}::text,
-            ${occurredAt}::timestamp,
-            ${linkedCashier?.id || null}::uuid,
-            ${JSON.stringify({
-              sync_id: dto.sync_id,
-              terminal_id: terminal.id,
-              terminal_sequence: dto.terminal_sequence,
-              qty_on_hand_after: stockAfter.get(item.variant_id),
-            })}::jsonb
-          )
-        `;
-      }
 
       if (terminalSequence > lockedTerminal.last_sale_sequence) {
         await tx.posTerminal.update({
@@ -758,18 +757,23 @@ export class SalesService {
   }
 
   async createReturn(context: TenantContext, dto: CreateReturnDto, actor: AuthenticatedUser) {
-    const requested = new Map<string, number>();
+    const requested = new Map<string, Prisma.Decimal>();
     for (const item of dto.items) {
       requested.set(
         item.sales_invoice_item_id,
-        (requested.get(item.sales_invoice_item_id) || 0) + item.qty,
+        (requested.get(item.sales_invoice_item_id) ?? new Prisma.Decimal(0)).plus(quantity(item.qty)),
       );
     }
+    const saleItemIds = [...requested.keys()].sort();
 
     const result = await this.prisma.$transaction(async (tx) => {
       const original = await tx.salesInvoice.findFirst({
         where: { tenant_id: context.tenantId, id: dto.original_invoice_id },
-        include: { items: true },
+        include: {
+          items: {
+            include: { variant: { select: { item_type: true, base_uom: { select: { precision: true } } } } },
+          },
+        },
       });
       if (!original) throw new NotFoundException('Original invoice not found');
       if (!hasBranchAccess(actor, original.branch_id)) {
@@ -796,42 +800,51 @@ export class SalesService {
         throw new BadRequestException('Return window expired (14 days)');
       }
 
+      const soldById = new Map(original.items.map((item) => [item.id, item]));
+      for (const saleItemId of saleItemIds) {
+        if (!soldById.has(saleItemId)) {
+          throw new BadRequestException(
+            `Item ${saleItemId} does not belong to the original invoice`,
+          );
+        }
+      }
+      // Two statements for every line: lock the sold lines, then read what was already returned.
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "SalesInvoiceItem"
+        WHERE "tenant_id" = ${context.tenantId}::uuid AND "id" = ANY(${saleItemIds}::uuid[])
+        ORDER BY "id"
+        FOR UPDATE
+      `;
+      const returnedRows = await tx.returnItem.groupBy({
+        by: ['sales_invoice_item_id'],
+        where: {
+          tenant_id: context.tenantId,
+          sales_invoice_item_id: { in: saleItemIds },
+          return_record: { status: 'completed' },
+        },
+        _sum: { qty: true },
+      });
+      const returnedBefore = new Map(
+        returnedRows.map((row) => [row.sales_invoice_item_id, row._sum.qty ?? new Prisma.Decimal(0)]),
+      );
+
       const returnItems: {
         sales_invoice_item_id: string;
         variant_id: string;
-        qty: number;
+        qty: Prisma.Decimal;
         unit_price: Prisma.Decimal;
         unit_cost: Prisma.Decimal;
         unit_tax: Prisma.Decimal;
       }[] = [];
 
       for (const [saleItemId, qty] of requested) {
-        const soldItem = original.items.find((item) => item.id === saleItemId);
-        if (!soldItem) {
-          throw new BadRequestException(
-            `Item ${saleItemId} does not belong to the original invoice`,
-          );
-        }
-
-        await tx.$queryRaw`
-          SELECT "id"
-          FROM "SalesInvoiceItem"
-          WHERE "id" = ${saleItemId}::uuid
-          FOR UPDATE
-        `;
-
-        const alreadyReturned = await tx.returnItem.aggregate({
-          where: {
-            tenant_id: context.tenantId,
-            sales_invoice_item_id: saleItemId,
-            return_record: { status: 'completed' },
-          },
-          _sum: { qty: true },
-        });
-        const remaining = soldItem.qty - (alreadyReturned._sum.qty || 0);
-        if (qty > remaining) {
+        const soldItem = soldById.get(saleItemId)!;
+        assertQuantityPrecision(qty, variantQuantityPrecision(soldItem.variant), saleItemId);
+        const remaining = soldItem.qty.minus(returnedBefore.get(saleItemId) ?? 0);
+        if (qty.gt(remaining)) {
           throw new ConflictException(
-            `Only ${remaining} unit(s) remain returnable for item ${saleItemId}`,
+            `Only ${quantityNumber(remaining)} unit(s) remain returnable for item ${saleItemId}`,
           );
         }
 
@@ -849,7 +862,7 @@ export class SalesService {
           variant_id: soldItem.variant_id,
           qty,
           unit_price: money(soldItem.unit_price),
-          unit_cost: money(soldItem.unit_cost),
+          unit_cost: unitCost(soldItem.unit_cost),
           unit_tax: unitTax,
         });
       }
@@ -861,14 +874,10 @@ export class SalesService {
         returnItems.map((item) => lineMoney(item.unit_tax, item.qty)),
       );
       const refundTotal = money(refundSubtotal.plus(refundTax));
-      const totalReturnedQty = returnItems.reduce(
-        (sum, item) => sum + item.qty,
-        0,
-      );
-      const originalQty = original.items.reduce(
-        (sum, item) => sum + item.qty,
-        0,
-      );
+      const sumQty = (values: Prisma.Decimal[]) =>
+        values.reduce((sum, value) => sum.plus(value), new Prisma.Decimal(0));
+      const totalReturnedQty = sumQty(returnItems.map((item) => item.qty));
+      const originalQty = sumQty(original.items.map((item) => item.qty));
 
       const returnRecord = await tx.return.create({
         data: {
@@ -878,7 +887,7 @@ export class SalesService {
           shift_id: shiftId,
           return_invoice_number: `R-${Date.now()}-${randomUUID().slice(0, 8)}`,
           reason: dto.reason,
-          is_partial: totalReturnedQty < originalQty,
+          is_partial: totalReturnedQty.lt(originalQty),
           created_by: actor.sub,
           refund_subtotal: refundSubtotal,
           refund_tax: refundTax,
@@ -889,35 +898,54 @@ export class SalesService {
         include: { items: true },
       });
 
-      for (const item of returnItems) {
-        await tx.inventoryStock.upsert({
-          where: {
-            branch_id_variant_id: {
-              branch_id: original.branch_id,
-              variant_id: item.variant_id,
-            },
-          },
-          update: { qty_on_hand: { increment: item.qty } },
-          create: {
-            tenant_id: context.tenantId,
-            branch_id: original.branch_id,
-            variant_id: item.variant_id,
-            qty_on_hand: item.qty,
-          },
-        });
-        await tx.productVariant.update({
-          where: { id: item.variant_id },
-          data: { return_count: { increment: item.qty } },
-        });
+      // Goods come back at the cost they were sold at (moving average), one
+      // line per variant.
+      const stockLines = new Map<string, { qty: Prisma.Decimal; value: Prisma.Decimal; lineId: string }>();
+      for (const item of returnRecord.items) {
+        if (soldById.get(item.sales_invoice_item_id)!.variant.item_type !== 'stocked') continue;
+        const line = stockLines.get(item.variant_id) ?? { qty: new Prisma.Decimal(0), value: new Prisma.Decimal(0), lineId: item.id };
+        line.qty = line.qty.plus(item.qty);
+        line.value = line.value.plus(item.unit_cost.mul(item.qty));
+        stockLines.set(item.variant_id, line);
       }
-
-      await tx.productVariant.updateMany({
-        where: {
-          id: { in: returnItems.map((item) => item.variant_id) },
-          return_count: { gte: 3 },
+      await this.inventory.apply(tx, {
+        tenantId: context.tenantId,
+        warehouseId: await this.inventory.defaultWarehouseId(tx, context.tenantId, original.branch_id),
+        occurredAt: returnRecord.created_at,
+        actorId: actor.sub,
+        type: 'return',
+        costType: 'customer_return',
+        reference: { type: 'Return', id: returnRecord.id },
+        idempotencyKey: `return:${returnRecord.id}`,
+        allowNegative: true,
+        metadata: {
+          return_invoice_number: returnRecord.return_invoice_number,
+          original_invoice_id: original.id,
         },
-        data: { qa_flag: true },
+        lines: [...stockLines].map(([variantId, line]) => ({
+          variantId,
+          qtyDelta: line.qty,
+          referenceLineId: line.lineId,
+          unitCost: unitCost(line.value.div(line.qty)),
+          value: line.value,
+        })),
       });
+
+      // A variant returned three or more times is flagged for QA.
+      const returnedUnits = new Map<string, number>();
+      for (const item of returnItems) {
+        returnedUnits.set(
+          item.variant_id,
+          (returnedUnits.get(item.variant_id) ?? 0) + Math.ceil(item.qty.toNumber()),
+        );
+      }
+      await tx.$executeRaw`
+        UPDATE "ProductVariant" v
+        SET "return_count" = v."return_count" + u."units",
+            "qa_flag" = v."qa_flag" OR v."return_count" + u."units" >= 3
+        FROM unnest(${[...returnedUnits.keys()]}::uuid[], ${[...returnedUnits.values()]}::int[]) AS u("variant_id", "units")
+        WHERE v."tenant_id" = ${context.tenantId}::uuid AND v."id" = u."variant_id"
+      `;
 
       if (original.customer_id) {
         const customer = await tx.customer.findFirst({
@@ -995,14 +1023,14 @@ export class SalesService {
       ...invoice,
       items: invoice.items.map((item) => {
         const returnedQty = item.return_items.reduce(
-          (sum, record) => sum + record.qty,
-          0,
+          (sum, record) => sum.plus(record.qty),
+          new Prisma.Decimal(0),
         );
         const { return_items: _returnItems, ...safe } = item;
         return {
           ...safe,
-          returned_qty: returnedQty,
-          returnable_qty: item.qty - returnedQty,
+          returned_qty: quantityNumber(returnedQty),
+          returnable_qty: quantityNumber(item.qty.minus(returnedQty)),
         };
       }),
     };

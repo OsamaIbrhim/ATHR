@@ -108,7 +108,7 @@ function setup(hasCostMargin: boolean) {
   const costVisibility = new CostVisibilityService();
   return {
     prisma,
-    service: new SalesService(prisma as any, {} as unknown as PricingService, costVisibility, new SalesTaxSnapshotService()),
+    service: new SalesService(prisma as any, {} as unknown as PricingService, costVisibility, new SalesTaxSnapshotService(), {} as any),
   };
 }
 

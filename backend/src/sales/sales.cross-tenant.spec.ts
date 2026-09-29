@@ -79,7 +79,7 @@ function setup() {
   const costVisibility = new CostVisibilityService();
   return {
     prisma,
-    service: new SalesService(prisma, pricing, costVisibility, new SalesTaxSnapshotService()),
+    service: new SalesService(prisma, pricing, costVisibility, new SalesTaxSnapshotService(), {} as any),
     reads: new SalesReadService(prisma),
   };
 }

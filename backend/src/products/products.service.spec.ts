@@ -30,7 +30,7 @@ function productReadPrisma(variants: any[], total = variants.length) {
     },
     inventoryStock: {
       findMany: jest.fn().mockResolvedValue([
-        { branch_id: 'b1', variant_id: 'v1', qty_on_hand: 7, qty_reserved: 0 },
+        { warehouse: { branch_id: 'b1' }, variant_id: 'v1', qty_on_hand: 7, qty_reserved: 0 },
       ]),
     },
   };

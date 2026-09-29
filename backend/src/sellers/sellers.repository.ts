@@ -115,43 +115,23 @@ export class SellersRepository {
     });
   }
 
-  /**
-   * Per-tenant commission settings on a table whose primary key defaults to
-   * the constant 1. Reads by `tenant_id`; on first use for a tenant it
-   * allocates the next free integer key rather than colliding on id=1.
-   *
-   * The allocate-on-miss path can race two concurrent first-ever requests for
-   * the same tenant; the loser's unique-violation is retried as a read. There
-   * is no per-tenant unique index to lean on until Phase B.
-   */
+  /** One settings row per tenant (its primary key); created with the defaults on first use. */
   async getSettings(context: TenantScope): Promise<SellerCommissionSettings> {
-    const existing = await this.prisma.sellerCommissionSettings.findFirst({
+    return this.prisma.sellerCommissionSettings.upsert({
       where: { tenant_id: context.tenantId },
+      update: {},
+      create: { tenant_id: context.tenantId },
     });
-    if (existing) return existing;
-
-    const highest = await this.prisma.sellerCommissionSettings.aggregate({ _max: { id: true } });
-    try {
-      return await this.prisma.sellerCommissionSettings.create({
-        data: { id: (highest._max.id ?? 0) + 1, tenant_id: context.tenantId },
-      });
-    } catch (error: unknown) {
-      const raced = await this.prisma.sellerCommissionSettings.findFirst({
-        where: { tenant_id: context.tenantId },
-      });
-      if (raced) return raced;
-      throw error;
-    }
   }
 
   async updateSettings(
     context: TenantScope,
-    data: Omit<Prisma.SellerCommissionSettingsUncheckedUpdateInput, 'id' | 'tenant_id'>,
+    data: Omit<Prisma.SellerCommissionSettingsUncheckedUpdateInput, 'tenant_id'>,
   ) {
-    const settings = await this.getSettings(context);
-    return this.prisma.sellerCommissionSettings.update({
-      where: { id: settings.id },
-      data,
+    return this.prisma.sellerCommissionSettings.upsert({
+      where: { tenant_id: context.tenantId },
+      update: data,
+      create: { ...(data as Prisma.SellerCommissionSettingsUncheckedCreateInput), tenant_id: context.tenantId },
     });
   }
 

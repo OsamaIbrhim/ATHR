@@ -65,7 +65,7 @@ function setup() {
   };
   prisma.$executeRaw = async () => 1;
   prisma.$transaction = async (fn: any) => fn(prisma);
-  return { prisma, captured, service: new PurchasingService(prisma) };
+  return { prisma, captured, service: new PurchasingService(prisma, {} as any) };
 }
 
 const actor = actorFor('warehouse_manager', { sub: randomUUID(), tenantWide: true, branchId: BRANCH_A });
@@ -139,8 +139,8 @@ describe('purchasing — cross-tenant isolation', () => {
   });
 
   /**
-   * Blueprint §120. The cost reconciliation aggregates the cost ledger, stock
-   * and in-transit quantities; unscoped it compares one tenant's materialized
+   * Blueprint §120. The cost reconciliation aggregates the cost ledger and stock
+   * quantities; unscoped it compares one tenant's materialized
    * variant cost against every tenant's ledger and reports the difference as
    * an accounting integrity failure.
    */
@@ -151,7 +151,6 @@ describe('purchasing — cross-tenant isolation', () => {
     const sql = captured.find((text) => text.includes('InventoryCostMovement'))!;
     expect(sql).toMatch(/FROM "InventoryCostMovement" movement[\s\S]*WHERE movement\."tenant_id"/);
     expect(sql).toMatch(/FROM "InventoryStock" record[\s\S]*WHERE record\."tenant_id"/);
-    expect(sql).toMatch(/FROM "TransferItem" item[\s\S]*WHERE item\."tenant_id"/);
     expect(sql).toMatch(/FROM "ProductVariant" variant[\s\S]*WHERE variant\."tenant_id"/);
   });
 });

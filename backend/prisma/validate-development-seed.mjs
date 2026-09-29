@@ -57,7 +57,7 @@ async function main() {
 
   const mutationStock = await prisma.inventoryStock.findFirst({
     where: {
-      branch_id: cashier.branch_id,
+      warehouse: { branch_id: cashier.branch_id, is_default: true },
       qty_on_hand: { gte: 12 },
       qty_reserved: 0,
       variant: {
@@ -71,6 +71,23 @@ async function main() {
     throw new Error(
       'Development seed requires an active unreserved variant with at least 12 units for mutation smoke tests',
     )
+  }
+
+  // Stock must equal the sum of its ledger (the seed writes through InventoryService).
+  const [{ mismatches }] = await prisma.$queryRaw`
+    SELECT COUNT(*)::integer AS mismatches
+    FROM "InventoryStock" stock
+    FULL OUTER JOIN (
+      SELECT "warehouse_id", "variant_id", SUM("on_hand_delta") AS on_hand, SUM("reserved_delta") AS reserved
+      FROM "InventoryMovement"
+      GROUP BY "warehouse_id", "variant_id"
+    ) ledger
+      ON ledger."warehouse_id" = stock."warehouse_id" AND ledger."variant_id" = stock."variant_id"
+    WHERE COALESCE(stock."qty_on_hand", 0) <> COALESCE(ledger.on_hand, 0)
+       OR COALESCE(stock."qty_reserved", 0) <> COALESCE(ledger.reserved, 0)
+  `
+  if (mismatches !== 0) {
+    throw new Error(`Development seed inventory does not reconcile with its ledger (${mismatches} stock row(s))`)
   }
 
   const [products, variants, branches] = await Promise.all([
@@ -92,7 +109,7 @@ async function main() {
       products,
       variants,
       mutation_variant_id: mutationStock.variant_id,
-      mutation_stock: mutationStock.qty_on_hand,
+      mutation_stock: Number(mutationStock.qty_on_hand),
     })}\n`,
   )
 }

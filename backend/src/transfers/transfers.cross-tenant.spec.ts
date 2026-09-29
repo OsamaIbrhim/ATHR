@@ -62,7 +62,7 @@ function setup() {
   };
   prisma.$executeRaw = async () => 1;
   prisma.$transaction = async (fn: any) => fn(prisma);
-  return { prisma, captured, service: new TransfersService(prisma) };
+  return { prisma, captured, service: new TransfersService(prisma, {} as any) };
 }
 
 const warehouseFor = (branchId: string) =>

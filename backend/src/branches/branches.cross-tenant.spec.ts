@@ -15,6 +15,7 @@ function setup() {
       aBranch({ id: BRANCH_A, tenant_id: TENANT_A, code: 'MAIN', name_ar: 'A' }),
       aBranch({ id: BRANCH_B, tenant_id: TENANT_B, code: 'MAIN-B', name_ar: 'B' }),
     ],
+    warehouse: [],
   });
   const repository = new BranchesRepository(prisma);
   return { prisma, repository, service: new BranchesService(repository) };
@@ -52,5 +53,15 @@ describe('branches — cross-tenant isolation', () => {
     const created = await repository.save(contextFor(TENANT_B), { code: 'NEW', name_ar: 'N' } as any);
     expect(created.tenant_id).toBe(TENANT_B);
     expect(await repository.findById(contextFor(TENANT_A), created.id)).toBeNull();
+  });
+
+  /** A branch's stock lives in its default warehouse, created in the same transaction. */
+  it('creates the branch\'s default warehouse with the branch, in the same tenant', async () => {
+    const { prisma, repository } = setup();
+    const created = await repository.save(contextFor(TENANT_B), { code: 'NEW', name_ar: 'فرع جديد' } as any);
+
+    expect(prisma.warehouse.rows).toEqual([
+      expect.objectContaining({ tenant_id: TENANT_B, branch_id: created.id, is_default: true }),
+    ]);
   });
 });
