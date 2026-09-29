@@ -1,6 +1,7 @@
 import { actorFor } from '../auth/testing/actors';
 import { SalesController } from './sales.controller';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+import { fullAccess } from '../entitlements/testing';
 
 // WP-007 Phase A: sales entry points take the resolved TenantContext first.
 const ctx = contextFor(TENANT_A);
@@ -43,6 +44,7 @@ describe('SalesController POS terminal enforcement', () => {
         reads,
         {} as any,
         terminals,
+        fullAccess,
       ),
       sales,
       reads,

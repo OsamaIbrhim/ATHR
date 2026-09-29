@@ -21,6 +21,7 @@ export type FriendlyError = {
   details?: string[];
   retryable?: boolean;
   retry_after_ms?: number;
+  data?: Readonly<Record<string, unknown>>;
 };
 
 const GENERIC: Record<number, Omit<FriendlyError, 'status'>> = {
@@ -97,8 +98,9 @@ export function toFriendlyError(exception: unknown): FriendlyError {
       status: exception.overrides?.httpStatus ?? metadata.defaultHttpStatus,
       code: exception.code,
       message: exception.message,
-      message_ar: exception.message,
+      message_ar: exception.overrides?.messageAr ?? exception.message,
       retryable: metadata.retryable,
+      data: exception.overrides?.data,
     };
   }
   if (exception instanceof Prisma.PrismaClientKnownRequestError) {
@@ -233,6 +235,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
       details: error.details,
       retryable: error.retryable,
       retry_after_ms: error.retry_after_ms,
+      data: error.data,
       request_id: requestId,
       timestamp: new Date().toISOString(),
       path: request.originalUrl,

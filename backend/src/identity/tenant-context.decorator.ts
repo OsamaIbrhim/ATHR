@@ -49,7 +49,8 @@ export function deviceTenantContext(
     membershipId: null,
     servicePrincipalId: terminal.id,
     authenticatedIdentityId: terminal.id,
-    tenantAccessMode: 'active',
+    // The sale path gates on the subscription itself (`EntitlementService.assertCanWrite`).
+    tenantAccessMode: 'full',
     entitlementSnapshotVersion: null,
     permissionPolicyVersion: 1,
     scopeSet: [{ scopeType: 'terminal', scopeRefId: terminal.id }],

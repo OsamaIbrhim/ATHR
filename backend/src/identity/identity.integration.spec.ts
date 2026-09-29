@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { Test } from '@nestjs/testing';
 import { PrismaModule } from '../prisma/prisma.module';
 import { PrismaService } from '../prisma/prisma.service';
+import { StubEntitlementsModule } from '../entitlements/testing';
 import { IdentityModule } from './identity.module';
 import { InvitationController } from './invitation.controller';
 import { MembershipController } from './membership.controller';
@@ -39,7 +40,7 @@ function makeReq(user_id: string): RequestWithIdentity {
 
 /** A minimal, in-memory stand-in for the subset of PrismaClient this WP's repositories call. */
 class FakePrismaService {
-  tenants = new Map<string, any>([[TENANT_ID, { id: TENANT_ID, access_mode: 'active' }]]);
+  tenants = new Map<string, any>([[TENANT_ID, { id: TENANT_ID }]]);
   memberships = new Map<string, any>([
     [
       OWNER_MEMBERSHIP_ID,
@@ -206,7 +207,7 @@ describe('WP-006 identity module — full HTTP-endpoint integration flow', () =>
   beforeEach(async () => {
     fakePrisma = new FakePrismaService();
     const moduleRef = await Test.createTestingModule({
-      imports: [IdentityModule, PrismaModule],
+      imports: [IdentityModule, PrismaModule, StubEntitlementsModule],
     })
       .overrideProvider(PrismaService)
       .useValue(fakePrisma)

@@ -16,10 +16,11 @@ export const CLIENT_ROLE_NAME: Record<MembershipRole, string> = {
 };
 
 /** The user object returned by /auth/login, /auth/refresh and /auth/me. */
-export function toSessionUser(user: { id: string; name: string }, claims: IdentityClaims) {
+export function toSessionUser(user: { id: string; name: string; is_platform_admin?: boolean }, claims: IdentityClaims) {
   return {
     id: user.id,
     name: user.name,
+    is_platform_admin: user.is_platform_admin ?? false,
     role: claims.membership_role ? CLIENT_ROLE_NAME[claims.membership_role] : null,
     membership_role: claims.membership_role,
     branch_id: primaryBranchId(claims),

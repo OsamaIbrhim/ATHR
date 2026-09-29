@@ -58,7 +58,7 @@ export class AuthService {
   async me(actor: AuthenticatedUser) {
     const user = await this.prisma.user.findUnique({
       where: { id: actor.sub },
-      select: { id: true, name: true, is_active: true },
+      select: { id: true, name: true, is_active: true, is_platform_admin: true },
     });
     if (!user?.is_active) throw new UnauthorizedException();
     const memberships = await this.prisma.membership.findMany({

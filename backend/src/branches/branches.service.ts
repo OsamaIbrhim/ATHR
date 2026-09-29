@@ -2,12 +2,16 @@ import { Injectable, InternalServerErrorException, ConflictException, Logger } f
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { BranchesRepository } from './branches.repository';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { LimitService } from '../entitlements/limit.service';
 
 @Injectable()
 export class BranchesService {
   private readonly logger = new Logger(BranchesService.name);
 
-  constructor(private readonly repository: BranchesRepository) {}
+  constructor(
+    private readonly repository: BranchesRepository,
+    private readonly limits: LimitService,
+  ) {}
 
   async findAll(context: TenantContext) {
     try {
@@ -19,6 +23,7 @@ export class BranchesService {
   }
 
   async create(context: TenantContext, data: CreateBranchDto) {
+    await this.limits.assertCanCreate(context.tenantId, 'branches');
     try {
       return await this.repository.save(context, data);
     } catch (error: any) {

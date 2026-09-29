@@ -5,6 +5,7 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { TaxCodeService } from '../tax/tax-code.service';
 import { TaxCodeRepository } from '../tax/tax-code.repository';
 import { aTaxCategory, aTaxCode } from '../identity/testing/fixture-builders';
+import { unlimited } from '../entitlements/testing';
 
 // WP-007 Phase A: `ProductsService` now depends on `ProductsRepository`
 // rather than `PrismaService` directly, and every method takes a
@@ -14,7 +15,7 @@ import { aTaxCategory, aTaxCode } from '../identity/testing/fixture-builders';
 const ctx = contextFor(TENANT_A);
 
 function serviceOver(prisma: any) {
-  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any), new TaxCodeService(new TaxCodeRepository(prisma as any)));
+  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any), new TaxCodeService(new TaxCodeRepository(prisma as any)), unlimited);
 }
 
 function productReadPrisma(variants: any[], total = variants.length) {

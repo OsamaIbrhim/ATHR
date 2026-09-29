@@ -19,12 +19,16 @@ import {
 import { assertBranchAccess, hasBranchAccess, primaryBranchId, resolveBranchScope } from '../auth/branch-access';
 import { TerminalsRepository } from './terminals.repository';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { EntitlementService } from '../entitlements/entitlement.service';
+import { LimitService } from '../entitlements/limit.service';
 
 @Injectable()
 export class TerminalsService {
   constructor(
     private prisma: PrismaService,
     private readonly repository: TerminalsRepository,
+    private readonly entitlements: EntitlementService,
+    private readonly limits: LimitService,
   ) {}
 
   async createEnrollment(
@@ -41,6 +45,8 @@ export class TerminalsService {
     // an enrollment code against another tenant's branch just by passing its id.
     const branch = await this.repository.findBranch(context, branchId);
     if (!branch) throw new NotFoundException('Active branch not found');
+    // Fail here, where the manager sees it, rather than on the device at enrollment.
+    await this.limits.assertCanCreate(context.tenantId, 'terminals');
 
     const code = randomBytes(9).toString('base64url').toUpperCase();
     const expiresAt = new Date(Date.now() + Number(process.env.POS_ENROLLMENT_TTL_MS || 10 * 60 * 1000));
@@ -72,7 +78,12 @@ export class TerminalsService {
 
     const deviceToken = randomBytes(48).toString('base64url');
     const now = new Date();
+    const tenantId = enrollment.tenant_id ?? enrollment.branch.tenant_id;
+    // Device enrollment has no session, so the subscription is checked here.
+    await this.entitlements.assertCanWrite(tenantId);
     const terminal = await this.prisma.$transaction(async (tx) => {
+      // Re-enrolling a known device does not use another terminal slot.
+      if (!existing) await this.limits.assertCanCreate(tenantId, 'terminals', tx);
       const claimed = await tx.posTerminalEnrollment.updateMany({
         where: { id: enrollment.id, used_at: null, expires_at: { gt: now } },
         data: { used_at: now },
@@ -88,7 +99,7 @@ export class TerminalsService {
           // The terminal inherits its Tenant from the branch it enrolls into.
           // Without this a newly enrolled terminal would carry no tenant_id and
           // deviceTenantContext() would fail closed, so it could not sell.
-          tenant_id: enrollment.tenant_id ?? enrollment.branch.tenant_id,
+          tenant_id: tenantId,
           app_version: dto.app_version,
           device_token_hash: this.hash(deviceToken),
           enrolled_by: enrollment.created_by,
@@ -138,7 +149,18 @@ export class TerminalsService {
       },
       { branch: { select: { code: true, name_ar: true, name_en: true } } },
     );
-    return { terminal, online: true, server_time: now.toISOString() };
+    // Lets the POS react to the subscription (banner, read-only, suspended).
+    const access = await this.entitlements.resolve(existing.tenant_id);
+    return {
+      terminal,
+      online: true,
+      server_time: now.toISOString(),
+      subscription: {
+        mode: access.mode,
+        grace_until: access.graceUntil,
+        plan_code: access.planCode,
+      },
+    };
   }
 
   async selfDecommission(

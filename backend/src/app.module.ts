@@ -31,6 +31,9 @@ import { UpdatesModule } from './updates/updates.module';
 import { IdentityModule } from './identity/identity.module';
 import { TenantContextGuard } from './identity/tenant-context.guard';
 import { PermissionGuard } from './identity/permission.guard';
+import { EntitlementsModule } from './entitlements/entitlements.module';
+import { PublicModule } from './entitlements/public.module';
+import { EntitlementGuard } from './entitlements/entitlement.guard';
 
 @Module({
   imports: [
@@ -61,14 +64,18 @@ import { PermissionGuard } from './identity/permission.guard';
     SellersModule,
     UpdatesModule,
     IdentityModule,
+    EntitlementsModule,
+    PublicModule,
   ],
   // Guard order is significant and matches the Permission Matrix §74 denial
   // precedence: authenticate (JwtAuthGuard) → resolve tenant context
-  // (TenantContextGuard, which needs `req.user`) → permission check
-  // (PermissionGuard, the only authorization guard).
+  // (TenantContextGuard, which needs `req.user`) → tenant access mode and
+  // plan feature (EntitlementGuard) → permission check (PermissionGuard, the
+  // only authorization guard). Plan limits are checked at creation points.
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: TenantContextGuard },
+    { provide: APP_GUARD, useClass: EntitlementGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: PerformanceInterceptor },
   ],

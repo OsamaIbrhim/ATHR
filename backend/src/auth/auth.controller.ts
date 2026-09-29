@@ -6,6 +6,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { AuthenticatedUser } from './authenticated-user';
 import { AthrExceptionFilter } from '../common/http/athr-exception.filter';
+import { AllowInAnyAccessMode } from '../entitlements/entitlement.decorators';
 import { Envelope } from '../common/http/response-envelope.interceptor';
 @Controller('auth')
 export class AuthController {
@@ -28,6 +29,8 @@ export class AuthController {
   @Post('logout')
   logout(@Body() dto: RefreshTokenDto) { return this.auth.logout(dto.refresh_token); }
 
+  // Session info must keep working when the subscription has lapsed.
+  @AllowInAnyAccessMode()
   @Get('me')
   me(@Req() req: Request & { user: AuthenticatedUser }) { return this.auth.me(req.user); }
 }

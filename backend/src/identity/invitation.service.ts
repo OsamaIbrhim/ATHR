@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
 import type { AccessScopeType, Invitation, Membership, MembershipRole } from '@prisma/client';
 import { DomainFailure, Result, fail, ok } from '@athr/domain-core';
+import { LimitService } from '../entitlements/limit.service';
 import { AccessScopeService } from './access-scope.service';
 import { InvitationFilters, InvitationRepository } from './invitation.repository';
 import { MembershipRepository } from './membership.repository';
@@ -41,6 +42,7 @@ export class InvitationService {
     private readonly repository: InvitationRepository,
     private readonly membershipRepository: MembershipRepository,
     private readonly accessScope: AccessScopeService,
+    private readonly limits: LimitService,
   ) {}
 
   async findById(context: TenantContext, id: string): Promise<Invitation | null> {
@@ -122,6 +124,8 @@ export class InvitationService {
         message: 'This Identity already has a Membership in this Tenant.',
       });
     }
+
+    await this.limits.assertCanCreate(invitation.tenant_id, 'users');
 
     const membership = await this.membershipRepository.save(tenantScope, {
       userId: input.acceptingIdentityId,

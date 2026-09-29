@@ -3,6 +3,7 @@ import { BranchesRepository } from './branches.repository';
 import { BranchesService } from './branches.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aBranch } from '../identity/testing/fixture-builders';
+import { unlimited } from '../entitlements/testing';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `branches` module. */
 
@@ -17,7 +18,7 @@ function setup() {
     ],
   });
   const repository = new BranchesRepository(prisma);
-  return { prisma, repository, service: new BranchesService(repository) };
+  return { prisma, repository, service: new BranchesService(repository, unlimited) };
 }
 
 describe('branches — cross-tenant isolation', () => {

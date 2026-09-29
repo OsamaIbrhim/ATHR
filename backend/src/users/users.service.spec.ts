@@ -3,6 +3,7 @@ import { UsersService } from './users.service';
 import { UsersRepository } from './users.repository';
 import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+import { unlimited } from '../entitlements/testing';
 
 describe('UsersService', () => {
   const ctx = contextFor(TENANT_A);
@@ -15,7 +16,7 @@ describe('UsersService', () => {
     findMembership: jest.fn(),
     updatePermissions: jest.fn(),
   };
-  const service = new UsersService(repository as unknown as UsersRepository);
+  const service = new UsersService(repository as unknown as UsersRepository, unlimited);
   const newUser = {
     name: 'Cashier',
     phone: '01012345678',

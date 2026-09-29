@@ -33,8 +33,13 @@ export class BranchesRepository {
     });
   }
 
-  async save(context: TenantScope, data: Omit<Prisma.BranchCreateInput, 'tenant_id'>): Promise<Branch> {
-    return this.prisma.branch.create({ data: { ...data, tenant_id: context.tenantId } });
+  /** Pass `tx` to create the branch inside a caller's transaction (tenant signup). */
+  async save(
+    context: TenantScope,
+    data: Omit<Prisma.BranchCreateInput, 'tenant_id'>,
+    tx?: Prisma.TransactionClient,
+  ): Promise<Branch> {
+    return (tx ?? this.prisma).branch.create({ data: { ...data, tenant_id: context.tenantId } });
   }
 
   /** Used by every module that accepts a caller-supplied `branch_id`. */

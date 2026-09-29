@@ -1,4 +1,5 @@
 import { TenantContextResolver } from './tenant-context.resolver';
+import { fullAccess } from '../entitlements/testing';
 
 const TENANT_ID = '11111111-1111-1111-1111-111111111111';
 const IDENTITY_ID = '22222222-2222-2222-2222-222222222222';
@@ -10,7 +11,7 @@ function fakePrisma(overrides: { tenant?: any; membership?: any } = {}) {
       findUnique: jest.fn(async () =>
         overrides.tenant !== undefined
           ? overrides.tenant
-          : { id: TENANT_ID, access_mode: 'active' },
+          : { id: TENANT_ID },
       ),
     },
     membership: {
@@ -42,7 +43,7 @@ describe('TenantContextResolver', () => {
   };
 
   it('resolves a full TenantContext for an active Membership', async () => {
-    const resolver = new TenantContextResolver(fakePrisma(), fakePermissionPolicy(3));
+    const resolver = new TenantContextResolver(fakePrisma(), fakePermissionPolicy(3), fullAccess);
 
     const result = await resolver.resolve(baseInput);
 
@@ -51,7 +52,7 @@ describe('TenantContextResolver', () => {
     expect(result.value.tenantId).toBe(TENANT_ID);
     expect(result.value.membershipId).toBe(MEMBERSHIP_ID);
     expect(result.value.authenticatedIdentityId).toBe(IDENTITY_ID);
-    expect(result.value.tenantAccessMode).toBe('active');
+    expect(result.value.tenantAccessMode).toBe('full');
     expect(result.value.permissionPolicyVersion).toBe(3);
     expect(result.value.scopeSet).toEqual([{ scopeType: 'tenant_wide', scopeRefId: null }]);
     expect(result.value.actorType).toBe('human');
@@ -60,14 +61,14 @@ describe('TenantContextResolver', () => {
   });
 
   it('fails closed when the Tenant does not exist', async () => {
-    const resolver = new TenantContextResolver(fakePrisma({ tenant: null }), fakePermissionPolicy());
+    const resolver = new TenantContextResolver(fakePrisma({ tenant: null }), fakePermissionPolicy(), fullAccess);
     const result = await resolver.resolve(baseInput);
     expect(result.ok).toBe(false);
     if (result.ok === false) expect(result.failure.code).toBe('TENANT_CONTEXT_UNRESOLVABLE');
   });
 
   it('fails closed when there is no Membership for this Identity/Tenant pair', async () => {
-    const resolver = new TenantContextResolver(fakePrisma({ membership: null }), fakePermissionPolicy());
+    const resolver = new TenantContextResolver(fakePrisma({ membership: null }), fakePermissionPolicy(), fullAccess);
     const result = await resolver.resolve(baseInput);
     expect(result.ok).toBe(false);
     if (result.ok === false) expect(result.failure.code).toBe('TENANT_CONTEXT_UNRESOLVABLE');
@@ -77,6 +78,7 @@ describe('TenantContextResolver', () => {
     const resolver = new TenantContextResolver(
       fakePrisma({ membership: { id: MEMBERSHIP_ID, status: 'suspended', access_scope_assignments: [] } }),
       fakePermissionPolicy(),
+      fullAccess,
     );
     const result = await resolver.resolve(baseInput);
     expect(result.ok).toBe(false);
@@ -100,6 +102,7 @@ describe('TenantContextResolver', () => {
         },
       }),
       fakePermissionPolicy(),
+      fullAccess,
     );
     const result = await resolver.resolve(baseInput);
     expect(result.ok).toBe(true);

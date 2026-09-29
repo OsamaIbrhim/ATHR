@@ -10,13 +10,17 @@ import { effectivePermissions } from '../identity/permission-catalog';
 import { UpdateUserPermissionsDto } from './dto/update-user-permissions.dto';
 import { UsersRepository } from './users.repository';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { LimitService } from '../entitlements/limit.service';
 
 /** Roles a branch-scoped manager may manage inside their own branch. */
 const BRANCH_MANAGEABLE_ROLES: readonly MembershipRole[] = ['cashier', 'warehouse_manager', 'seller'];
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly repository: UsersRepository) {}
+  constructor(
+    private readonly repository: UsersRepository,
+    private readonly limits: LimitService,
+  ) {}
 
   findAll(context: TenantContext, actor: AuthenticatedUser) {
     if (canAccessAllBranches(actor)) {
@@ -39,6 +43,7 @@ export class UsersService {
       throw new BadRequestException('phone must be a valid Egyptian mobile number');
     }
 
+    await this.limits.assertCanCreate(context.tenantId, 'users');
     const password_hash = await bcrypt.hash(data.password, 12);
     return this.repository.save(context, {
       user: { name: data.name, phone, email: data.email, password_hash, is_active: true },

@@ -3,6 +3,7 @@ import { UsersRepository } from './users.repository';
 import { UsersService } from './users.service';
 import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { unlimited } from '../entitlements/testing';
 
 /**
  * Cross-tenant isolation for the `users` module.
@@ -33,7 +34,7 @@ function setup() {
     membership: [staff(USER_A, TENANT_A, 'A Cashier'), staff(USER_B, TENANT_B, 'B Cashier')],
   });
   const repository = new UsersRepository(prisma);
-  return { prisma, repository, service: new UsersService(repository) };
+  return { prisma, repository, service: new UsersService(repository, unlimited) };
 }
 
 const tenantWideOwner = actorFor('tenant_owner', { tenantWide: true });

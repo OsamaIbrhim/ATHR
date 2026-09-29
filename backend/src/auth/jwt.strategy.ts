@@ -47,13 +47,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   private async loadAuthenticatedUser(userId: string, tenantId: string | null): Promise<AuthenticatedUser> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, is_active: true },
+      select: { id: true, is_active: true, is_platform_admin: true },
     });
     if (!user?.is_active) throw new UnauthorizedException();
     // The very short cache coalesces bursts from one logged-in user while role,
     // scope, permission, disable, and revocation changes still take effect
     // within 1 second.
     const claims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id, tenantId);
-    return { sub: user.id, ...claims };
+    return { sub: user.id, is_platform_admin: user.is_platform_admin, ...claims };
   }
 }

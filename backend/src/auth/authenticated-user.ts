@@ -7,4 +7,6 @@ import { IdentityClaims } from './identity-claims';
  */
 export interface AuthenticatedUser extends IdentityClaims {
   sub: string;
+  /** Platform console operator (ADR-0006); says nothing about any tenant. */
+  is_platform_admin?: boolean;
 }

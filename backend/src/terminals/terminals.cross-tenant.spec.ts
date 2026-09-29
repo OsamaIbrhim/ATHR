@@ -5,6 +5,7 @@ import { TerminalsRepository } from './terminals.repository';
 import { TerminalsService } from './terminals.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aBranch } from '../identity/testing/fixture-builders';
+import { fullAccess, unlimited } from '../entitlements/testing';
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `terminals` module.
@@ -60,7 +61,7 @@ function setup() {
     posTerminal: { branch: { table: 'branch', localKey: 'branch_id' } },
   });
   const repository = new TerminalsRepository(prisma);
-  return { prisma, repository, service: new TerminalsService(prisma, repository) };
+  return { prisma, repository, service: new TerminalsService(prisma, repository, fullAccess, unlimited) };
 }
 
 const ownerOf = (branchId: string, tenantId: string) =>

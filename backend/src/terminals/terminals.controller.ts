@@ -5,6 +5,7 @@ import { CreateTerminalEnrollmentDto, DecommissionTerminalDto, EnrollTerminalDto
 import { TerminalsService } from './terminals.service';
 import { Public } from '../auth/public.decorator';
 import { PosProtocolGuard } from '../updates/pos-protocol.guard';
+import { AllowInAnyAccessMode } from '../entitlements/entitlement.decorators';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -29,6 +30,8 @@ export class TerminalsController {
     return this.service.enroll(dto);
   }
 
+  // The POS learns its subscription mode from this call, so it must work in every mode.
+  @AllowInAnyAccessMode()
   @UseGuards(new PosProtocolGuard())
   @RequirePermission('terminal.view-health')
   @Post('heartbeat')

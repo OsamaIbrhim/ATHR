@@ -28,6 +28,7 @@ import { RequirePermission } from '../identity/permission.guard'
 import { TenantCtx } from '../identity/tenant-context.decorator'
 import type { TenantContext } from '../identity/tenant-context.type'
 import { Public } from '../auth/public.decorator'
+import { EntitlementService } from '../entitlements/entitlement.service'
 
 @Controller()
 export class SalesController {
@@ -36,6 +37,7 @@ export class SalesController {
     private reads: SalesReadService,
     private pdfService: InvoicePdfService,
     private terminals: TerminalsService,
+    private entitlements: EntitlementService,
   ) {}
 
   @RequirePermission('sales.sale.view')
@@ -73,6 +75,9 @@ export class SalesController {
       deviceToken,
     )
 
+    // No session on this route, so the subscription is checked here. A sale that
+    // was completed offline before the restriction began is still accepted.
+    await this.entitlements.assertCanWrite(terminal.tenant_id, new Date(dto.occurred_at))
     const result = await this.svc.createSale(dto, terminal)
     this.reads.invalidateCounts()
     return result

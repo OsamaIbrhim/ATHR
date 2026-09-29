@@ -5,6 +5,7 @@ import { BrandsRepository } from '../brands/brands.repository';
 import { TaxCodeService } from '../tax/tax-code.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { LimitService } from '../entitlements/limit.service';
 
 @Injectable()
 export class ProductsService {
@@ -14,6 +15,7 @@ export class ProductsService {
     private readonly repository: ProductsRepository,
     private readonly brands: BrandsRepository,
     private readonly tax: TaxCodeService,
+    private readonly limits: LimitService,
   ) {}
 
   /**
@@ -164,6 +166,7 @@ export class ProductsService {
   }
 
   async createProduct(context: TenantContext, dto: CreateProductDto) {
+    await this.limits.assertCanCreate(context.tenantId, 'products');
     // BR-CLS-103 / BR-PROD-100: a cross-tenant brand_id must never be
     // accepted -- fail loudly here rather than relying solely on the
     // composite FK to reject it at the DB layer.
