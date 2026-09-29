@@ -12,10 +12,10 @@ export class AuthController {
   constructor(private auth: AuthService) {}
   @Public()
   @Post('login')
-  login(@Body() dto: LoginDto) { return this.auth.login(dto.phone, dto.password); }
+  login(@Body() dto: LoginDto) { return this.auth.login(dto.phone, dto.password, dto.tenant_id); }
   @Public()
   @Post('refresh')
-  refresh(@Body() dto: RefreshTokenDto) { return this.auth.refresh(dto.refresh_token); }
+  refresh(@Body() dto: RefreshTokenDto) { return this.auth.refresh(dto.refresh_token, dto.tenant_id); }
   // WP-003 proof-of-concept command endpoint — already idempotent (revoking an
   // already-revoked/absent token is a no-op success), so it is low-risk to be
   // the first migrated command. See

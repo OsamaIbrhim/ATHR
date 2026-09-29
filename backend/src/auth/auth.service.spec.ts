@@ -31,7 +31,7 @@ describe('AuthService refresh rotation', () => {
     };
     const jwt = { signAsync: jest.fn().mockResolvedValue('access-token') };
     const permissionPolicy = { getCurrentVersion: jest.fn().mockResolvedValue(1) };
-    return { service: new AuthService(prisma as any, jwt as any, permissionPolicy as any), tx, jwt };
+    return { service: new AuthService(prisma as any, jwt as any, permissionPolicy as any), tx, jwt, prisma };
   }
 
   it('revokes the presented token and returns a newly stored opaque token', async () => {
@@ -44,6 +44,23 @@ describe('AuthService refresh rotation', () => {
     expect(result.refresh_token).not.toBe('old-refresh-token');
     expect(result.access_token).toBe('access-token');
     expect(jwt.signAsync).toHaveBeenCalledWith(expect.objectContaining({ sub: user.id, branch_id: user.branch_id }));
+  });
+
+  it('passes the requested tenant through to claim resolution on refresh', async () => {
+    const { service, prisma } = setup();
+    // mocked identity has no membership, so an explicit tenant is rejected
+    await expect(service.refresh('old-refresh-token', 'tenant-2')).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.membership.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ tenantId: 'tenant-2' }),
+    }));
+  });
+
+  it('me() lists the active tenants (id + name)', async () => {
+    const { service, prisma } = setup();
+    Object.assign(prisma, { user: { findUnique: jest.fn().mockResolvedValue({ ...user, granted_capabilities: [], revoked_capabilities: [] }) } });
+    Object.assign(prisma.membership, { findMany: jest.fn().mockResolvedValue([{ tenant: { id: 't1', name: 'Shop' } }]) });
+    const me = await service.me(user.id);
+    expect(me.tenants).toEqual([{ id: 't1', name: 'Shop' }]);
   });
 
   it('rejects concurrent reuse after another request has claimed the token', async () => {

@@ -1,3 +1,4 @@
+import { UnauthorizedException } from '@nestjs/common';
 import type { AccessScopeType, MembershipRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
@@ -32,12 +33,19 @@ export async function resolveIdentityClaims(
   prisma: PrismaService,
   permissionPolicy: PermissionPolicyService,
   identityId: string,
+  requestedTenantId?: string | null,
 ): Promise<IdentityClaims> {
+  // An explicit tenant is only honoured if it is an active membership of this
+  // identity; otherwise the oldest active membership is used (deterministic).
   const membership = await prisma.membership.findFirst({
-    where: { identityId, status: 'active' },
+    where: { identityId, status: 'active', ...(requestedTenantId ? { tenantId: requestedTenantId } : {}) },
+    orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
     include: { access_scope_assignments: true },
   });
-  if (!membership) return EMPTY_CLAIMS;
+  if (!membership) {
+    if (requestedTenantId) throw new UnauthorizedException('No active membership in the requested tenant');
+    return EMPTY_CLAIMS;
+  }
 
   const now = new Date();
   const scope_set = membership.access_scope_assignments
