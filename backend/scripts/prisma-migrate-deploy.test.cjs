@@ -9,26 +9,9 @@ const {
   listMigrationFolders,
 } = require('./prisma-migrate-deploy.cjs');
 
-test('reports the repository migration history used by deployment', () => {
-  // Master corrected WP-008 Phase A's stale count to 153 (PR #67, 628defa).
-  // Phase B adds 7 more folders (202608070001-0007), so 153 -> 160.
-  // Phase C adds 8 (202608130001-0008), so 160 -> 168, and the 202608130xxx
-  // tax folders now sort last.
-  // Phase D adds 2 (202608160001_add_promotion_coupon_bundle_tables,
-  // 202608160002_add_promotion_coupon_uniqueness_constraints -- split in two
-  // deliberately, see that second migration's own header comment and the
-  // Phase D PR description), so 168 -> 170.
-  // WP-009 Phase A PR1 adds 3 (202608220001 expand, 202608220002 catch-up
-  // Location/Warehouse backfill, 202608220003 InventoryStock/Movement/
-  // CostMovement warehouse_id backfill -- deliberately three separate
-  // migrations, see the PR description for why each is its own step), so
-  // 170 -> 173.
-  assert.equal(countMigrationFolders(), 173);
-  assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608220001_wp009_phasea_expand_warehouse_dimension',
-    '202608220002_wp009_phasea_backfill_location_warehouse_for_orphan_branches',
-    '202608220003_wp009_phasea_backfill_inventory_warehouse_id',
-  ]);
+test('reports the baseline migration used by deployment', () => {
+  assert.equal(listMigrationFolders()[0], '000000000000_baseline');
+  assert.equal(countMigrationFolders(), listMigrationFolders().length);
 });
 
 test('accepts direct and session-pooler migration connections', () => {

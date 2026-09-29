@@ -37,57 +37,41 @@ describe('inventory movement ledger contract', () => {
     expect(writers).toEqual([...AUDITED_STOCK_WRITERS].sort());
   });
 
-  it('keeps the database function, semantic triggers, reconciliation backfill, and append-only guard in the migration', () => {
-    const migration = fs.readFileSync(
+  it('keeps the ledger function, append-only guards, and stock constraints in the baseline', () => {
+    const baseline = fs.readFileSync(
       path.join(
         process.cwd(),
         'prisma',
         'migrations',
-        '202607220002_inventory_movement_ledger',
+        '000000000000_baseline',
         'migration.sql',
       ),
       'utf8',
     );
 
-    expect(migration).toContain('record_inventory_movement');
-    expect(migration).toContain('SalesInvoiceItem_inventory_movement');
-    expect(migration).toContain('ReturnItem_inventory_movement');
-    expect(migration).toContain('Transfer_inventory_movement');
-    expect(migration).toContain('migration-opening:');
-    expect(migration).toContain('InventoryMovement_append_only');
-    expect(migration).toContain('InventoryStock_reserved_not_above_on_hand');
-  });
-
-  it('pins every trigger call to the exact ledger-writer PostgreSQL signature', () => {
-    const correction = fs.readFileSync(
-      path.join(
-        process.cwd(),
-        'prisma',
-        'migrations',
-        '202607220003_inventory_ledger_trigger_casts',
-        'migration.sql',
-      ),
-      'utf8',
+    expect(baseline).toContain('FUNCTION record_inventory_movement');
+    expect(baseline).toContain('FUNCTION record_inventory_cost_movement');
+    expect(baseline).toContain('"ReturnItem_inventory_movement"');
+    expect(baseline).toContain('"InventoryMovement_append_only"');
+    expect(baseline).toContain('"InventoryCostMovement_append_only"');
+    expect(baseline).toContain(
+      '"InventoryStock_reserved_not_above_available_on_hand"',
     );
-
-    expect(correction).toContain(`'sale'::"InventoryMovementType"`);
-    expect(correction).toContain(`'return'::"InventoryMovementType"`);
-    expect(correction).toContain(`'transfer_out'::"InventoryMovementType"`);
-    expect(correction).toContain(`'transfer_in'::"InventoryMovementType"`);
-    expect(correction).toContain(`'SalesInvoice'::text`);
-    expect(correction).toContain(`'Return'::text`);
-    expect(correction).toContain(`'Transfer'::text`);
-    expect(correction).toContain('CURRENT_TIMESTAMP::timestamp(3)');
-    expect(correction).toContain(')::timestamp(3)');
+    expect(baseline).toContain(
+      '"InventoryMovement_reserved_not_above_available_on_hand"',
+    );
+    expect(baseline).toContain(
+      'Outgoing cost movement cannot deepen a negative inventory deficit',
+    );
   });
 
   it('allows acceptance-first sales to create an audited inventory deficit', () => {
-    const migration = fs.readFileSync(
+    const baseline = fs.readFileSync(
       path.join(
         process.cwd(),
         'prisma',
         'migrations',
-        '202607280002_acceptance_first_negative_stock',
+        '000000000000_baseline',
         'migration.sql',
       ),
       'utf8',
@@ -97,23 +81,9 @@ describe('inventory movement ledger contract', () => {
       'utf8',
     );
 
-    expect(migration).toContain(
-      'DROP CONSTRAINT IF EXISTS "InventoryStock_qty_on_hand_nonnegative"',
-    );
-    expect(migration).toContain(
-      '"InventoryStock_reserved_not_above_available_on_hand"',
-    );
-    expect(migration).toContain(
-      'negative_inventory_units_covered',
-    );
-    expect(migration).toContain(
-      'CREATE OR REPLACE FUNCTION "record_inventory_cost_movement"',
-    );
-    expect(migration).not.toContain('pg_get_functiondef');
-    expect(migration).not.toContain('definition := replace');
-    expect(migration).toContain(
-      'Outgoing cost movement cannot deepen a negative inventory deficit',
-    );
+    expect(baseline).not.toContain('"InventoryStock_qty_on_hand_nonnegative"');
+    expect(baseline).not.toContain('"InventoryMovement_nonnegative_balances"');
+    expect(baseline).toContain('negative_inventory_units_covered');
     expect(hardLoad).toContain(
       'Negative-stock sale must be accepted with a warning and replay idempotently',
     );
@@ -128,12 +98,12 @@ describe('inventory movement ledger contract', () => {
   });
 
   it('keeps acceptance-first sales on one explicit inventory writer', () => {
-    const migration = fs.readFileSync(
+    const baseline = fs.readFileSync(
       path.join(
         process.cwd(),
         'prisma',
         'migrations',
-        '202607290001_sales_inventory_single_writer',
+        '000000000000_baseline',
         'migration.sql',
       ),
       'utf8',
@@ -142,40 +112,16 @@ describe('inventory movement ledger contract', () => {
       path.join(process.cwd(), 'src', 'sales', 'sales.service.ts'),
       'utf8',
     );
-    const negativeBalanceMigration = fs.readFileSync(
-      path.join(
-        process.cwd(),
-        'prisma',
-        'migrations',
-        '202607290002_inventory_movement_negative_balance',
-        'migration.sql',
-      ),
-      'utf8',
-    );
     const ledgerSmoke = fs.readFileSync(
       path.join(process.cwd(), 'perf', 'inventory-ledger-smoke.mjs'),
       'utf8',
     );
 
-    expect(migration).toContain(
-      'DROP TRIGGER IF EXISTS "SalesInvoiceItem_inventory_movement"',
-    );
-    expect(migration).toContain(
-      'DROP FUNCTION IF EXISTS "record_sale_inventory_movement"()',
-    );
-    expect(migration).not.toContain('DROP FUNCTION IF EXISTS "record_inventory_movement"');
+    expect(baseline).not.toContain('SalesInvoiceItem_inventory_movement');
+    expect(baseline).not.toContain('record_sale_inventory_movement');
     expect(salesService).toContain('qty_on_hand: { decrement: item.qty }');
     expect(salesService).toContain(
       '${`sale:${dto.sync_id}:${item.variant_id}`}::text',
-    );
-    expect(negativeBalanceMigration).toContain(
-      'DROP CONSTRAINT IF EXISTS "InventoryMovement_nonnegative_balances"',
-    );
-    expect(negativeBalanceMigration).toContain(
-      '"InventoryMovement_reserved_not_above_available_on_hand"',
-    );
-    expect(negativeBalanceMigration).toContain(
-      'GREATEST("on_hand_after", 0)',
     );
     expect(ledgerSmoke).toContain(
       'SELECT "record_inventory_movement"(',
@@ -186,29 +132,21 @@ describe('inventory movement ledger contract', () => {
   });
 
   it('allows the cost ledger to cover a negative sales deficit without weakening quantity arithmetic', () => {
-    const migration = fs.readFileSync(
+    const baseline = fs.readFileSync(
       path.join(
         process.cwd(),
         'prisma',
         'migrations',
-        '202607290003_inventory_cost_negative_balance',
+        '000000000000_baseline',
         'migration.sql',
       ),
       'utf8',
     );
 
-    expect(migration).toContain(
-      'DROP CONSTRAINT IF EXISTS "InventoryCostMovement_quantity_consistency"',
+    expect(baseline).toContain(
+      'CONSTRAINT "InventoryCostMovement_quantity_consistency" CHECK (((quantity_delta <> 0) AND ((global_quantity_before + quantity_delta) = global_quantity_after)))',
     );
-    expect(migration).toContain('"quantity_delta" <> 0');
-    expect(migration).toContain(
-      '"global_quantity_before" + "quantity_delta" =',
-    );
-    expect(migration).toContain('"global_quantity_after"');
-    expect(migration).not.toContain('"global_quantity_before" >= 0');
-    expect(migration).not.toContain('"global_quantity_after" >= 0');
   });
-
 
   it('keeps the remote-database smoke transaction bounded, configurable, and always disconnected', () => {
     const smoke = fs.readFileSync(

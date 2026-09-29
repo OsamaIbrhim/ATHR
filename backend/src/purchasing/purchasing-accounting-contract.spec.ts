@@ -7,7 +7,7 @@ describe('purchasing cost accounting contract', () => {
       process.cwd(),
       'prisma',
       'migrations',
-      '202607230001_purchasing_cost_accounting',
+      '000000000000_baseline',
       'migration.sql',
     ),
     'utf8',
@@ -27,9 +27,7 @@ describe('purchasing cost accounting contract', () => {
     expect(migration).toContain('"InventoryCostMovement_append_only"');
     expect(migration).toContain('record_inventory_cost_movement');
     expect(migration).toContain('"InventoryMovement_sequence_key"');
-    expect(migration).toContain(
-      '"InventoryMovement_variant_sequence_idx"',
-    );
+    expect(migration).toContain('"InventoryMovement_variant_sequence_idx"');
     expect(migration).toContain('"InventoryCostMovement_sequence_key"');
     expect(migration).toContain(
       'Inventory value is outside DECIMAL(18,2) range',
@@ -38,40 +36,22 @@ describe('purchasing cost accounting contract', () => {
       'Inventory cost ledger mismatch after idempotent replay',
     );
     expect(migration).toContain(
-      'Quantity snapshots are event-local',
-    );
-    expect(migration).toContain(
       '"PurchaseInvoice_supplier_normalized_number_key"',
     );
-    expect(migration).toContain('"idempotency_key" VARCHAR(191)');
-    expect(migration).toContain('"command_fingerprint" VARCHAR(64)');
-    expect(migration).toContain('"accounting_version" INTEGER');
+    expect(migration).toContain('command_fingerprint character varying(64)');
+    expect(migration).toContain('accounting_version integer');
     expect(migration).toContain('CREATE TABLE "SupplierReturn"');
     expect(migration).toContain('CREATE TABLE "SupplierReturnItem"');
-    expect(migration).toContain(
-      '"InventoryCostMovement_value_equation"',
-    );
-    expect(migration).toContain(
-      '"PurchaseInvoiceItem_financial_snapshot"',
-    );
-    expect(migration).toContain(
-      '"PurchaseInvoice_immutable"',
-    );
-    expect(migration).toContain(
-      '"PurchaseInvoiceItem_immutable"',
-    );
-    expect(migration).toContain(
-      '"SupplierReturn_immutable"',
-    );
-    expect(migration).toContain(
-      '"ReturnItem_cost_movement"',
-    );
+    expect(migration).toContain('"InventoryCostMovement_value_equation"');
+    expect(migration).toContain('"PurchaseInvoiceItem_financial_snapshot"');
+    expect(migration).toContain('"PurchaseInvoice_immutable"');
+    expect(migration).toContain('"PurchaseInvoiceItem_immutable"');
+    expect(migration).toContain('"SupplierReturn_immutable"');
+    expect(migration).toContain('"ReturnItem_cost_movement"');
     expect(migration).toContain(
       "'customer_return'::\"InventoryCostMovementType\"",
     );
-    expect(migration).toContain(
-      '"ProductVariant_cost_ledger_guard"',
-    );
+    expect(migration).toContain('"ProductVariant_cost_ledger_guard"');
     expect(migration).toContain(
       'ProductVariant.cost_price is maintained by the inventory cost ledger',
     );
@@ -84,9 +64,6 @@ describe('purchasing cost accounting contract', () => {
     expect(service).toContain('FOR UPDATE');
     expect(service).toContain('record_inventory_movement');
     expect(service).toContain('record_inventory_cost_movement');
-    expect(migration).toContain(
-      'UPDATE "PurchaseInvoiceItem"',
-    );
     expect(service).toContain('purchase.receipt.posted');
   });
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // fix/hard-load-stack-depth -- database-level proof for the POS catalog
 // snapshot's query shape at realistic catalog volume. Wired into
-// migration-gate, same convention as verify-tax-code-behaviour.cjs and
+// `npm run test:db`, same convention as verify-tax-code-behaviour.cjs and
 // verify-price-book-behaviour.cjs: a green fakePrisma spec proves nothing
 // about real Postgres execution, and this is exactly that kind of bug.
 //
@@ -24,7 +24,7 @@
 // (a hand-copied reimplementation of the batching loop) but never called
 // SyncService itself -- a revert of the actual fix, or a bad edit to
 // PRODUCT_BATCH_SIZE, or a broken merge would have sailed through
-// migration-gate. This version constructs SyncService directly against a
+// `npm run test:db`. This version constructs SyncService directly against a
 // real PrismaClient -- the pattern already used in
 // `sync.cross-tenant.spec.ts` -- and asserts on the actual output of
 // `.pull()` (which, with no cursor, calls the private `snapshot()`). It
@@ -61,7 +61,7 @@ try {
   console.error(
     `Could not load compiled SyncService from ${distSync}. This script asserts on the ` +
       `actual shipped code, so it requires \`npm run build\` to have run first (see ` +
-      `migration-gate in ci.yml). Original error: ${error?.message ?? error}`,
+      `\`npm run test:db\`). Original error: ${error?.message ?? error}`,
   );
   process.exit(1);
 }
