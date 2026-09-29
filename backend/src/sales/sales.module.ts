@@ -6,9 +6,10 @@ import { PricingModule } from '../pricing/pricing.module';
 import { TaxModule } from '../tax/tax.module';
 import { InvoicePdfService } from './invoice-pdf.service';
 import { TerminalsModule } from '../terminals/terminals.module';
+import { InventoryModule } from '../inventory/inventory.module';
 
 @Module({
-  imports: [PricingModule, TaxModule, TerminalsModule],
+  imports: [PricingModule, TaxModule, TerminalsModule, InventoryModule],
   providers: [
     SalesService,
     SalesReadService,

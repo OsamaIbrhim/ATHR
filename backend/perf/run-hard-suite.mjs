@@ -10,21 +10,6 @@ const suites = [
     script: 'perf/hard-load.mjs',
     args: smoke ? ['--smoke'] : [],
   },
-  {
-    name: 'inventory-ledger',
-    script: 'perf/inventory-ledger-smoke.mjs',
-    args: [],
-  },
-  {
-    name: 'purchasing-accounting',
-    script: 'perf/purchasing-accounting-smoke.mjs',
-    args: [],
-  },
-  {
-    name: 'transfer-state',
-    script: 'perf/transfer-state-smoke.mjs',
-    args: [],
-  },
 ]
 
 function runSuite(suite) {

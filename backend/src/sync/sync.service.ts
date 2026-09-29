@@ -4,6 +4,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
 import { TaxResolutionService } from '../tax/tax-resolution.service';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { InventoryService } from '../inventory/inventory.service';
+import { quantityNumber } from '../common/quantity';
 
 /**
  * Prisma's automatic relation loader for `include: { product: true }` fans
@@ -26,7 +28,31 @@ export class SyncService {
     private prisma: PrismaService,
     private pricing: PricingService,
     private tax: TaxResolutionService,
+    private inventory: InventoryService,
   ) {}
+
+  /**
+   * A branch's POS stock is its default warehouse. The POS keeps a per-branch
+   * row shape, so the branch id is stamped back onto every row.
+   */
+  private async branchStock(context: TenantContext, branchId: string, variantIds?: string[]) {
+    const warehouseId = await this.inventory.defaultWarehouseId(this.prisma, context.tenantId, branchId);
+    const rows = await this.prisma.inventoryStock.findMany({
+      where: {
+        tenant_id: context.tenantId,
+        warehouse_id: warehouseId,
+        ...(variantIds ? { variant_id: { in: variantIds } } : {}),
+      },
+      select: { variant_id: true, qty_on_hand: true, qty_reserved: true, last_sold_at: true },
+    });
+    return rows.map((row) => ({
+      branch_id: branchId,
+      variant_id: row.variant_id,
+      qty_on_hand: quantityNumber(row.qty_on_hand),
+      qty_reserved: quantityNumber(row.qty_reserved),
+      last_sold_at: row.last_sold_at,
+    }));
+  }
 
   private catalogValidUntil(now = Date.now()) {
     const configured = Number(process.env.POS_PRICE_CATALOG_TTL_MS || 86_400_000);
@@ -82,13 +108,7 @@ export class SyncService {
           ...(resetCatalog ? {} : { id: { in: [...requestedIds] } }),
         },
       }),
-      this.prisma.inventoryStock.findMany({
-        where: {
-          tenant_id: context.tenantId,
-          branch_id: branchId,
-          ...(resetCatalog ? {} : { variant_id: { in: [...requestedIds] } }),
-        },
-      }),
+      this.branchStock(context, branchId, resetCatalog ? undefined : [...requestedIds]),
       this.pricing.loadActiveRules(context),
       this.tax.loadActiveCodeIndex(context),
     ]);
@@ -129,9 +149,7 @@ export class SyncService {
           product: { is_active: true, tenant_id: context.tenantId },
         },
       }),
-      this.prisma.inventoryStock.findMany({
-        where: { tenant_id: context.tenantId, branch_id: branchId },
-      }),
+      this.branchStock(context, branchId),
       this.pricing.loadActiveRules(context),
       this.sellers(context, branchId),
       this.tax.loadActiveCodeIndex(context),

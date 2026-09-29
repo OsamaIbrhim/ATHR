@@ -3,6 +3,7 @@ import { Prisma, type Product, type ProductVariant } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantScope } from '../identity/tenant-context.type';
+import { STOCK_QUANTITY_COLUMNS } from '../inventory/inventory.repository';
 
 export interface VariantListFilters {
   readonly search?: string;
@@ -90,13 +91,16 @@ export class ProductsRepository {
   }
 
   async findStockForVariants(context: TenantScope, variantIds: string[], branchId?: string) {
-    return this.prisma.inventoryStock.findMany({
+    const rows = await this.prisma.inventoryStock.findMany({
       where: {
         tenant_id: context.tenantId,
         variant_id: { in: variantIds },
-        ...(branchId ? { branch_id: branchId } : {}),
+        ...(branchId ? { warehouse: { branch_id: branchId } } : {}),
       },
+      select: { ...STOCK_QUANTITY_COLUMNS, warehouse: { select: { branch_id: true } } },
     });
+    // Consumers list stock per branch; the branch is the warehouse's owner.
+    return rows.map(({ warehouse, ...stock }) => ({ ...stock, branch_id: warehouse.branch_id }));
   }
 
   /**

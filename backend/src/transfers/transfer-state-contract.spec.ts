@@ -18,11 +18,26 @@ describe('transfer state baseline contract', () => {
     expect(baseline).toContain('missing_qty');
   });
 
-  it('moves inventory per transfer item, not per transfer', () => {
-    expect(baseline).not.toContain('"Transfer_inventory_movement"');
-    expect(baseline).toContain(
-      '"TransferItem_inventory_and_transit_movements"',
+  it('moves inventory per transfer item through the service, not through a trigger', () => {
+    const engineMigration = readFileSync(
+      join(
+        process.cwd(),
+        'prisma/migrations/202609300001_site_model_inventory_engine/migration.sql',
+      ),
+      'utf8',
     );
+    const service = readFileSync(
+      join(process.cwd(), 'src/transfers/transfers.service.ts'),
+      'utf8',
+    );
+
+    expect(baseline).not.toContain('"Transfer_inventory_movement"');
+    expect(engineMigration).toContain(
+      'DROP TRIGGER "TransferItem_inventory_and_transit_movements"',
+    );
+    expect(service).toContain("type: 'transfer_out'");
+    expect(service).toContain("type: 'transfer_in'");
+    expect(service).toContain('this.inventory.apply(tx');
   });
 
   it('has append-only in-transit accounting', () => {

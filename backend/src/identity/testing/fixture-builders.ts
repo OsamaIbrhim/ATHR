@@ -316,13 +316,14 @@ export function aSupplier(overrides: FixtureOverrides<SupplierRow> = {}): BuiltR
   );
 }
 
-/** `InventoryStock` is keyed on `@@id([branch_id, variant_id])` — it has no `id`. */
+/** `InventoryStock` is keyed on `@@id([warehouse_id, variant_id])` — it has no `id`. */
 export interface InventoryStockRow {
   tenant_id: string;
-  branch_id: string;
+  warehouse_id: string;
   variant_id: string;
   qty_on_hand: number;
   qty_reserved: number;
+  avg_cost: number;
   last_sold_at: Date | null;
 }
 
@@ -332,10 +333,11 @@ export function anInventoryStock(
   return withOverrides<InventoryStockRow>(
     {
       tenant_id: TENANT_A,
-      branch_id: randomUUID(),
+      warehouse_id: randomUUID(),
       variant_id: randomUUID(),
       qty_on_hand: 0,
       qty_reserved: 0,
+      avg_cost: 0,
       last_sold_at: null,
     },
     overrides,

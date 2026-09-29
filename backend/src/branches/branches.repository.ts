@@ -11,10 +11,9 @@ export interface BranchFilters {
 /**
  * WP-007 Phase A §A.3.2 — tenant-scoped repository for the `branches` module.
  *
- * `Branch` is the legacy operational root that WP-005 Phase B superseded with
- * `Location`. Both still exist; the legacy column removal is Phase D (§A.4),
- * so this scopes the `Branch` table as it stands today rather than switching
- * any consumer over to `Location`.
+ * `Branch` is the operational site (shop / branch). Its stock lives in
+ * warehouses, so creating a branch creates its default warehouse in the same
+ * transaction.
  */
 @Injectable()
 export class BranchesRepository {
@@ -33,13 +32,28 @@ export class BranchesRepository {
     });
   }
 
-  /** Pass `tx` to create the branch inside a caller's transaction (tenant signup). */
+  /**
+   * Creates the branch and its default selling warehouse atomically. Pass `tx`
+   * to run inside a caller's transaction (tenant signup).
+   */
   async save(
     context: TenantScope,
     data: Omit<Prisma.BranchCreateInput, 'tenant_id'>,
     tx?: Prisma.TransactionClient,
   ): Promise<Branch> {
-    return (tx ?? this.prisma).branch.create({ data: { ...data, tenant_id: context.tenantId } });
+    const create = async (client: Prisma.TransactionClient) => {
+      const branch = await client.branch.create({ data: { ...data, tenant_id: context.tenantId } });
+      await client.warehouse.create({
+        data: {
+          tenant_id: context.tenantId,
+          branch_id: branch.id,
+          name: `${data.name_ar} — Default Warehouse`,
+          is_default: true,
+        },
+      });
+      return branch;
+    };
+    return tx ? create(tx) : this.prisma.$transaction(create);
   }
 
   /** Used by every module that accepts a caller-supplied `branch_id`. */

@@ -45,20 +45,20 @@ function setup() {
     inventoryStock: [
       anInventoryStock({
         tenant_id: TENANT_A,
-        branch_id: BRANCH_A,
         variant_id: VARIANT,
         qty_on_hand: 2,
+        avg_cost: 40,
         // Pre-hydrated relations: the valuation projects both.
         variant: { sku: 'S1', cost_price: 40, product: { name_en: 'A' } },
-        branch: { name_ar: 'A' },
+        warehouse: { name: 'wA', branch_id: BRANCH_A, branch: { name_ar: 'A' } },
       }),
       anInventoryStock({
         tenant_id: TENANT_B,
-        branch_id: BRANCH_B,
         variant_id: VARIANT,
         qty_on_hand: 100,
+        avg_cost: 10,
         variant: { sku: 'S1', cost_price: 10, product: { name_en: 'B' } },
-        branch: { name_ar: 'B' },
+        warehouse: { name: 'wB', branch_id: BRANCH_B, branch: { name_ar: 'B' } },
       }),
     ],
   }, {

@@ -5,9 +5,8 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { Prisma } from '@prisma/client';
 
 // WP-007 Phase A: the service delegates to a tenant-scoped repository and
-// takes a TenantContext. Commission settings moved off the shared `id = 1`
-// singleton to a per-tenant row, so the double exposes `findFirst` rather
-// than `upsert`. Assertions are otherwise unchanged.
+// takes a TenantContext. Commission settings are one row per tenant (keyed
+// by tenant_id), read through `upsert`. Assertions are otherwise unchanged.
 const ctx = contextFor(TENANT_A);
 
 describe('SellersService', () => {
@@ -34,8 +33,7 @@ describe('SellersService', () => {
         ])
       },
       sellerCommissionSettings: {
-        findFirst: jest.fn().mockResolvedValue({
-          id: 1,
+        upsert: jest.fn().mockResolvedValue({
           tenant_id: ctx.tenantId,
           default_rate: 2,
           default_target: 1000,
@@ -73,8 +71,7 @@ describe('SellersService', () => {
         create,
       },
       sellerCommissionSettings: {
-        findFirst: jest.fn().mockResolvedValue({
-          id: 1,
+        upsert: jest.fn().mockResolvedValue({
           tenant_id: ctx.tenantId,
           default_rate: new Prisma.Decimal(3),
           default_target: new Prisma.Decimal(1000),

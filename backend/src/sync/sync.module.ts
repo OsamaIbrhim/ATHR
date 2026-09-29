@@ -5,5 +5,6 @@ import { SalesModule } from '../sales/sales.module';
 import { PricingModule } from '../pricing/pricing.module';
 import { TaxModule } from '../tax/tax.module';
 import { TerminalsModule } from '../terminals/terminals.module';
-@Module({ imports: [SalesModule, PricingModule, TaxModule, TerminalsModule], providers: [SyncService], controllers: [SyncController] })
+import { InventoryModule } from '../inventory/inventory.module';
+@Module({ imports: [SalesModule, PricingModule, TaxModule, TerminalsModule, InventoryModule], providers: [SyncService], controllers: [SyncController] })
 export class SyncModule {}

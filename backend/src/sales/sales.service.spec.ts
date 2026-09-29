@@ -76,6 +76,31 @@ function saleDto(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
+const warehouseId = '99999999-0000-4000-8000-000000000001';
+
+/**
+ * InventoryService double: the stock engine is proven against Postgres by
+ * `scripts/verify-inventory-engine.cjs`; these specs pin what sales asks of it.
+ * `apply` reports the quantity after the command per line.
+ */
+function inventoryDouble(qtyAfter = 8, reserved = 0, avgCost = 100) {
+  return {
+    defaultWarehouseId: jest.fn().mockResolvedValue(warehouseId),
+    apply: jest.fn().mockImplementation((_tx: unknown, command: any) =>
+      Promise.resolve(
+        command.lines.map((line: any) => ({
+          variantId: line.variantId,
+          qtyBefore: new Prisma.Decimal(qtyAfter).minus(line.qtyDelta),
+          qtyAfter: new Prisma.Decimal(qtyAfter),
+          reserved: new Prisma.Decimal(reserved),
+          avgCostBefore: new Prisma.Decimal(avgCost),
+          avgCost: new Prisma.Decimal(avgCost),
+        })),
+      ),
+    ),
+  };
+}
+
 function setupSale(options: {
   currentPrice?: number;
   currentTax?: number;
@@ -86,6 +111,8 @@ function setupSale(options: {
   closedShift?: boolean;
   missingCashier?: boolean;
   missingSeller?: boolean;
+  itemType?: string;
+  uomPrecision?: number;
 } = {}) {
   let rawCall = 0;
   const tx = {
@@ -180,6 +207,8 @@ function setupSale(options: {
           id: variantId,
           product_id: 'product-1',
           cost_price: 100,
+          item_type: options.itemType ?? 'stocked',
+          base_uom: options.uomPrecision === undefined ? null : { precision: options.uomPrecision },
           is_active: true,
           product: {
             is_active: true,
@@ -188,12 +217,6 @@ function setupSale(options: {
           },
         },
       ]),
-    },
-    inventoryStock: {
-      upsert: jest.fn().mockResolvedValue({
-        qty_on_hand: options.stockAfter ?? 8,
-        qty_reserved: options.stockReserved ?? 0,
-      }),
     },
     customer: {
       upsert: jest.fn(),
@@ -239,16 +262,19 @@ function setupSale(options: {
       ]),
     ),
   };
+  const inventory = inventoryDouble(options.stockAfter ?? 8, options.stockReserved ?? 0);
   return {
     service: new SalesService(
       prisma as any,
       pricing as any,
       new CostVisibilityService(),
       new SalesTaxSnapshotService(),
+      inventory as any,
     ),
     prisma,
     pricing,
     tx,
+    inventory,
   };
 }
 
@@ -261,17 +287,19 @@ function fingerprint(service: SalesService, dto: any) {
   );
 }
 
-function setupReturn(alreadyReturned = 0) {
+function setupReturn(alreadyReturned = 0, itemType = 'stocked') {
   const soldItem = {
     id: 'sale-item-1',
     variant_id: variantId,
-    qty: 3,
+    qty: new Prisma.Decimal(3),
     unit_price: 150,
     unit_cost: 100,
     unit_tax: 21,
+    variant: { item_type: itemType, base_uom: null },
   };
   const tx = {
     $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue(1),
     shift: { findFirst: jest.fn().mockResolvedValue({ id: shiftId }) },
     salesInvoice: {
       findFirst: jest.fn().mockResolvedValue({
@@ -286,30 +314,36 @@ function setupReturn(alreadyReturned = 0) {
       }),
     },
     returnItem: {
-      aggregate: jest.fn().mockResolvedValue({
-        _sum: { qty: alreadyReturned },
-      }),
+      groupBy: jest.fn().mockResolvedValue(
+        alreadyReturned
+          ? [{ sales_invoice_item_id: 'sale-item-1', _sum: { qty: new Prisma.Decimal(alreadyReturned) } }]
+          : [],
+      ),
     },
     return: {
       create: jest.fn().mockImplementation(({ data }) =>
         Promise.resolve({
           id: 'return-1',
+          created_at: new Date(),
           ...data,
-          items: data.items.create,
+          items: data.items.create.map((item: any, index: number) => ({ id: `return-item-${index + 1}`, ...item })),
         }),
       ),
-    },
-    inventoryStock: { upsert: jest.fn().mockResolvedValue({}) },
-    productVariant: {
-      update: jest.fn().mockResolvedValue({}),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     customer: { findUnique: jest.fn(), update: jest.fn() },
   };
   const prisma = { $transaction: jest.fn((callback) => callback(tx)) };
+  const inventory = inventoryDouble();
   return {
-    service: new SalesService(prisma as any, {} as any, new CostVisibilityService(), new SalesTaxSnapshotService()),
+    service: new SalesService(
+      prisma as any,
+      {} as any,
+      new CostVisibilityService(),
+      new SalesTaxSnapshotService(),
+      inventory as any,
+    ),
     tx,
+    inventory,
   };
 }
 
@@ -325,8 +359,8 @@ describe('SalesService acceptance-first sale synchronization', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('persists immutable snapshots and one inventory ledger movement', async () => {
-    const { service, tx } = setupSale();
+  it('persists immutable snapshots and posts one inventory command for the whole sale', async () => {
+    const { service, tx, inventory } = setupSale();
     const result = await service.createSale(saleDto(), terminal);
 
     expect(tx.salesInvoice.create).toHaveBeenCalledWith(
@@ -350,8 +384,24 @@ describe('SalesService acceptance-first sale synchronization', () => {
       }),
     );
     expect(result.items.every((item: any) => !('unit_cost' in item))).toBe(true);
-    expect(tx.inventoryStock.upsert).toHaveBeenCalledTimes(1);
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    // One statement of its own (the terminal lock); stock goes through the engine.
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(inventory.apply).toHaveBeenCalledTimes(1);
+    const [, command] = inventory.apply.mock.calls[0];
+    expect(command).toMatchObject({
+      tenantId,
+      warehouseId,
+      type: 'sale',
+      allowNegative: true,
+      idempotencyKey: `sale:${syncId}`,
+      reference: { type: 'SalesInvoice' },
+    });
+    expect(command.lines).toHaveLength(1);
+    expect(command.lines[0].qtyDelta.toString()).toBe('-2');
+    // The sale line is stamped with the warehouse average cost at the sale.
+    const line = tx.salesInvoice.create.mock.calls[0][0].data.items.create[0];
+    expect(line.unit_cost.toFixed(4)).toBe('100.0000');
+    expect(line.id).toBe(command.lines[0].referenceLineId);
     expect(String(result.total)).toBe('342');
   });
 
@@ -373,6 +423,37 @@ describe('SalesService acceptance-first sale synchronization', () => {
     const { service } = setupSale({ stockAfter: -2 });
     const result = await service.createSale(saleDto(), terminal);
     expect(result.warning_codes).toContain('NEGATIVE_STOCK');
+  });
+
+  it('never sends a service or non-stock item to the inventory engine', async () => {
+    const { service, inventory } = setupSale({ itemType: 'service' });
+    const result = await service.createSale(saleDto(), terminal);
+
+    expect(result.warning_codes).not.toContain('NEGATIVE_STOCK');
+    expect(inventory.apply).toHaveBeenCalledTimes(1);
+    expect(inventory.apply.mock.calls[0][1].lines).toEqual([]);
+  });
+
+  it('accepts a fractional quantity for a unit that allows it and rejects it for pieces', async () => {
+    const kgDto = saleDto({
+      items: [{ ...saleDto().items[0], qty: 1.25, unit_price: 100, unit_tax: 14 }],
+      local_total: 142.5,
+    });
+    const kg = setupSale({ uomPrecision: 3, currentPrice: 100, currentTax: 14 });
+    // The mocked quote is per unit; 1.25 kg x (100 + 14) = 142.50.
+    await kg.service.createSale(kgDto, terminal);
+    expect(kg.inventory.apply.mock.calls[0][1].lines[0].qtyDelta.toString()).toBe('-1.25');
+
+    const piece = setupSale({ uomPrecision: 0, currentPrice: 100, currentTax: 14 });
+    await expect(piece.service.createSale(kgDto, terminal)).rejects.toMatchObject({
+      response: { code: 'QUANTITY_PRECISION_EXCEEDED' },
+    });
+    // No unit at all behaves like pieces: integers only.
+    const noUnit = setupSale({ currentPrice: 100, currentTax: 14 });
+    await expect(noUnit.service.createSale(kgDto, terminal)).rejects.toMatchObject({
+      response: { code: 'QUANTITY_PRECISION_EXCEEDED' },
+    });
+    expect(piece.inventory.apply).not.toHaveBeenCalled();
   });
 
   it('accepts a sequence gap and advances the terminal high-water mark', async () => {
@@ -418,7 +499,7 @@ describe('SalesService acceptance-first sale synchronization', () => {
   });
 
   it('returns the existing invoice for an identical replay', async () => {
-    const { service, tx } = setupSale();
+    const { service, tx, inventory } = setupSale();
     const dto = saleDto();
     const existing = {
       id: 'sale-1',
@@ -440,7 +521,7 @@ describe('SalesService acceptance-first sale synchronization', () => {
     // the stored row. Identity was never what this case was pinning — that the
     // replay neither re-posts inventory nor writes a second invoice is.
     await expect(service.createSale(dto, terminal)).resolves.toEqual(existing);
-    expect(tx.inventoryStock.upsert).not.toHaveBeenCalled();
+    expect(inventory.apply).not.toHaveBeenCalled();
     expect(tx.salesInvoice.create).not.toHaveBeenCalled();
   });
 
@@ -537,6 +618,45 @@ describe('SalesService returns', () => {
         actor,
       ),
     ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('returns the goods to the branch warehouse at the cost they were sold at', async () => {
+    const { service, inventory } = setupReturn();
+    await service.createReturn(
+      ctx,
+      {
+        original_invoice_id: 'sale-1',
+        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
+      },
+      actor,
+    );
+
+    expect(inventory.apply).toHaveBeenCalledTimes(1);
+    const [, command] = inventory.apply.mock.calls[0];
+    expect(command).toMatchObject({
+      warehouseId,
+      type: 'return',
+      costType: 'customer_return',
+      idempotencyKey: 'return:return-1',
+      reference: { type: 'Return', id: 'return-1' },
+    });
+    expect(command.lines).toHaveLength(1);
+    expect(command.lines[0].qtyDelta.toString()).toBe('2');
+    expect(command.lines[0].unitCost.toFixed(4)).toBe('100.0000');
+    expect(command.lines[0].value.toFixed(2)).toBe('200.00');
+  });
+
+  it('does not restock a service item', async () => {
+    const { service, inventory } = setupReturn(0, 'service');
+    await service.createReturn(
+      ctx,
+      {
+        original_invoice_id: 'sale-1',
+        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 1 }],
+      },
+      actor,
+    );
+    expect(inventory.apply.mock.calls[0][1].lines).toEqual([]);
   });
 
   it('links a POS return to the currently open shift', async () => {

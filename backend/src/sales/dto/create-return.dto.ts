@@ -1,12 +1,12 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from 'class-validator';
+import { IsQuantity } from '../../common/quantity';
 
 export class CreateReturnItemDto {
   @IsUUID()
   sales_invoice_item_id: string;
 
-  @IsInt()
-  @Min(1)
+  @IsQuantity()
   qty: number;
 }
 

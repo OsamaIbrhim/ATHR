@@ -1,8 +1,12 @@
 import { MembershipRole, PrismaClient } from '@prisma/client';
 import * as bcryptjs from 'bcryptjs';
 import { ensureActiveSubscription, seedPlans } from './seed/plans';
+import { InventoryRepository } from '../src/inventory/inventory.repository';
+import { InventoryService } from '../src/inventory/inventory.service';
 
 const prisma = new PrismaClient();
+// The seed writes stock through the same single writer as the application.
+const inventory = new InventoryService(new InventoryRepository(prisma as any));
 let randomState = 0x1a2b3c4d;
 
 function deterministicRandom() {
@@ -48,6 +52,7 @@ async function main() {
   await prisma.membership.deleteMany();
   await prisma.user.deleteMany();
   await prisma.category.deleteMany();
+  await prisma.warehouse.deleteMany();
   await prisma.branch.deleteMany();
 
   // WP-007 Phase A: every seeded row belongs to a Tenant, and every seeded
@@ -65,41 +70,18 @@ async function main() {
 
   const password_hash = await bcryptjs.hash('Bold1234', 10);
 
-  // WP-009 Phase A: BranchesRepository.save() never creates a matching
-  // Location/Warehouse (tracked as a follow-up, not fixed by Phase A), so a
-  // freshly seeded Branch is exactly as warehouse-less as one created
-  // through the live app. Give every seeded Branch its own Location +
-  // default Warehouse here so InventoryStock/InventoryMovement/
-  // InventoryCostMovement rows below never need a NULL warehouse_id — that
-  // column is nullable only until PR2's cutover, and a seed script that
-  // relies on nullability breaks the moment it stops being true.
-  const primaryLegalEntity =
-    (await prisma.legalEntity.findFirst({ where: { tenant_id, is_primary: true } })) ??
-    (await prisma.legalEntity.create({ data: { tenant_id, legal_name: tenant.name, is_primary: true } }));
+  // The tenant's primary legal entity (tax / commercial-register identity).
+  if (!(await prisma.legalEntity.findFirst({ where: { tenant_id, is_primary: true } }))) {
+    await prisma.legalEntity.create({ data: { tenant_id, legal_name: tenant.name, is_primary: true } });
+  }
 
+  // A branch always comes with its default warehouse, which holds its stock.
   async function createBranchWithWarehouse(data: {
     code: string; name_ar: string; name_en: string; address?: string; phone?: string; cash_drawer_enabled: boolean;
   }) {
     const branch = await prisma.branch.create({ data: { tenant_id, ...data } });
-    const location = await prisma.location.create({
-      data: {
-        id: branch.id,
-        tenantId: tenant_id,
-        legal_entity_id: primaryLegalEntity.id,
-        code: branch.code,
-        name_ar: branch.name_ar,
-        name_en: branch.name_en,
-        address: branch.address,
-        phone: branch.phone,
-      },
-    });
     const warehouse = await prisma.warehouse.create({
-      data: {
-        tenant_id,
-        location_id: location.id,
-        name: `${branch.name_ar} — Default Warehouse`,
-        is_default: true,
-      },
+      data: { tenant_id, branch_id: branch.id, name: `${branch.name_ar} — Default Warehouse`, is_default: true },
     });
     return { branch, warehouse };
   }
@@ -282,13 +264,32 @@ async function main() {
     allVariants.push(...prod.variants.map(v => ({ ...v, product_name: p.name_en, brand: p.brand, category_id: p.category_id })));
   }
 
-  // Inventory
-  for (const [variantIndex, v] of allVariants.entries()) {
-    const primaryQuantity =
-      variantIndex === 0 ? 250 : Math.floor(deterministicRandom()*20)+2;
-    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b1.id, warehouse_id: w1.id, variant_id: v.id, qty_on_hand: primaryQuantity, last_sold_at: deterministicRandom() > 0.3 ? new Date(Date.now() - deterministicRandom()*60*86400000) : null }});
-    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b2.id, warehouse_id: w2.id, variant_id: v.id, qty_on_hand: Math.floor(deterministicRandom()*12), last_sold_at: deterministicRandom() > 0.5 ? new Date(Date.now() - deterministicRandom()*90*86400000) : null }});
-  }
+  // Opening stock: one inventory command per warehouse (opening ledger rows,
+  // the warehouse average cost and the variant cost all come from the engine).
+  const openingLines = (quantityOf: (index: number) => number) =>
+    allVariants
+      .map((v, index) => ({ variantId: v.id, qtyDelta: quantityOf(index), unitCost: v.cost_price }))
+      .filter((line) => line.qtyDelta > 0);
+  const openingQuantities = [
+    { warehouse: w1, lines: openingLines((index) => (index === 0 ? 250 : Math.floor(deterministicRandom() * 20) + 2)) },
+    { warehouse: w2, lines: openingLines(() => Math.floor(deterministicRandom() * 12)) },
+  ];
+  await prisma.$transaction(async (tx) => {
+    for (const { warehouse, lines } of openingQuantities) {
+      await inventory.apply(tx, {
+        tenantId: tenant_id,
+        warehouseId: warehouse.id,
+        occurredAt: new Date(),
+        type: 'opening_balance',
+        costType: 'opening_balance',
+        reference: { type: 'InventorySeed', id: warehouse.id },
+        idempotencyKey: `seed-opening:${warehouse.id}`,
+        allowNegative: true,
+        metadata: { source: 'development-seed' },
+        lines,
+      });
+    }
+  });
 
   // Pricing rules -- WP-008 Phase B: deprecated, PricingService no longer
   // reads this table. Kept only because seeded data is never destructively

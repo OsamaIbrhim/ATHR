@@ -50,10 +50,9 @@ function setup() {
       }),
     ],
     return: [],
-    // Legacy singleton: id=1 belongs to whichever tenant existed first.
+    // One settings row per tenant (tenant_id is the key); only tenant A has one yet.
     sellerCommissionSettings: [
       {
-        id: 1,
         tenant_id: TENANT_A,
         default_rate: 10,
         default_target: null,
@@ -84,20 +83,17 @@ describe('sellers — cross-tenant isolation', () => {
   });
 
   /**
-   * `SellerCommissionSettings.id` is `Int @id @default(1)` — a singleton in
-   * the single-tenant schema. Without per-tenant keying, every tenant shares
-   * one commission-rate row, so changing a rate in one tenant silently
-   * repays every seller in every other tenant.
+   * `SellerCommissionSettings` used to be a global id = 1 singleton. Keyed by
+   * tenant, each tenant has its own commission-rate row; a shared row would
+   * silently repay every seller in every other tenant.
    */
-  it('gives each tenant its own commission settings row, not the shared id=1', async () => {
+  it('gives each tenant its own commission settings row', async () => {
     const { repository, prisma } = setup();
 
     const forA = await repository.getSettings(contextFor(TENANT_A));
     const forB = await repository.getSettings(contextFor(TENANT_B));
 
-    expect(forA.id).toBe(1);
     expect(forA.tenant_id).toBe(TENANT_A);
-    expect(forB.id).not.toBe(1);
     expect(forB.tenant_id).toBe(TENANT_B);
     expect(prisma.sellerCommissionSettings.rows).toHaveLength(2);
   });

@@ -51,12 +51,16 @@ const { PrismaClient, Prisma } = require('@prisma/client');
 const distSync = path.join(__dirname, '..', 'dist', 'src', 'sync', 'sync.service.js');
 const distPricing = path.join(__dirname, '..', 'dist', 'src', 'pricing', 'pricing.service.js');
 const distTax = path.join(__dirname, '..', 'dist', 'src', 'tax', 'tax-resolution.service.js');
+const distInventoryService = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.service.js');
+const distInventoryRepository = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.repository.js');
 
-let SyncService, PRODUCT_BATCH_SIZE, PricingService, TaxResolutionService;
+let SyncService, PRODUCT_BATCH_SIZE, PricingService, TaxResolutionService, InventoryService, InventoryRepository;
 try {
   ({ SyncService, PRODUCT_BATCH_SIZE } = require(distSync));
   ({ PricingService } = require(distPricing));
   ({ TaxResolutionService } = require(distTax));
+  ({ InventoryService } = require(distInventoryService));
+  ({ InventoryRepository } = require(distInventoryRepository));
 } catch (error) {
   console.error(
     `Could not load compiled SyncService from ${distSync}. This script asserts on the ` +
@@ -91,6 +95,10 @@ async function seedCatalog() {
   });
   const branch = await prisma.branch.create({
     data: { tenant_id: tenant.id, code: `SNAP-${randomUUID().slice(0, 8)}`, name_ar: 'فرع الفحص' },
+  });
+  // The POS syncs the stock of the branch's default warehouse.
+  await prisma.warehouse.create({
+    data: { tenant_id: tenant.id, branch_id: branch.id, name: 'Default', is_default: true },
   });
   const category = await prisma.taxCategory.create({
     data: { tenant_id: tenant.id, code: 'STANDARD', name_en: 'Standard', updated_at: new Date() },
@@ -202,7 +210,7 @@ async function verifyRawIncludeStillFails(tenant) {
 async function verifyRealSyncServiceSucceeds(tenant, branch) {
   const tax = new TaxResolutionService(prisma);
   const pricing = new PricingService(prisma, tax);
-  const service = new SyncService(prisma, pricing, tax);
+  const service = new SyncService(prisma, pricing, tax, new InventoryService(new InventoryRepository(prisma)));
   const context = { tenantId: tenant.id };
 
   let result;

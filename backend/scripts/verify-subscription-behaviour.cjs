@@ -165,6 +165,7 @@ async function main() {
       await prisma.membership.deleteMany({ where: { tenant_id: id } });
       await prisma.refreshToken.deleteMany({ where: { tenant_id: id } });
       await prisma.user.deleteMany({ where: { id: { in: memberships.map((m) => m.user_id) } } });
+      await prisma.warehouse.deleteMany({ where: { tenant_id: id } });
       await prisma.branch.deleteMany({ where: { tenant_id: id } });
       await prisma.legalEntity.deleteMany({ where: { tenant_id: id } });
       await prisma.organizationProfile.deleteMany({ where: { tenant_id: id } });

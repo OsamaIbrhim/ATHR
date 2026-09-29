@@ -13,13 +13,13 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsQuantity } from '../../common/quantity';
 
 export class CreateSaleItemDto {
   @IsUUID()
   variant_id: string;
 
-  @IsInt()
-  @Min(1)
+  @IsQuantity()
   qty: number;
 
   @Type(() => Number)

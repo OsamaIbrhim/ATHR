@@ -21,6 +21,8 @@ const VARIANT_A = randomUUID();
 const VARIANT_B = randomUUID();
 const BRANCH_A = randomUUID();
 const BRANCH_B = randomUUID();
+const WAREHOUSE_A = randomUUID();
+const WAREHOUSE_B = randomUUID();
 const PRICE_BOOK_A = randomUUID();
 const PRICE_BOOK_B = randomUUID();
 
@@ -61,8 +63,8 @@ function setup() {
       }),
     ],
     inventoryStock: [
-      anInventoryStock({ tenant_id: TENANT_A, branch_id: BRANCH_A, variant_id: VARIANT_A, qty_on_hand: 3 }),
-      anInventoryStock({ tenant_id: TENANT_B, branch_id: BRANCH_B, variant_id: VARIANT_B, qty_on_hand: 7 }),
+      anInventoryStock({ tenant_id: TENANT_A, warehouse_id: WAREHOUSE_A, variant_id: VARIANT_A, qty_on_hand: 3 }),
+      anInventoryStock({ tenant_id: TENANT_B, warehouse_id: WAREHOUSE_B, variant_id: VARIANT_B, qty_on_hand: 7 }),
     ],
     priceBook: [
       { id: PRICE_BOOK_A, tenant_id: TENANT_A, status: 'active', is_default: true },
@@ -94,7 +96,12 @@ function setup() {
     );
     return { _max: { sequence: rows.at(-1)?.sequence ?? 0n } };
   };
-  return { prisma, service: new SyncService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), new TaxResolutionService(prisma)) };
+  // The default warehouse of a branch (the stock a POS syncs).
+  const inventory = {
+    defaultWarehouseId: async (_db: unknown, _tenantId: string, branchId: string) =>
+      branchId === BRANCH_A ? WAREHOUSE_A : WAREHOUSE_B,
+  } as any;
+  return { prisma, service: new SyncService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), new TaxResolutionService(prisma), inventory) };
 }
 
 describe('sync — cross-tenant isolation (Blueprint §123)', () => {

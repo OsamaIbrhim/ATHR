@@ -9,18 +9,24 @@ import { anInventoryStock } from '../identity/testing/fixture-builders';
 const VARIANT = randomUUID();
 const BRANCH_A = randomUUID();
 const BRANCH_B = randomUUID();
+const WAREHOUSE_A = randomUUID();
+const WAREHOUSE_B = randomUUID();
+
+/** Pre-hydrated `warehouse` relation (the fake has no `include`). */
+const warehouseOf = (branchId: string) => ({ branch_id: branchId, branch: { id: branchId } });
 
 function setup() {
   const prisma = fakePrisma({
     inventoryStock: [
-      anInventoryStock({ tenant_id: TENANT_A, branch_id: BRANCH_A, variant_id: VARIANT, qty_on_hand: 5 }),
-      anInventoryStock({ tenant_id: TENANT_B, branch_id: BRANCH_B, variant_id: VARIANT, qty_on_hand: 9 }),
+      { ...anInventoryStock({ tenant_id: TENANT_A, warehouse_id: WAREHOUSE_A, variant_id: VARIANT, qty_on_hand: 5 }), warehouse: warehouseOf(BRANCH_A) },
+      { ...anInventoryStock({ tenant_id: TENANT_B, warehouse_id: WAREHOUSE_B, variant_id: VARIANT, qty_on_hand: 9 }), warehouse: warehouseOf(BRANCH_B) },
     ],
     inventoryMovement: [
       {
         id: randomUUID(),
         tenant_id: TENANT_A,
-        branch_id: BRANCH_A,
+        warehouse_id: WAREHOUSE_A,
+        warehouse: warehouseOf(BRANCH_A),
         variant_id: VARIANT,
         on_hand_delta: 5,
         occurred_at: new Date(),
@@ -29,13 +35,17 @@ function setup() {
       {
         id: randomUUID(),
         tenant_id: TENANT_B,
-        branch_id: BRANCH_B,
+        warehouse_id: WAREHOUSE_B,
+        warehouse: warehouseOf(BRANCH_B),
         variant_id: VARIANT,
         on_hand_delta: 9,
         occurred_at: new Date(),
         recorded_at: new Date(),
       },
     ],
+  }, {
+    inventoryStock: { warehouse: { table: 'warehouse', localKey: 'warehouse_id' } },
+    inventoryMovement: { warehouse: { table: 'warehouse', localKey: 'warehouse_id' } },
   });
   const repository = new InventoryRepository(prisma);
   return { prisma, repository, service: new InventoryService(repository) };
@@ -52,6 +62,7 @@ describe('inventory — cross-tenant isolation', () => {
     const forA = await service.lookup(contextFor(TENANT_A), VARIANT);
     expect(forA).toHaveLength(1);
     expect(forA[0].qty_on_hand).toBe(5);
+    expect(forA[0].branch_id).toBe(BRANCH_A);
 
     const forB = await service.lookup(contextFor(TENANT_B), VARIANT);
     expect(forB).toHaveLength(1);

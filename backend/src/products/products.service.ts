@@ -6,6 +6,7 @@ import { TaxCodeService } from '../tax/tax-code.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { LimitService } from '../entitlements/limit.service';
+import { quantityNumber } from '../common/quantity';
 
 @Injectable()
 export class ProductsService {
@@ -157,7 +158,7 @@ export class ProductsService {
       ...variant,
       stock_by_branch: variant.inventory,
       available_here: branchId
-        ? variant.inventory.find((item: any) => item.branch_id === branchId)?.qty_on_hand || 0
+        ? quantityNumber(variant.inventory.find((item: any) => item.branch_id === branchId)?.qty_on_hand ?? 0)
         : undefined,
     };
     if (includeCost) return result;

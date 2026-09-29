@@ -3,7 +3,6 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsDateString,
-  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -13,19 +12,18 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsQuantity } from '../../common/quantity';
 
 export class ReceivePurchaseItemDto {
   @IsUUID()
   variant_id: string;
 
-  @IsInt()
-  @Min(1)
-  @Max(2147483647)
+  @IsQuantity()
   qty: number;
 
-  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0)
-  @Max(9999999999.99)
+  @Max(999999999.9999)
   unit_cost: number;
 }
 
@@ -91,9 +89,7 @@ export class CreateSupplierReturnItemDto {
   @IsUUID()
   purchase_invoice_item_id: string;
 
-  @IsInt()
-  @Min(1)
-  @Max(2147483647)
+  @IsQuantity()
   qty: number;
 }
 
