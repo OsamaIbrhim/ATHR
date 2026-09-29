@@ -23,6 +23,7 @@ describe('POS checkout calculations', () => {
       tax: 8.4,
       total: 68.37,
       quantity: 3,
+      lines: 1,
     })
   })
 
@@ -41,6 +42,7 @@ describe('POS checkout calculations', () => {
       tax: 34.93,
       total: 284.43,
       quantity: 3,
+      lines: 1,
     })
   })
 })
