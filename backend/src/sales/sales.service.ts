@@ -19,7 +19,6 @@ import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { createHash, randomUUID } from 'crypto';
 import { assertBranchAccess, canAccessAllBranches, hasBranchAccess, toScopeSet } from '../auth/branch-access';
-import { ListSalesDto } from './dto/list-sales.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { ListReturnsDto } from './dto/list-returns.dto';
 import {
@@ -52,7 +51,6 @@ type SaleLine = Omit<CreateSaleItemDto, 'qty'> & { qty: Prisma.Decimal };
 @Injectable()
 export class SalesService {
   private readonly logger = new Logger(SalesService.name);
-  private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
 
   constructor(
     private prisma: PrismaService,
@@ -61,77 +59,6 @@ export class SalesService {
     private taxSnapshots: SalesTaxSnapshotService,
     private inventory: InventoryService,
   ) {}
-
-  async listSales(context: TenantContext, dto: ListSalesDto, branchId?: string) {
-    const q = dto.q.trim();
-    const where: Prisma.SalesInvoiceWhereInput = {
-      tenant_id: context.tenantId,
-      ...(branchId ? { branch_id: branchId } : {}),
-      ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
-      ...(dto.status ? { status: dto.status } : {}),
-      ...(dto.has_warnings === 'true' ? { warning_codes: { isEmpty: false } } : {}),
-      ...(dto.from || dto.to ? { occurred_at: { ...(dto.from ? { gte: new Date(dto.from) } : {}), ...(dto.to ? { lte: this.endOfDay(dto.to) } : {}) } } : {}),
-      ...(q ? { OR: [
-        { invoice_number: { contains: q, mode: 'insensitive' } },
-        { customer: { phone: { contains: q } } },
-        { customer: { name: { contains: q, mode: 'insensitive' } } },
-      ] } : {}),
-    };
-    // The tenant is part of the cache key: keyed on the filters alone,
-    // one tenant's result count would be served to another (Blueprint §125).
-    const countKey = JSON.stringify({
-      tenantId: context.tenantId,
-      branchId,
-      q,
-      payment: dto.payment_method,
-      status: dto.status,
-      hasWarnings: dto.has_warnings,
-      from: dto.from,
-      to: dto.to,
-    });
-    const [total, items] = await Promise.all([
-      this.cachedSalesCount(countKey, where),
-      this.prisma.salesInvoice.findMany({
-        where,
-        select: {
-          id: true, invoice_number: true, branch_id: true,
-          branch: { select: { code: true, name_ar: true, name_en: true } },
-          customer: { select: { id: true, name: true, phone: true } },
-          cashier_id: true,
-          terminal: { select: { id: true, terminal_code: true, name: true } },
-          status: true, subtotal: true, discount_amount: true, tax_amount: true, total: true,
-          payment_method: true, language: true, sync_id: true,
-          event_version: true, warning_codes: true,
-          cashier_name_snapshot: true, seller_name_snapshot: true,
-          shift_id: true, offline_session_id: true, terminal_sequence: true,
-          occurred_at: true, received_at: true, created_at: true,
-          _count: { select: { items: true, original_returns: true } },
-        },
-        orderBy: [{ occurred_at: 'desc' }, { id: 'desc' }],
-        skip: (dto.page - 1) * dto.page_size,
-        take: dto.page_size,
-      }),
-    ]);
-    return { items, page: dto.page, page_size: dto.page_size, total, total_pages: Math.max(1, Math.ceil(total / dto.page_size)), server_time: new Date().toISOString() };
-  }
-
-  private cachedSalesCount(key: string, where: Prisma.SalesInvoiceWhereInput) {
-    const now = Date.now();
-    const cached = this.countCache.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
-    const ttl = Math.min(30_000, Math.max(0, Number(process.env.LIST_COUNT_CACHE_MS || 5_000)));
-    let value: Promise<number>;
-    value = this.prisma.salesInvoice.count({ where }).then((total) => {
-      if (this.countCache.get(key)?.value === value) this.countCache.set(key, { expiresAt: Date.now() + ttl, value: Promise.resolve(total) });
-      return total;
-    }).catch((error) => {
-      if (this.countCache.get(key)?.value === value) this.countCache.delete(key);
-      throw error;
-    });
-    this.countCache.set(key, { expiresAt: Number.POSITIVE_INFINITY, value });
-    if (this.countCache.size > 500) this.countCache.delete(this.countCache.keys().next().value!);
-    return value;
-  }
 
   async getInvoice(context: TenantContext, id: string, actor: AuthenticatedUser) {
     const invoice = await this.prisma.salesInvoice.findFirst({
@@ -175,12 +102,6 @@ export class SalesService {
         items: record.items.map(withoutLineCost),
       })),
     };
-  }
-
-  private endOfDay(value: string) {
-    const date = new Date(value);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) date.setUTCHours(23, 59, 59, 999);
-    return date;
   }
 
   private saleCommandFingerprint(
@@ -340,24 +261,47 @@ export class SalesService {
     );
 
     const result = await this.runSaleTransaction(dto, terminal, async (tx) => {
-      const [lockedTerminal] = await tx.$queryRaw<Array<{
-        id: string;
+      // One statement locks the terminal row, advances its sale sequence and
+      // reads the branch code. Advancing up front is safe: it is monotonic
+      // (a replay or an older sequence changes nothing) and a failed sale
+      // rolls the whole transaction back. The CTE reads the row after the lock
+      // is granted, so `previous_sequence` is what the last committed sale left.
+      const [claimed] = await tx.$queryRaw<Array<{
         branch_id: string;
-        last_sale_sequence: bigint;
+        branch_code: string | null;
+        previous_sequence: bigint;
       }>>`
-        SELECT "id", "branch_id", "last_sale_sequence"
-        FROM "PosTerminal"
-        WHERE "id" = ${terminal.id}::uuid
-        FOR UPDATE
+        WITH locked AS (
+          SELECT "id", "last_sale_sequence" FROM "PosTerminal"
+          WHERE "id" = ${terminal.id}::uuid AND "tenant_id" = ${context.tenantId}::uuid
+          FOR UPDATE
+        )
+        UPDATE "PosTerminal" t
+        SET "last_sale_sequence" = GREATEST(t."last_sale_sequence", ${terminalSequence}), "updated_at" = now()
+        FROM locked
+        WHERE t."id" = locked."id"
+        RETURNING t."branch_id",
+          (SELECT b."code" FROM "Branch" b WHERE b."id" = t."branch_id" AND b."tenant_id" = t."tenant_id") AS "branch_code",
+          locked."last_sale_sequence" AS "previous_sequence"
       `;
-      if (!lockedTerminal || lockedTerminal.branch_id !== dto.branch_id) {
+      if (!claimed || claimed.branch_id !== dto.branch_id) {
         throw new ForbiddenException('The terminal is not assigned to the sale branch');
       }
 
-      const existing = await tx.salesInvoice.findFirst({
-        where: { tenant_id: context.tenantId, sync_id: dto.sync_id },
+      // The replay (same sync_id) and the terminal-sequence owner (same
+      // terminal + sequence, different sync_id) are found by one query.
+      const matches = await tx.salesInvoice.findMany({
+        where: {
+          tenant_id: context.tenantId,
+          OR: [
+            { sync_id: dto.sync_id },
+            { terminal_id: terminal.id, terminal_sequence: terminalSequence },
+          ],
+        },
         include: { items: true },
       });
+      const existing = matches.find((invoice) => invoice.sync_id === dto.sync_id);
+      const sequenceOwner = matches.find((invoice) => invoice.sync_id !== dto.sync_id);
       if (existing) {
         if (
           existing.branch_id !== dto.branch_id ||
@@ -376,28 +320,21 @@ export class SalesService {
       }
 
       const warningCodes = new Set<string>();
-      const [branch, shift, originCashier, seller, sequenceOwner] = await Promise.all([
-        tx.branch.findFirst({ where: { id: dto.branch_id, tenant_id: context.tenantId } }),
+      const [shift, staff] = await Promise.all([
         tx.shift.findFirst({ where: { id: dto.shift_id, tenant_id: context.tenantId } }),
         // Staff are resolved through their Membership — `User` has no tenant data.
-        tx.membership.findFirst({
-          where: { user_id: dto.origin_cashier_id, tenant_id: context.tenantId },
-          select: { user_id: true, role: true, access_scope_assignments: true },
-        }),
-        tx.membership.findFirst({
-          where: { user_id: dto.seller_id, tenant_id: context.tenantId },
-          select: { user_id: true, role: true, access_scope_assignments: true },
-        }),
-        tx.salesInvoice.findFirst({
+        tx.membership.findMany({
           where: {
             tenant_id: context.tenantId,
-            terminal_id: terminal.id,
-            terminal_sequence: terminalSequence,
+            user_id: { in: [dto.origin_cashier_id, dto.seller_id] },
           },
-          select: { id: true, sync_id: true },
+          select: { user_id: true, role: true, access_scope_assignments: true },
+          relationLoadStrategy: 'join',
         }),
       ]);
-      if (!branch) throw new NotFoundException('Branch not found');
+      if (claimed.branch_code === null) throw new NotFoundException('Branch not found');
+      const originCashier = staff.find((m) => m.user_id === dto.origin_cashier_id);
+      const seller = staff.find((m) => m.user_id === dto.seller_id);
       const worksInBranch = (m: typeof originCashier) =>
         !!m && hasBranchAccess({ scope_set: toScopeSet(m.access_scope_assignments) }, dto.branch_id);
       const linkedCashier = originCashier && worksInBranch(originCashier) ? { id: originCashier.user_id } : null;
@@ -427,9 +364,9 @@ export class SalesService {
         });
       }
 
-      if (terminalSequence > lockedTerminal.last_sale_sequence + 1n) {
+      if (terminalSequence > claimed.previous_sequence + 1n) {
         warningCodes.add('SEQUENCE_GAP');
-      } else if (terminalSequence <= lockedTerminal.last_sale_sequence) {
+      } else if (terminalSequence <= claimed.previous_sequence) {
         warningCodes.add('OUT_OF_ORDER_SEQUENCE');
       }
 
@@ -441,6 +378,7 @@ export class SalesService {
           product: { tenant_id: context.tenantId },
         },
         include: { product: true, base_uom: { select: { precision: true } } },
+        relationLoadStrategy: 'join',
       });
       if (variants.length !== variantIds.length) {
         const found = new Set(variants.map((variant) => variant.id));
@@ -549,28 +487,23 @@ export class SalesService {
       const costOf = (variantId: string) =>
         unitCost(stockAfter.get(variantId)?.avgCost ?? variantsById.get(variantId).cost_price);
 
+      // Find-or-create the customer and book this sale on it in one statement.
+      // The (tenant_id, phone) unique key makes concurrent first sales safe.
       let customerId: string | undefined;
       if (dto.customer_phone) {
-        // `Customer.phone` is still globally unique until Phase B, so an
-        // upsert keyed on phone alone would attach another tenant's customer
-        // to this sale. Resolve within the tenant first, then create.
-        const existingCustomer = await tx.customer.findFirst({
-          where: { phone: dto.customer_phone, tenant_id: context.tenantId },
-          select: { id: true },
-        });
-        const customer = existingCustomer ?? (await tx.customer.create({
-          data: {
-            tenant_id: context.tenantId,
-            phone: dto.customer_phone,
-            whatsapp: dto.customer_phone,
-          },
-          select: { id: true },
-        }));
+        const [customer] = await tx.$queryRaw<Array<{ id: string }>>`
+          INSERT INTO "Customer" ("id", "tenant_id", "phone", "whatsapp", "total_invoices", "total_spent")
+          VALUES (${randomUUID()}::uuid, ${context.tenantId}::uuid, ${dto.customer_phone}, ${dto.customer_phone}, 1, ${total})
+          ON CONFLICT ("tenant_id", "phone") DO UPDATE SET
+            "total_invoices" = "Customer"."total_invoices" + 1,
+            "total_spent" = "Customer"."total_spent" + EXCLUDED."total_spent"
+          RETURNING "id"
+        `;
         customerId = customer.id;
       }
 
       const invoiceNumber =
-        `B-${branch.code}-${receivedAt.getTime()}-${randomUUID().slice(0, 8)}`;
+        `B-${claimed.branch_code}-${receivedAt.getTime()}-${randomUUID().slice(0, 8)}`;
       const invoice = await tx.salesInvoice.create({
         data: {
           id: invoiceId,
@@ -598,28 +531,25 @@ export class SalesService {
           payment_method: dto.payment_method,
           language: dto.language || 'ar',
           sync_id: dto.sync_id,
-          items: {
-            create: saleItems.map((item) => ({
-              id: itemIds.get(item.variant_id),
-              variant_id: item.variant_id,
-              qty: item.qty,
-              unit_price: item.unit_price,
-              unit_cost: costOf(item.variant_id),
-              unit_tax: item.tax,
-              sku_snapshot: item.sku_snapshot,
-              name_ar_snapshot: item.name_ar_snapshot,
-              name_en_snapshot: item.name_en_snapshot,
-              size_snapshot: item.size_snapshot,
-              color_snapshot: item.color_snapshot,
-            })),
-          },
         },
-        include: { items: true },
       });
-
-      const invoiceItemByVariant = new Map(
-        invoice.items.map((item) => [item.variant_id, item]),
-      );
+      const items = await tx.salesInvoiceItem.createManyAndReturn({
+        data: saleItems.map((item) => ({
+          id: itemIds.get(item.variant_id),
+          tenant_id: context.tenantId,
+          sales_invoice_id: invoice.id,
+          variant_id: item.variant_id,
+          qty: item.qty,
+          unit_price: item.unit_price,
+          unit_cost: costOf(item.variant_id),
+          unit_tax: item.tax,
+          sku_snapshot: item.sku_snapshot,
+          name_ar_snapshot: item.name_ar_snapshot,
+          name_en_snapshot: item.name_en_snapshot,
+          size_snapshot: item.size_snapshot,
+          color_snapshot: item.color_snapshot,
+        })),
+      });
 
       // WP-008 Phase C (BR-TAX-202): stamp the resolved code/rate/base/amount/
       // mode/version onto the document, inside the same transaction that
@@ -650,9 +580,8 @@ export class SalesService {
         invoice.id,
         saleItems.map((item) => {
           const quote = currentQuotes.get(item.variant_id)!;
-          const invoiceItem = invoiceItemByVariant.get(item.variant_id)!;
           return {
-            salesInvoiceItemId: invoiceItem.id,
+            salesInvoiceItemId: itemIds.get(item.variant_id)!,
             tax: {
               ...quote.tax,
               base_amount: lineMoney(quote.tax.base_amount, item.qty),
@@ -661,13 +590,6 @@ export class SalesService {
           };
         }),
       );
-
-      if (terminalSequence > lockedTerminal.last_sale_sequence) {
-        await tx.posTerminal.update({
-          where: { id: terminal.id },
-          data: { last_sale_sequence: terminalSequence },
-        });
-      }
 
       await tx.auditLog.create({
         data: {
@@ -734,18 +656,8 @@ export class SalesService {
         });
       }
 
-      if (customerId) {
-        await tx.customer.update({
-          where: { id: customerId },
-          data: {
-            total_invoices: { increment: 1 },
-            total_spent: { increment: total },
-          },
-        });
-      }
-      return invoice;
+      return { ...invoice, items };
     });
-    this.countCache.clear();
     // Unconditional, unlike `getInvoice`: this response goes to a POS terminal
     // authenticated by device token, so there is no membership to resolve a
     // permission against and no actor the gate could answer for. The till has
@@ -969,7 +881,6 @@ export class SalesService {
       timeout: 20_000,
     });
 
-    this.countCache.clear();
     // `ReturnItem.unit_cost` is copied from the sale line it reverses, so the
     // return response is the same disclosure under a different table. Gated,
     // not unconditional: unlike `POST /pos/sale` this endpoint authenticates an

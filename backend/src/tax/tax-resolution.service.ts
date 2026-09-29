@@ -70,14 +70,19 @@ export class TaxResolutionService {
     return categoryId;
   }
 
-  /** Every active code in the tenant, keyed by category, for bulk paths. */
+  /** Active codes keyed by category: every one in the tenant, or only the given categories. */
   async loadActiveCodeIndex(
     context: TenantScope,
     transaction?: Prisma.TransactionClient,
+    categoryIds?: readonly string[],
   ): Promise<TaxCodeIndex> {
     const db = transaction ?? this.prisma;
     const codes = await db.taxCode.findMany({
-      where: { tenant_id: context.tenantId, status: 'active' },
+      where: {
+        tenant_id: context.tenantId,
+        status: 'active',
+        ...(categoryIds ? { tax_category_id: { in: [...new Set(categoryIds)] } } : {}),
+      },
     });
     return new Map(codes.map((code) => [code.tax_category_id, code]));
   }

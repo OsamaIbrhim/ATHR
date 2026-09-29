@@ -20,7 +20,6 @@ describe('sale transaction configuration and diagnostics', () => {
     expect(getSaleTransactionOptions()).toEqual({
       maxWait: 10_000,
       timeout: 30_000,
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
     });
   });
 
@@ -31,7 +30,6 @@ describe('sale transaction configuration and diagnostics', () => {
     expect(getSaleTransactionOptions()).toEqual({
       maxWait: 15_000,
       timeout: 45_000,
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
     });
   });
 
@@ -42,7 +40,6 @@ describe('sale transaction configuration and diagnostics', () => {
     expect(getSaleTransactionOptions()).toEqual({
       maxWait: 10_000,
       timeout: 30_000,
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
     });
   });
 

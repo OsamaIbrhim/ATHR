@@ -20,7 +20,8 @@ export function getSaleTransactionOptions() {
       process.env.SALE_TRANSACTION_TIMEOUT_MS,
       DEFAULT_SALE_TRANSACTION_TIMEOUT_MS,
     ),
-    isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+    // No explicit isolation level: READ COMMITTED is PostgreSQL's default, and
+    // naming it makes Prisma send an extra SET TRANSACTION round trip per sale.
   };
 }
 

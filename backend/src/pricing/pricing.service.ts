@@ -146,17 +146,14 @@ export class PricingService {
     qty = 1,
   ): Promise<PriceQuote> {
     const db = transaction || this.prisma;
-    const [variant, entries, taxCodes] = await Promise.all([
-      db.productVariant.findFirst({
-        where: { id: variantId, tenant_id: context.tenantId },
-        include: { product: true },
-      }),
-      this.loadActiveRules(context, transaction),
-      this.tax.loadActiveCodeIndex(context, transaction),
-    ]);
+    const variant = await db.productVariant.findFirst({
+      where: { id: variantId, tenant_id: context.tenantId },
+      include: { product: true },
+    });
     if (!variant) {
       throw new AthrDomainError('RESOURCE_NOT_FOUND', `Variant ${variantId} not found.`);
     }
+    const [entries, taxCodes] = await this.loadFor(context, [variant], transaction);
     const result = this.quote(variant, entries, qty, taxCodes);
     if (!result) {
       throw new AthrDomainError(
@@ -177,11 +174,11 @@ export class PricingService {
     lines: readonly PriceableLine[],
     transaction?: Prisma.TransactionClient,
   ): Promise<Map<string, PriceQuote>> {
-    const [entries, taxCodes] = await Promise.all([
-      this.loadActiveRules(context, transaction),
-      this.tax.loadActiveCodeIndex(context, transaction),
-    ]);
-    const index = this.buildIndex(entries);
+    const [index, taxCodes] = await this.loadFor(
+      context,
+      lines.map((line) => line.variant),
+      transaction,
+    );
     const result = new Map<string, PriceQuote>();
     const unpriced: string[] = [];
     for (const line of lines) {
@@ -215,6 +212,7 @@ export class PricingService {
   async loadActiveRules(
     context: TenantScope,
     transaction?: Prisma.TransactionClient,
+    variants?: readonly PriceableVariant[],
   ): Promise<ResolvedPriceEntry[]> {
     const db = transaction || this.prisma;
     const now = new Date();
@@ -223,10 +221,51 @@ export class PricingService {
         tenant_id: context.tenantId,
         status: 'active',
         effective_from: { lte: now },
-        OR: [{ effective_to: null }, { effective_to: { gte: now } }],
+        AND: [
+          { OR: [{ effective_to: null }, { effective_to: { gte: now } }] },
+          ...(variants ? [PricingService.scopesOf(variants)] : []),
+        ],
         price_book: { tenant_id: context.tenantId, status: 'active', is_default: true },
       },
     });
+  }
+
+  /**
+   * Hot paths (a sale, one quote) price a handful of variants: they read only
+   * the entries and tax codes those variants can resolve to, in fresh queries,
+   * so a price or rate change is visible to the very next call (no cache to
+   * go stale) and the cost no longer grows with the size of the tenant's book.
+   */
+  private async loadFor(
+    context: TenantScope,
+    variants: readonly PriceableVariant[],
+    transaction?: Prisma.TransactionClient,
+  ): Promise<[PriceEntryIndex, TaxCodeIndex]> {
+    const [entries, taxCodes] = await Promise.all([
+      this.loadActiveRules(context, transaction, variants),
+      this.tax.loadActiveCodeIndex(
+        context,
+        transaction,
+        variants.map((variant) => this.tax.resolveCategoryId(variant)),
+      ),
+    ]);
+    return [this.buildIndex(entries), taxCodes];
+  }
+
+  /** The `(scope_type, scope_id)` pairs `quote()` can reach for these variants, plus `global`. */
+  private static scopesOf(variants: readonly PriceableVariant[]): Prisma.PriceBookEntryWhereInput {
+    const ids = (pick: (variant: PriceableVariant) => string | null | undefined) => [
+      ...new Set(variants.map(pick).filter((id): id is string => !!id)),
+    ];
+    return {
+      OR: [
+        { scope_type: 'global' },
+        { scope_type: 'variant', scope_id: { in: ids((v) => v.id) } },
+        { scope_type: 'product', scope_id: { in: ids((v) => v.product_id) } },
+        { scope_type: 'brand', scope_id: { in: ids((v) => v.product.brand_id) } },
+        { scope_type: 'category', scope_id: { in: ids((v) => v.product.category_id) } },
+      ],
+    };
   }
 
   /** `"<scope_type>:<scope_id>"` — `global` entries collapse to a single bucket. */
