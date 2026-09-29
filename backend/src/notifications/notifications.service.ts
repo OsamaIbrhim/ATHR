@@ -1,13 +1,17 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import axios from 'axios';
 import { moneyString } from '../common/money';
 import { formatBusinessDateTime } from '../common/business-time';
+import { PrismaService } from '../prisma/prisma.service';
 import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
   private mailer: nodemailer.Transporter | null = null;
+
+  constructor(private prisma: PrismaService) {}
 
   private getMailer() {
     if (this.mailer) return this.mailer;
@@ -28,7 +32,7 @@ export class NotificationsService {
   async sendEmail(to: string, subject: string, html: string, text?: string) {
     const mailer = this.getMailer();
     if (!mailer) {
-      console.log(`[EMAIL STUB] to ${to}: ${subject}`);
+      this.logger.log(`[EMAIL STUB] to ${to}: ${subject}`);
       return { sent: false, reason: 'SMTP not configured – set SMTP_HOST in .env', provider: 'stub' };
     }
     try {
@@ -40,7 +44,7 @@ export class NotificationsService {
       });
       return { sent: true, messageId: info.messageId, provider: 'smtp' };
     } catch (e: any) {
-      console.error('Email send failed', e.message);
+      this.logger.error(`Email send failed: ${e.message}`);
       return { sent: false, error: e.message };
     }
   }
@@ -49,7 +53,7 @@ export class NotificationsService {
     const token = process.env.WHATSAPP_TOKEN;
     const phoneId = process.env.WHATSAPP_PHONE_ID;
     if (!token || !phoneId) {
-      console.log(`[WHATSAPP STUB] to ${to}: ${message}`);
+      this.logger.log(`[WHATSAPP STUB] to ${to}: ${message}`);
       return { sent: false, reason: 'WhatsApp Cloud API not configured – set WHATSAPP_TOKEN and WHATSAPP_PHONE_ID in .env', provider: 'stub' };
     }
     try {
@@ -63,21 +67,26 @@ export class NotificationsService {
       }, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }});
       return { sent: true, id: res.data.messages?.[0]?.id, provider: 'whatsapp_cloud' };
     } catch (e: any) {
-      console.error('WhatsApp send failed', e.response?.data || e.message);
+      this.logger.error(`WhatsApp send failed: ${JSON.stringify(e.response?.data || e.message)}`);
       return { sent: false, error: e.response?.data || e.message };
     }
   }
 
-  /**
-   * WP-007 Phase A §A.3.2. This module owns no tenant-scoped table — it
-   * formats and dispatches a report payload the caller already produced, and
-   * its recipients come from environment configuration rather than tenant
-   * data. So tenant-scoping here is contextual: the context is threaded and
-   * stamped onto the dispatch so a report can never be attributed to, or
-   * silently delivered on behalf of, a tenant other than the caller's. Real
-   * per-tenant recipient routing needs a recipients table that does not exist
-   * yet; that is a later WP, not something to fake here.
-   */
+  /** Report recipients are the tenant's active owners; provider credentials stay global. */
+  private async ownerRecipients(tenantId: string) {
+    const owners = await this.prisma.user.findMany({
+      where: {
+        is_active: true,
+        memberships: { some: { tenantId, role: 'tenant_owner', status: 'active' } },
+      },
+      select: { email: true, phone: true },
+    });
+    return {
+      emails: owners.map((o) => o.email).filter((v): v is string => !!v),
+      phones: owners.map((o) => o.phone).filter((v): v is string => !!v),
+    };
+  }
+
   async sendReport(context: TenantContext, report: any, channels: string[]) {
     const totalSales = moneyString(report.total_sales || 0);
     const totalCost = moneyString(report.total_cost || 0);
@@ -93,13 +102,17 @@ export class NotificationsService {
       <hr><small>ATHR Operations – ${formatBusinessDateTime(new Date())}</small>
       </div>`;
     const results:any = { tenant_id: context.tenantId };
+    if (!channels.length) return results;
+    const { emails, phones } = await this.ownerRecipients(context.tenantId);
     if (channels.includes('email')) {
-      const to = process.env.REPORT_EMAIL_TO || 'owner@athr.local';
-      results.email = await this.sendEmail(to, 'تقرير ATHR اليومي', html, summary);
+      results.email = emails.length
+        ? await this.sendEmail(emails.join(','), 'تقرير ATHR اليومي', html, summary)
+        : { sent: false, reason: 'No owner email on file for this tenant' };
     }
     if (channels.includes('whatsapp')) {
-      const to = process.env.REPORT_WHATSAPP_TO || '+200100000000';
-      results.whatsapp = await this.sendWhatsApp(to, summary);
+      results.whatsapp = phones.length
+        ? await Promise.all(phones.map((to) => this.sendWhatsApp(to, summary)))
+        : { sent: false, reason: 'No owner phone on file for this tenant' };
     }
     return results;
   }
