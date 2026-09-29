@@ -71,25 +71,18 @@ export class ReportsService {
     const saleBranch = branch_id ? Prisma.sql`AND i."branch_id" = ${branch_id}::uuid` : Prisma.empty;
     const returnBranch = branch_id ? Prisma.sql`AND r."branch_id" = ${branch_id}::uuid` : Prisma.empty;
 
-    const [[sold], [returned]] = await Promise.all([
+    const [[sold], [returned], [lines]] = await Promise.all([
       this.prisma.$queryRaw<Array<{
         count: number;
         gross: Prisma.Decimal;
         subtotal: Prisma.Decimal;
         tax: Prisma.Decimal;
-        cost: Prisma.Decimal;
       }>>`
         SELECT count(*)::int AS count,
                coalesce(sum(i."total"), 0) AS gross,
                coalesce(sum(i."subtotal"), 0) AS subtotal,
-               coalesce(sum(i."tax_amount"), 0) AS tax,
-               coalesce(sum(l.cost), 0) AS cost
+               coalesce(sum(i."tax_amount"), 0) AS tax
         FROM "SalesInvoice" i
-        LEFT JOIN LATERAL (
-          SELECT sum(round(it."unit_cost" * it."qty", 2)) AS cost
-          FROM "SalesInvoiceItem" it
-          WHERE it."sales_invoice_id" = i."id" AND it."tenant_id" = i."tenant_id"
-        ) l ON true
         WHERE i."tenant_id" = ${context.tenantId}::uuid AND i."status" = 'completed'
           AND i."occurred_at" >= ${range.gte} AND i."occurred_at" < ${range.lt} ${saleBranch}`,
       this.prisma.$queryRaw<Array<{
@@ -97,25 +90,22 @@ export class ReportsService {
         total: Prisma.Decimal;
         subtotal: Prisma.Decimal;
         tax: Prisma.Decimal;
-        cost: Prisma.Decimal;
       }>>`
         SELECT count(*)::int AS count,
                coalesce(sum(r."refund_total"), 0) AS total,
                coalesce(sum(r."refund_subtotal"), 0) AS subtotal,
-               coalesce(sum(r."refund_tax"), 0) AS tax,
-               coalesce(sum(l.cost), 0) AS cost
+               coalesce(sum(r."refund_tax"), 0) AS tax
         FROM "Return" r
-        LEFT JOIN LATERAL (
-          SELECT sum(round(ri."unit_cost" * ri."qty", 2)) AS cost
-          FROM "ReturnItem" ri
-          WHERE ri."return_id" = r."id" AND ri."tenant_id" = r."tenant_id"
-        ) l ON true
         WHERE r."tenant_id" = ${context.tenantId}::uuid AND r."status" = 'completed'
           AND r."created_at" >= ${range.gte} AND r."created_at" < ${range.lt} ${returnBranch}`,
+      // Cost of goods sold net of returned goods: returned lines are already negative.
+      this.prisma.$queryRaw<Array<{ cost: Prisma.Decimal }>>`
+        SELECT coalesce(sum(l."cost"), 0) AS cost
+        FROM (${this.movementLines(context, range, branch_id)}) l`,
     ]);
 
     const totalSales = money(sold.gross.minus(returned.total));
-    const totalCost = money(sold.cost.minus(returned.cost));
+    const totalCost = money(lines.cost);
     const netRevenue = money(sold.subtotal.minus(returned.subtotal));
     const totalTax = money(sold.tax.minus(returned.tax));
     return {

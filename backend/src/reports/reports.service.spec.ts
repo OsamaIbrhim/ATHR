@@ -17,8 +17,9 @@ function serviceWith(rows: unknown[][]) {
 describe('ReportsService financial precision', () => {
   it('combines sales and returns without floating drift', async () => {
     const { service } = serviceWith([
-      [{ count: 2, gross: D('0.30'), subtotal: D('0.25'), tax: D('0.05'), cost: D('0.07') }],
-      [{ count: 1, total: D('0.10'), subtotal: D('0.07'), tax: D('0.03'), cost: D('0.01') }],
+      [{ count: 2, gross: D('0.30'), subtotal: D('0.25'), tax: D('0.05') }],
+      [{ count: 1, total: D('0.10'), subtotal: D('0.07'), tax: D('0.03') }],
+      [{ cost: D('0.06') }], // cost of goods sold net of returned goods
     ]);
 
     const report = await service.sales(ctx, '2026-07-01', '2026-07-01');
