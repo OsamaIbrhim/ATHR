@@ -24,6 +24,9 @@ async function bootstrap() {
   // Keep BigInt handling inside the HTTP adapter. Sync cursors are explicitly
   // strings, while this protects future database counters from causing a 500.
   app.getHttpAdapter().getInstance().set('json replacer', apiJsonReplacer);
+  // Behind a reverse proxy (Railway) req.ip must come from X-Forwarded-For,
+  // otherwise per-IP limits (signup) see every client as the proxy.
+  app.getHttpAdapter().getInstance().set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 0));
   app.setGlobalPrefix('api/v1');
   app.use(compression({ threshold: 1024 }));
   // Formalizes the previous inline request-id middleware into a reusable

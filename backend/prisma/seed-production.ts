@@ -4,6 +4,7 @@ import {
   assertProductionSeedDatabaseState,
   validateProductionSeedEnvironment,
 } from '../src/config/production-seed';
+import { ensureActiveSubscription, seedPlans } from './seed/plans';
 
 const prisma = new PrismaClient();
 
@@ -139,6 +140,10 @@ async function main() {
           data: { membership_id: membership.id, scope_type: 'tenant_wide', grant_source: 'seed-production' },
         });
       }
+
+      // Without a subscription the tenant resolves to `suspended` (fail closed).
+      await seedPlans(tx);
+      await ensureActiveSubscription(tx, tenant.id, 'business');
 
       return { branch, owner, tenant };
     },
