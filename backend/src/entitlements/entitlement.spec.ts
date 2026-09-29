@@ -328,7 +328,7 @@ describe('POS sale gating', () => {
     const terminals = {
       authenticateDevice: jest.fn().mockResolvedValue({ id: 't1', branch_id: 'b1', tenant_id: TENANT_A }),
     } as any;
-    const reads = { invalidateCounts: jest.fn() } as any;
+    const reads = {} as any;
     return {
       sales,
       controller: new SalesController(sales, reads, {} as any, terminals, new EntitlementService(prisma)),

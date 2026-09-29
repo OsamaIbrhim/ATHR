@@ -294,7 +294,6 @@ For hosted PostgreSQL using a pooler, point `DATABASE_URL` at the pooler and
 | `POS_ONLINE_THRESHOLD_MS` | `90000` | Time without a heartbeat before Admin derives a terminal as offline |
 | `POS_ENROLLMENT_TTL_MS` | `600000` | Lifetime of a one-use terminal enrollment code |
 | `AUTH_RECHECK_TTL_MS` | `1000` | Coalesce concurrent JWT user rechecks; `0` disables caching, maximum is 5000 ms |
-| `LIST_COUNT_CACHE_MS` | `5000` | Short cache for identical product/invoice pagination counts; maximum is 30000 ms |
 | `SLOW_REQUEST_MS` | `500` | API duration that produces a structured slow-request warning |
 | `HTTP_TIMING_LOGS` | `false` | Log timings for every request instead of only slow requests |
 

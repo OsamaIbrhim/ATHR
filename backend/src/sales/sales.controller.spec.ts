@@ -27,7 +27,6 @@ describe('SalesController POS terminal enforcement', () => {
     } as any;
     const reads = {
       listSales: jest.fn(),
-      invalidateCounts: jest.fn(),
     } as any;
     const terminal = {
       id: 'terminal-1',
@@ -61,7 +60,6 @@ describe('SalesController POS terminal enforcement', () => {
       'secret-1',
     );
     expect(sales.createSale).toHaveBeenCalledWith(sale, terminal);
-    expect(reads.invalidateCounts).toHaveBeenCalledTimes(1);
   });
 
   it('authenticates the enrolled terminal before a return or invoice lookup', async () => {

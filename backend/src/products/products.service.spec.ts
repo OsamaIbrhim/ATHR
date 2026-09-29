@@ -107,14 +107,6 @@ describe('ProductsService pagination', () => {
     expect(result.suggestions).toEqual([{ value: 'T-Shirt', label: 'تي شيرت' }]);
   });
 
-  it('coalesces repeated identical count queries during a request burst', async () => {
-    const prisma = productReadPrisma([], 0);
-    const service = serviceOver(prisma);
-    await Promise.all([service.list(ctx, '', 1, 20), service.list(ctx, '', 2, 20)]);
-    expect(prisma.productVariant.count).toHaveBeenCalledTimes(1);
-    expect(prisma.productVariant.findMany).toHaveBeenCalledTimes(2);
-  });
-
 
   it('does not expose moving-average cost as an editable variant field', async () => {
     const prisma = {
