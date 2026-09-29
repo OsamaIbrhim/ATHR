@@ -136,9 +136,12 @@ export async function apiGetBlob(path: string) {
 export type AdminUser = {
   id: string
   name: string
+  /** Client-compatible role name (owner, branch_manager, ...). */
   role: string
+  membership_role?: string
   branch_id: string | null
-  capabilities?: string[]
+  /** Effective permission keys of the session's membership. */
+  permissions?: string[]
 }
 
 export function getStoredUser(): AdminUser | null {

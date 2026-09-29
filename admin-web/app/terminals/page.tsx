@@ -2,13 +2,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiGet, apiPatch, apiPost } from '@/lib/api'
 import { useSessionUser } from '@/components/AuthGate'
-import { hasCapability } from '@/lib/permissions'
+import { hasPermission } from '@/lib/permissions'
 
 export default function Terminals(){
   const [items,setItems]=useState<any[]>([]), [serverTime,setServerTime]=useState(''), [loading,setLoading]=useState(true), [error,setError]=useState('')
   const [branches,setBranches]=useState<any[]>([]), [branchId,setBranchId]=useState(''), [terminalName,setTerminalName]=useState(''), [enrollment,setEnrollment]=useState<any>(null)
   const owner=useSessionUser()?.role==='owner'
-  const canManage=hasCapability(useSessionUser(),'terminals.manage')
+  const canManage=hasPermission(useSessionUser(),'terminal.provision')
   const load=useCallback(async()=>{try{const data=await apiGet('/terminals');setItems(data.items||[]);setServerTime(data.server_time);setError('')}catch(e:any){setError(e.message)}finally{setLoading(false)}},[])
   useEffect(()=>{load();if(owner)apiGet('/branches').then((data:any[])=>{setBranches(data);if(data[0])setBranchId(data[0].id)}).catch(()=>undefined);const timer=setInterval(()=>{if(document.visibilityState==='visible')load()},20000);return()=>clearInterval(timer)},[load,owner])
   const rename=async(t:any)=>{const name=prompt('اسم الجهاز:',t.name);if(!name)return;await apiPatch(`/terminals/${t.id}`,{name});load()}

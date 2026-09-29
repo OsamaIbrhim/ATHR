@@ -2,9 +2,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiGet, apiPost, apiDelete } from '@/lib/api'
 import { useSessionUser } from '@/components/AuthGate'
-import { hasCapability } from '@/lib/permissions'
+import { hasPermission } from '@/lib/permissions'
 export default function Customers() {
-  const canManage = hasCapability(useSessionUser(), 'customers.manage')
+  const canManage = hasPermission(useSessionUser(), 'customer.profile.update')
   const [phone, setPhone] = useState('')
   const [list, setList] = useState<any[]>([])
   const [name, setName] = useState('')
