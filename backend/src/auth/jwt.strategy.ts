@@ -28,31 +28,33 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       secretOrKey: getJwtSecret()
     });
   }
-  async validate(payload: { sub?: string }) {
+  async validate(payload: { sub?: string; tenant_id?: string | null }) {
     if (!payload.sub) throw new UnauthorizedException();
+    const tenantId = payload.tenant_id ?? null;
+    const key = `${payload.sub}:${tenantId ?? ''}`;
     const now = Date.now();
-    const cached = this.cache.get(payload.sub);
+    const cached = this.cache.get(key);
     if (cached && cached.expiresAt > now) return cached.user;
 
-    let lookup = this.inFlight.get(payload.sub);
+    let lookup = this.inFlight.get(key);
     if (!lookup) {
-      lookup = this.loadEffectiveUser(payload.sub);
-      this.inFlight.set(payload.sub, lookup);
+      lookup = this.loadEffectiveUser(payload.sub, tenantId);
+      this.inFlight.set(key, lookup);
     }
     try {
       const user = await lookup;
       const ttl = Math.min(5_000, Math.max(0, Number(process.env.AUTH_RECHECK_TTL_MS || 1_000)));
       if (ttl > 0) {
         if (this.cache.size >= 1_000) this.cache.delete(this.cache.keys().next().value!);
-        this.cache.set(payload.sub, { expiresAt: Date.now() + ttl, user });
+        this.cache.set(key, { expiresAt: Date.now() + ttl, user });
       }
       return user;
     } finally {
-      if (this.inFlight.get(payload.sub) === lookup) this.inFlight.delete(payload.sub);
+      if (this.inFlight.get(key) === lookup) this.inFlight.delete(key);
     }
   }
 
-  private async loadEffectiveUser(userId: string): Promise<EffectiveUser> {
+  private async loadEffectiveUser(userId: string, tenantId: string | null): Promise<EffectiveUser> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -63,7 +65,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user?.is_active) throw new UnauthorizedException();
     // The very short cache coalesces bursts from one logged-in user while role,
     // branch, disable, and revocation changes still take effect within 1 second.
-    const identityClaims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id);
+    const identityClaims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id, tenantId);
     return {
       sub: user.id,
       role: user.role,

@@ -16,15 +16,15 @@ export class AuthService {
     private permissionPolicy: PermissionPolicyService,
   ) {}
 
-  async login(phone: string, password: string) {
+  async login(phone: string, password: string, tenantId?: string) {
     const user = await this.prisma.user.findUnique({ where: { phone } });
     if (!user || !user.is_active || !await bcrypt.compare(password, user.password_hash)) {
       throw new UnauthorizedException('Invalid credentials');
     }
-    return this.createSession(user);
+    return this.createSession(user, undefined, tenantId);
   }
 
-  async refresh(refreshToken: string) {
+  async refresh(refreshToken: string, tenantId?: string) {
     const tokenHash = this.hashToken(refreshToken);
     return this.prisma.$transaction(async (tx) => {
       const stored = await tx.refreshToken.findUnique({
@@ -39,7 +39,7 @@ export class AuthService {
         data: { revoked_at: new Date() },
       });
       if (revoked.count !== 1) throw new UnauthorizedException('Refresh token was already used');
-      return this.createSession(stored.user, tx);
+      return this.createSession(stored.user, tx, tenantId);
     });
   }
 
@@ -62,10 +62,19 @@ export class AuthService {
       },
     });
     if (!user?.is_active) throw new UnauthorizedException();
-    return { ...user, capabilities: effectiveCapabilities(user) };
+    const memberships = await this.prisma.membership.findMany({
+      where: { identityId: userId, status: 'active' },
+      orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
+      select: { tenant: { select: { id: true, name: true } } },
+    });
+    return {
+      ...user,
+      capabilities: effectiveCapabilities(user),
+      tenants: memberships.map((m) => m.tenant),
+    };
   }
 
-  private async createSession(user: User, transaction?: Prisma.TransactionClient) {
+  private async createSession(user: User, transaction?: Prisma.TransactionClient, tenantId?: string) {
     const db = transaction || this.prisma;
     const refreshToken = randomBytes(48).toString('base64url');
     await db.refreshToken.create({
@@ -79,7 +88,7 @@ export class AuthService {
     // (sub/role/branch_id in the token payload; id/name/role/branch_id/
     // capabilities in `user`) is unchanged. See auth/identity-claims.ts and
     // the dual-compatibility regression test in dual-compatibility.spec.ts.
-    const identityClaims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id);
+    const identityClaims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id, tenantId);
     const payload = {
       sub: user.id,
       role: user.role,
