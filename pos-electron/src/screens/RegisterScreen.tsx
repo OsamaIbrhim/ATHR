@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../api'
 import { athr } from '../electron'
 import { CartItem, Customer, DeviceCredential, HeldSale, OfflineAccountingContext, Product, Seller, Session, Shift, SyncState } from '../types'
 import { offlineAccountingSummaryMatches } from '../../electron/offline-accounting'
 import { ConfirmDialog, FieldError, Modal, NumericKeypad } from '../components/ui'
+import { addProductToCart, findExactMatch, setLineQty } from '../cart'
 import { cartTotals, fromCents, isValidEgyptianPhone, lineCents, money, normalizeEgyptianPhone, paymentLabel, toCents } from '../utils'
 
 const paymentMethods = ['cash','card','instapay','vodafone_cash','installment'] as const
@@ -18,7 +19,14 @@ export function RegisterScreen({
   onSync:()=>void, onSales:()=>void, onCloseShift:()=>void, onLogout:()=>void,
   notify:(message:string,tone?:'success'|'error'|'info')=>void,
 }) {
-  const [cart,setCart]=useState<CartItem[]>([])
+  const [cart,setCartState]=useState<CartItem[]>([])
+  // Always-latest cart so rapid scans merge against current state, not a stale closure.
+  const cartRef=useRef<CartItem[]>([])
+  const setCart=useCallback((update:CartItem[]|((prev:CartItem[])=>CartItem[]))=>{
+    const next=typeof update==='function'?update(cartRef.current):update
+    cartRef.current=next
+    setCartState(next)
+  },[])
   const [query,setQuery]=useState('')
   const [results,setResults]=useState<Product[]>([])
   const [searching,setSearching]=useState(false)
@@ -64,14 +72,17 @@ export function RegisterScreen({
 
   const runSearch=async(value=query)=>{
     const term=value.trim(); if(!term)return
+    // Clear immediately so characters typed while the IPC search is pending survive.
+    setQuery('')
     setSearching(true)
     try{
       const local=await athr.search(term)
-      if(local.length===1 && [local[0].barcode_ean13,local[0].barcode_internal,local[0].sku].includes(term)){await addProduct(local[0]);setResults([])}
+      const exact=findExactMatch(local,term)
+      if(exact){await addProduct(exact);setResults([])}
       else setResults(local)
       if(!local.length) notify('لا توجد نتائج مطابقة في بيانات الجهاز','info')
     }catch{notify('تعذر البحث في كتالوج الجهاز','error')}
-    finally{setSearching(false);setQuery('');setTimeout(()=>searchRef.current?.focus(),0)}
+    finally{setSearching(false);setTimeout(()=>searchRef.current?.focus(),0)}
   }
 
   const addProduct=async(product:Product)=>{
@@ -81,10 +92,6 @@ export function RegisterScreen({
     const available=Number.isFinite(cachedAvailable)
       ? cachedAvailable
       : Number(await athr.stock(product.id))
-
-    const existing=cart.find((item)=>item.variant_id===product.id)
-    if(existing && existing.qty>=available){notify('لا توجد كمية إضافية متاحة من هذا الصنف','error');return}
-    if(!existing && available<=0){notify('هذا المقاس غير متوفر في مخزون الفرع','error');return}
 
     // The synchronized SQLite catalog is the register pricing snapshot.
     // Adding/scanning an item must never wait for the network. Existing cart
@@ -101,20 +108,18 @@ export function RegisterScreen({
       return
     }
 
-    setCart((current)=>existing
-      ? current.map((item)=>item.variant_id===product.id?{...item,qty:item.qty+1}:item)
-      : [...current,{...product,variant_id:product.id,name:displayName(product),qty:1,unit_price:price,unit_tax:tax,available_qty:available}])
+    const result=addProductToCart(cartRef.current,product,available,price,tax,displayName(product))
+    if(result.status==='no_more'){notify('لا توجد كمية إضافية متاحة من هذا الصنف','error');return}
+    if(result.status==='unavailable'){notify('هذا المقاس غير متوفر في مخزون الفرع','error');return}
+    setCart(result.cart)
     notify(`تمت إضافة ${displayName(product)}`,'success')
   }
 
-  const changeQty=(variantId:string,next:number)=>{
-    setCart((current)=>current.flatMap((item)=>{
-      if(item.variant_id!==variantId)return [item]
-      if(next<=0)return []
-      if(next>item.available_qty){notify(`المتاح من ${item.name}: ${item.available_qty}`,'error');return [item]}
-      return [{...item,qty:next}]
-    }))
-  }
+  const changeQty=useCallback((variantId:string,next:number)=>{
+    const result=setLineQty(cartRef.current,variantId,next)
+    if(result.limited){notify(`المتاح من ${result.limited.name}: ${result.limited.available_qty}`,'error');return}
+    setCart(result.cart)
+  },[notify,setCart])
 
   const holdSale=async()=>{
     if(!cart.length){notify('السلة فارغة','info');return}
@@ -166,16 +171,20 @@ export function RegisterScreen({
     setCheckoutOpen(true)
   }
 
+  // Stable listener reading the latest handlers through a ref.
+  const shortcutsRef=useRef({openCheckout,holdSale,onSync})
+  shortcutsRef.current={openCheckout,holdSale,onSync}
   useEffect(()=>{
     const handler=(event:KeyboardEvent)=>{
+      const latest=shortcutsRef.current
       if(event.key==='F2'){event.preventDefault();searchRef.current?.focus()}
       if(event.key==='F3'){event.preventDefault();setCustomerOpen(true)}
-      if(event.key==='F4'){event.preventDefault();void holdSale()}
-      if(event.key==='F8'){event.preventDefault();onSync()}
-      if(event.key==='F10'){event.preventDefault();openCheckout()}
+      if(event.key==='F4'){event.preventDefault();void latest.holdSale()}
+      if(event.key==='F8'){event.preventDefault();latest.onSync()}
+      if(event.key==='F10'){event.preventDefault();latest.openCheckout()}
     }
     window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler)
-  },[cart,customer,onSync,accountingReady])
+  },[])
 
   return <div className="app-shell">
     <header className="app-header">
@@ -197,7 +206,7 @@ export function RegisterScreen({
       <aside className="cart-panel">
         <div className="cart-heading"><div><span className="eyebrow">الفاتورة الحالية</span><h2>{totals.quantity} قطعة</h2></div>{cart.length>0&&<button className="text-button danger-text" onClick={()=>setConfirmClear(true)}>تفريغ</button>}</div>
         <div className="cart-items">
-          {cart.map((item)=><article className="cart-item" key={item.variant_id}><div className="cart-item-main"><b>{item.name}</b><span>{item.sku} · {item.color||'بدون لون'} · {item.size||'بدون مقاس'}</span><small>متاح {item.available_qty}</small></div><div className="qty-control"><button onClick={()=>changeQty(item.variant_id,item.qty-1)}>−</button><input value={item.qty} inputMode="numeric" onChange={(event)=>changeQty(item.variant_id,Number(event.target.value||0))}/><button onClick={()=>changeQty(item.variant_id,item.qty+1)}>+</button></div><div className="line-price"><b>{money(fromCents(lineCents(item.unit_price,item.qty)))} ج</b><span>{money(item.unit_price)} × {item.qty}</span></div><button className="remove-item" onClick={()=>changeQty(item.variant_id,0)}>×</button></article>)}
+          {cart.map((item)=><CartLine key={item.variant_id} item={item} onQty={changeQty}/>)}
           {!cart.length&&<div className="cart-empty"><div>🛍</div><b>السلة فارغة</b><span>أضف أول صنف لبدء الفاتورة.</span></div>}
         </div>
         <div className="cart-summary"><div><span>المجموع الفرعي</span><b>{money(totals.subtotal)} ج</b></div><div><span>الضريبة</span><b>{money(totals.tax)} ج</b></div><div className="grand-total"><span>الإجمالي</span><b>{money(totals.total)} ج</b></div>{!accountingReady&&<FieldError>الدفع متوقف حتى يتم تجهيز هوية الكاشير والجهاز والوردية.</FieldError>}<button className="checkout-button" disabled={!cart.length||!accountingReady} onClick={openCheckout}><span>F10 · الدفع</span><b>{money(totals.total)} ج</b></button></div>
@@ -211,6 +220,10 @@ export function RegisterScreen({
     <ConfirmDialog open={confirmClear} title="تفريغ السلة؟" message="سيتم حذف جميع الأصناف من الفاتورة الحالية." confirmLabel="تفريغ السلة" danger onClose={()=>setConfirmClear(false)} onConfirm={()=>{setCart([]);setConfirmClear(false)}}/>
   </div>
 }
+
+const CartLine=memo(function CartLine({item,onQty}:{item:CartItem,onQty:(variantId:string,next:number)=>void}){
+  return <article className="cart-item"><div className="cart-item-main"><b>{item.name}</b><span>{item.sku} · {item.color||'بدون لون'} · {item.size||'بدون مقاس'}</span><small>متاح {item.available_qty}</small></div><div className="qty-control"><button onClick={()=>onQty(item.variant_id,item.qty-1)}>−</button><input value={item.qty} inputMode="numeric" onChange={(event)=>onQty(item.variant_id,Number(event.target.value||0))}/><button onClick={()=>onQty(item.variant_id,item.qty+1)}>+</button></div><div className="line-price"><b>{money(fromCents(lineCents(item.unit_price,item.qty)))} ج</b><span>{money(item.unit_price)} × {item.qty}</span></div><button className="remove-item" onClick={()=>onQty(item.variant_id,0)}>×</button></article>
+})
 
 function CustomerModal({open,value,onSelect,onClose,notify}:{open:boolean,value:Customer|null,onSelect:(value:Customer|null)=>void,onClose:()=>void,notify:(message:string,tone?:'success'|'error'|'info')=>void}){
   const [phone,setPhone]=useState(value?.phone||'')
@@ -246,7 +259,7 @@ function CheckoutModal({open,items,customer,sellerId,session,device,shift,accoun
     try{
       const saved=await athr.sale(payload)
       onSaleSaved()
-      const receipt={invoice_number:`POS-${saved.sync_id.slice(0,8).toUpperCase()}`,occurred_at:saved.occurred_at,total:totals.total,subtotal:totals.subtotal,tax:totals.tax,payment_method:method,received:method==='cash'?receivedValue:undefined,change:method==='cash'?change:undefined,items}
+      const receipt={invoice_number:saved.invoice_number,occurred_at:saved.occurred_at,total:totals.total,subtotal:totals.subtotal,tax:totals.tax,payment_method:method,received:method==='cash'?receivedValue:undefined,change:method==='cash'?change:undefined,items}
       const printResult=await athr.print(receipt,'ar').catch((printError)=>({ok:false,reason:(printError as Error).message}))
       onCompleted({...receipt,sync_id:saved.sync_id,printed:!!printResult?.ok,print_error:printResult?.reason})
       notify('تم حفظ البيع محليًا بأمان','success')
