@@ -49,7 +49,6 @@ export function registerPrintingIpc() {
   <body>
     <h2>ATHR</h2>
     <div class="center small">
-      ملابس رجالي – Men's Clothing<br>
       ${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br>
       ${new Date(invoice.occurred_at || Date.now()).toLocaleString(isAr ? 'ar-EG' : 'en-GB')}
     </div>
