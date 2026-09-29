@@ -81,6 +81,14 @@ describe('SyncService incremental synchronization', () => {
       selling_price: 150,
       unit_tax: 21,
     });
+    // The POS gets its branch's default-warehouse stock as per-branch rows of plain numbers.
+    expect(inventory.defaultWarehouseId).toHaveBeenCalledWith(prisma, ctx.tenantId, 'branch-1');
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tenant_id: ctx.tenantId, warehouse_id: 'warehouse-1' } }),
+    );
+    expect(result.stock).toEqual([
+      { branch_id: 'branch-1', variant_id: variant.id, qty_on_hand: 5, qty_reserved: 0, last_sold_at: null },
+    ]);
     expect(result.products[0]).not.toHaveProperty('price_version');
     expect(result.products[0]).not.toHaveProperty('price_token');
     expect(() => JSON.stringify(result)).not.toThrow();

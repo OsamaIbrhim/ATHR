@@ -15,48 +15,19 @@
 // in the query text, never that it binds the calling tenant or reaches a
 // real query planner) -- promoting them from that to an actual real-Postgres
 // proof:
-//   R1 PurchasingService.costReconciliation() -- purchasing.service.ts:1184
-//   R2 TransfersService.reconcileInTransit()  -- transfers.service.ts:503
-//   R3 InventoryRepository.reconciliationMismatches() -- inventory.repository.ts:73
+//   R1 PurchasingService.costReconciliation()
+//   R2 TransfersService.reconcileInTransit()
+//   R3 InventoryRepository.reconciliationMismatches()
 //
-// purchasing.service.ts:1000 (reverse()'s global-quantity aggregate, flagged
-// in the WP-T2 report as structurally the WP-007 leak shape) does NOT need a
-// proof here: InventoryStock.variant_id and TransferItem.variant_id both
-// carry a COMPOSITE foreign key `(tenant_id, variant_id) -> ProductVariant
-// (tenant_id, id)` (schema.prisma), which makes it schema-impossible for a
-// row to reference a variant_id owned by a different tenant. That composite
-// FK is already proven under real Postgres in CI by
-// verify-tenant-constraints.cjs (cases 'InventoryStock.variant_id ->
-// ProductVariant' and 'TransferItem.variant_id -> ProductVariant'). Filing a
-// second proof of the same FK here would be redundant, not additional
-// coverage.
-//
-// Every other raw-SQL call site this script does not cover (the 7
-// stored-function calls, the locks with no tenant predicate flagged in the
-// PR description, products.repository.ts:108, etc.) is named as a remaining
-// gap in the PR description, not silently dropped.
-//
-// WP-009 Phase 0 / defect 1 addition -- W1/W2 below:
-// purchasing.service.ts:717-721 (supplier return) and :1046-1050 (purchase
-// reversal) run the same shape of raw UPDATE as :1000 above -- WHERE
-// branch_id = ... AND variant_id = ..., no tenant_id predicate -- but this
-// pair WRITES/locks a real row, so unlike :1000 it is not covered by
-// verify-tenant-constraints.cjs's read-side FK proof alone. The schema
-// reasoning (composite FK InventoryStock(tenant_id, branch_id) -> Branch,
-// InventoryStock(tenant_id, variant_id) -> ProductVariant, both Branch.id and
-// ProductVariant.id globally unique, PLUS invoice.branch_id and
-// item.variant_id already being sourced from a tenant-scoped
-// purchaseInvoice.findFirst({tenant_id: context.tenantId}) lookup chained
-// through PurchaseInvoice's own composite FKs) says these two sites were
-// already structurally safe -- see the PR description for the full chain and
-// the migrations that added each composite FK. `tenant_id` was still added
-// to both predicates as defence in depth, matching transfers.service.ts:240.
-// W1/W2 prove two things against real Postgres: (a) tenant A's own
-// supplier-return / purchase-reversal call only ever touches tenant A's
+// The stock writes of supplier returns and purchase reversals now go through
+// InventoryService.apply(), whose statements bind tenant_id and the warehouse
+// (InventoryStock is keyed by (warehouse_id, variant_id) with composite
+// tenant FKs). W1/W2 below prove against real Postgres that (a) tenant A's own
+// supplier-return / purchase-reversal only ever touches tenant A's
 // InventoryStock row, never tenant B's otherwise-identical row, and (b) the
-// three `Insufficient ... stock` throw sites (defect 2) now carry
-// INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY through `toFriendlyError`
-// instead of falling through to the generic 409 CONFLICT fallback.
+// insufficient-stock refusal carries INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY
+// through `toFriendlyError` instead of falling through to the generic 409.
+// The full engine behaviour is proven by verify-inventory-engine.cjs.
 'use strict';
 
 const path = require('node:path');

@@ -64,8 +64,8 @@ function setup() {
   });
   prisma.$transaction = async (fn: any) => fn(prisma);
   // WP-T2/F4 audit: no test in this file reaches a raw-SQL call site in
-  // sales.service.ts (createSale's terminal lock, the record_inventory_movement
-  // stored-function calls, or createReturn's item lock) — every raw-SQL-gated
+  // sales.service.ts (createSale's terminal lock, the InventoryService statements,
+  // or createReturn's item lock) — every raw-SQL-gated
   // method here is exercised only via a rejection that fires from an earlier
   // ORM check. The `$queryRaw = async () => []` override this file used to
   // carry was therefore dead code re-declaring fakePrisma's old silent no-op;

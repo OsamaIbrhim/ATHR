@@ -44,8 +44,7 @@ describe('purchasing cost accounting contract', () => {
     expect(service).toContain("costType: 'purchase_receipt'");
     expect(service).toContain('purchase.receipt.posted');
     // No hand-written ledger or stock SQL in purchasing any more.
-    expect(service).not.toContain('record_inventory_movement');
-    expect(service).not.toContain('record_inventory_cost_movement');
+    expect(service).not.toMatch(/record_inventory_(?:cost_)?movement/);
     expect(service).not.toMatch(/UPDATE "InventoryStock"/);
   });
 

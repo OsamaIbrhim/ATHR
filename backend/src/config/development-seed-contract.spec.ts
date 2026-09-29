@@ -45,7 +45,7 @@ describe('development and CI seed contract', () => {
 
   it('writes opening stock through the single inventory writer and reconciles it', () => {
     expect(seed).toContain('inventory.apply(tx');
-    expect(seed).not.toContain('inventoryStock.create');
+    expect(seed).not.toMatch(/inventoryStock\.create/);
     expect(seed).not.toContain('inventoryMovement');
     expect(validator).toContain('does not reconcile with its ledger');
   });

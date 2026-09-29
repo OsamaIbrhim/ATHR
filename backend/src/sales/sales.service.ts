@@ -468,7 +468,6 @@ export class SalesService {
       );
 
       const saleItems = normalized.lines.map((line) => {
-        const variant = variantsById.get(line.variant_id)!;
         const quote = currentQuotes.get(line.variant_id)!;
         const unitPrice = money(line.unit_price);
         const unitTax = money(line.unit_tax);

@@ -1086,9 +1086,6 @@ export class PurchasingService {
         FROM "InventoryStock" record
         WHERE record."tenant_id" = ${context.tenantId}::uuid
         GROUP BY record."variant_id"
-      ),
-      stock AS (
-        SELECT "variant_id", "qty" FROM on_hand
       )
       SELECT
         variant."id" AS "variant_id",
@@ -1096,11 +1093,11 @@ export class PurchasingService {
         product."name_en" AS "product_name",
         variant."cost_price" AS "materialized_cost",
         latest."cost_after" AS "ledger_cost",
-        COALESCE(stock."qty", 0) AS "current_global_qty",
+        COALESCE(on_hand."qty", 0) AS "current_global_qty",
         (
           (
             latest."cost_after" IS NULL
-            AND COALESCE(stock."qty", 0) = 0
+            AND COALESCE(on_hand."qty", 0) = 0
           )
           OR latest."cost_after" = variant."cost_price"
         ) AS "reconciled"
@@ -1109,8 +1106,8 @@ export class PurchasingService {
         ON product."id" = variant."product_id"
       LEFT JOIN latest
         ON latest."variant_id" = variant."id"
-      LEFT JOIN stock
-        ON stock."variant_id" = variant."id"
+      LEFT JOIN on_hand
+        ON on_hand."variant_id" = variant."id"
       WHERE variant."tenant_id" = ${context.tenantId}::uuid
         AND product."tenant_id" = ${context.tenantId}::uuid
         AND (${variantId || null}::uuid IS NULL

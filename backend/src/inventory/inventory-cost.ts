@@ -1,12 +1,11 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { InventoryCostMovementType } from '@prisma/client';
+import { MAX_MONEY } from '../common/money';
 import type { StockLine } from './inventory.types';
 
 const ROUND = Prisma.Decimal.ROUND_HALF_UP;
 const ZERO = new Prisma.Decimal(0);
-/** Largest amount a Decimal(14,2) column holds. */
-export const MAX_VALUE = new Prisma.Decimal('999999999999.99');
 
 const round2 = (value: Prisma.Decimal) => value.toDecimalPlaces(2, ROUND);
 const round4 = (value: Prisma.Decimal) => value.toDecimalPlaces(4, ROUND);
@@ -90,7 +89,7 @@ export function planCostMovement(
 
   const valueBefore = round2(Prisma.Decimal.max(qtyBefore, ZERO).mul(avgBefore));
   const valueAfter = round2(Prisma.Decimal.max(qtyAfter, ZERO).mul(avgAfter));
-  if (valueBefore.gt(MAX_VALUE) || valueAfter.gt(MAX_VALUE) || movementValue.abs().gt(MAX_VALUE)) {
+  if (valueBefore.gt(MAX_MONEY) || valueAfter.gt(MAX_MONEY) || movementValue.abs().gt(MAX_MONEY)) {
     throw new BadRequestException(
       `Inventory value is outside the supported range for variant ${line.variantId}`,
     );

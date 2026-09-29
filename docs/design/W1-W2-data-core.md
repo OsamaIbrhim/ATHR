@@ -111,3 +111,13 @@ backend/src/catalog/presets/
 3. **W1c — الأداء:** cache الأسعار/الضرائب، تنظيف indexes، إعادة تصميم SyncChange.
 4. **W2a — الكتالوج:** ProductType/attributes/barcodes/label + seed + sync payload + تعديل الـPOS والـadmin للحد الأدنى.
 5. **W2b — التتبع والـpresets.**
+
+## حالة التنفيذ — W1b (as built)
+
+- **المواقع:** `Location` محذوف. `Warehouse.branch_id` (nullable = مركزي) + partial unique index `Warehouse_one_default_per_branch`. إنشاء فرع (`BranchesRepository.save`) ينشئ مخزنه الافتراضي في نفس الـtransaction. نوع النطاق `location` في `AccessScopeAssignment` ما زال بنفس الاسم (تغييره يمس الـJWT وكتالوج الصلاحيات) لكن `scope_ref_id` صار Branch id.
+- **`InventoryService.apply(tx, cmd)`** (`backend/src/inventory`) هو الكاتب الوحيد. statements ثابتة لأي عدد سطور: lock (`FOR UPDATE` مرتبة بـvariant) ← INSERT جماعي للـledger (`on_hand_after`) ← UPDATE جماعي للرصيد؛ +1 عند أول ظهور للصنف في المخزن (إنشاء الصفوف)، و+2 للأوامر ذات التكلفة (cost ledger + `ProductVariant.cost_price`). الـidempotency على مستوى الأمر: `unique (tenant_id, idempotency_key, variant_id)`، وتكرار نفس الأمر يرجع النتيجة الأولى، ومفتاح مستخدم لأمر مختلف يُرفض. أصناف `service`/`non_stock` تُتجاهل. `reconcile()` هو الفحص (رصيد ↔ SUM(ledger)) ولا يعمل في أي مسار ساخن.
+- **الخوارزمية:** `inventory-writer.ts` (SQL) و`inventory-cost.ts` (حساب المتوسط المرجح، دوال نقية عليها unit tests).
+- **التكلفة:** `InventoryStock.avg_cost` = المتوسط المرجح للمخزن. `InventoryCostMovement` هو سجل تغيّرها (الكمية قبل/بعد هي كمية المخزن نفسه وليست عالمية). `ProductVariant.cost_price` يعكس متوسط آخر حركة تكلفة (حد أدنى السعر وعرض الإدارة)، وتحويل المخزن ينقل التكلفة عبر `TransferItem.unit_cost` (لا تُعرض في الـAPI). سطر البيع يُختم بمتوسط مخزن الفرع.
+- **الـtriggers:** حُذفت دوال `record_*` والـtriggers التي تكتب الـledger. بقيت triggers منع التعديل، وأُعيد بناء trigger مزامنة المخزون (statement-level، فقط عند تغيّر الكمية، للمخزن الافتراضي للفرع).
+- **الكميات:** `Decimal(14,3)`؛ الدقة من `UnitOfMeasure.precision` عبر `common/quantity.ts` (صنف بدون وحدة = 0). الـAPI يعرض الكميات أرقامًا (`common/json-serialization.ts`) والمال/التكلفة نصوصًا كما كانا. المال `Decimal(14,2)` والتكلفة `Decimal(14,4)`.
+- **الحد المعروف:** الـPOS الحالي يرفض رصيدًا غير صحيح في `catalog-format.ts` (`Number.isInteger`)، فأي رصيد كسري على السيرفر يحتاج تعديل الـPOS قبل استخدامه.
