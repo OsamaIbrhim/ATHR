@@ -73,6 +73,8 @@ model User {
   closed_seller_periods      SellerCommissionPeriod[]    @relation("SellerPeriodClosedBy")
   seller_period_rows         SellerCommissionPeriodRow[] @relation("SellerPeriodSeller")
   memberships                Membership[]
+  // ADR-0006: operates the platform console only; grants no tenant access.
+  is_platform_admin          Boolean                     @default(false)
 }
 
 model RefreshToken {
@@ -92,24 +94,9 @@ model RefreshToken {
 
 // WP-005 Phase B (MT-MIG-001/002/003): Tenant/Organization/LegalEntity/Location/
 // Warehouse/Membership foundation. See docs/adr/0002-0006.
-enum TenantAccessMode {
-  provisioning
-  internal_demo
-  trial
-  active
-  payment_grace
-  read_only
-  restricted
-  suspended
-  closure_requested
-  closed
-  deletion_pending
-}
-
 model Tenant {
   id                    String               @id @default(uuid()) @db.Uuid
   name                  String
-  access_mode           TenantAccessMode     @default(active)
   default_locale        String               @default("ar")
   default_timezone      String               @default("Africa/Cairo")
   default_currency      String               @default("EGP")
@@ -123,6 +110,8 @@ model Tenant {
   refresh_tokens        RefreshToken[]
   invitations           Invitation[]
   support_access_grants SupportAccessGrant[]
+  subscription          Subscription?
+  subscription_events   SubscriptionEvent[]
 }
 
 model OrganizationProfile {
@@ -130,6 +119,8 @@ model OrganizationProfile {
   tenant_id    String   @unique @db.Uuid
   tenant       Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   display_name String
+  // Chosen at signup; used later to pick a catalog preset.
+  business_type String?
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
 }
@@ -2158,4 +2149,73 @@ model BundleComponent {
   @@unique([tenant_id, id])
   @@index([tenant_id])
   @@index([tenant_id, bundle_id])
+}
+
+// Plans are data: prices, limits and features are edited from the platform
+// console. Feature/limit keys come from src/entitlements/catalog.ts.
+model Plan {
+  id            String         @id @default(uuid()) @db.Uuid
+  code          String         @unique
+  name_ar       String
+  name_en       String
+  description   String?
+  // Display only -- billing happens outside the system.
+  price_monthly Decimal        @db.Decimal(14, 2)
+  currency      String         @default("EGP")
+  // { branches: 3, terminals: 6, ... }; a missing/null key means unlimited.
+  limits        Json           @default("{}")
+  features      String[]       @default([])
+  is_public     Boolean        @default(true)
+  sort_order    Int            @default(0)
+  is_active     Boolean        @default(true)
+  created_at    DateTime       @default(now())
+  updated_at    DateTime       @updatedAt
+  subscriptions Subscription[]
+}
+
+enum SubscriptionStatus {
+  trial
+  active
+  expired
+  suspended
+  cancelled
+}
+
+// One current subscription per tenant.
+model Subscription {
+  id                 String             @id @default(uuid()) @db.Uuid
+  tenant_id          String             @unique @db.Uuid
+  tenant             Tenant             @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
+  plan_id            String             @db.Uuid
+  plan               Plan               @relation(fields: [plan_id], references: [id], onDelete: Restrict)
+  status             SubscriptionStatus @default(trial)
+  // When `status` last changed: the moment suspension/expiry began.
+  status_changed_at  DateTime           @default(now())
+  trial_ends_at      DateTime?
+  current_period_end DateTime?
+  notes              String?
+  updated_by         String?            @db.Uuid
+  created_at         DateTime           @default(now())
+  updated_at         DateTime           @updatedAt
+
+  @@index([plan_id])
+}
+
+// Audit log of every subscription change made by the platform owner or signup.
+model SubscriptionEvent {
+  id              String              @id @default(uuid()) @db.Uuid
+  tenant_id       String              @db.Uuid
+  tenant          Tenant              @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
+  action          String
+  from_plan_code  String?
+  to_plan_code    String?
+  from_status     SubscriptionStatus?
+  to_status       SubscriptionStatus?
+  from_period_end DateTime?
+  to_period_end   DateTime?
+  actor_user_id   String?             @db.Uuid
+  note            String?
+  created_at      DateTime            @default(now())
+
+  @@index([tenant_id, created_at])
 }

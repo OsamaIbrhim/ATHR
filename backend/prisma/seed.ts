@@ -1,5 +1,6 @@
 import { MembershipRole, PrismaClient } from '@prisma/client';
 import * as bcryptjs from 'bcryptjs';
+import { ensureActiveSubscription, seedPlans } from './seed/plans';
 
 const prisma = new PrismaClient();
 let randomState = 0x1a2b3c4d;
@@ -57,6 +58,10 @@ async function main() {
     (await prisma.tenant.findFirst({ where: { name: 'Initial ATHR Demo Tenant' } })) ??
     (await prisma.tenant.create({ data: { name: 'Initial ATHR Demo Tenant' } }));
   const tenant_id = tenant.id;
+
+  // Plans are data; the demo tenant runs on an active Business subscription.
+  await seedPlans(prisma);
+  await ensureActiveSubscription(prisma, tenant_id, 'business');
 
   const password_hash = await bcryptjs.hash('Bold1234', 10);
 
@@ -137,6 +142,17 @@ async function main() {
   const cashier = await createStaff({ name: 'كاشير', phone: '+200100000002', email: 'cashier@bold.eg' }, 'cashier', { branch_id: b1.id });
   const warehouse = await createStaff({ name: 'أمين مخزن', phone: '+200100000003', email: 'warehouse@bold.eg' }, 'warehouse_manager', 'all');
   const seller = await createStaff({ name: 'بائع', phone: '+200100000004', email: 'seller@bold.eg' }, 'seller', { branch_id: b1.id });
+
+  // Platform console operator (ADR-0006): no Membership, so no tenant data access.
+  await prisma.user.create({
+    data: {
+      name: 'Platform Admin',
+      phone: '+200100000099',
+      email: 'platform@athr.local',
+      password_hash,
+      is_platform_admin: true,
+    },
+  });
 
   // Suppliers
   const s1 = await prisma.supplier.create({ data: { tenant_id, name: 'محمد', company_name: 'Mohamed Fabrics Co.', phone: '01222222222', alias_names: ['Mohamed Fabrics Co.', 'Mohamed Trading'] }});

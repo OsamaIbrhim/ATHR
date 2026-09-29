@@ -263,6 +263,7 @@ All development seed users use the password `Bold1234`:
 | Branch manager | `+200100000001` |
 | Cashier | `+200100000002` |
 | Warehouse manager | `+200100000003` |
+| Platform admin (console only, no tenant data) | `+200100000099` |
 
 These credentials are for local development only. Replace or remove all seed
 accounts before using a persistent environment.
