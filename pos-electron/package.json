@@ -76,12 +76,11 @@
     },
     "files": [
       "dist/**",
-      "dist-electron/**",
-      "node_modules/sql.js/dist/sql-wasm.wasm"
+      "dist-electron/**"
     ],
     "extraResources": [
       {
-        "from": "node_modules/sql.js/dist/sql-wasm.wasm",
+        "from": "../node_modules/sql.js/dist/sql-wasm.wasm",
         "to": "sql-wasm.wasm"
       },
       {

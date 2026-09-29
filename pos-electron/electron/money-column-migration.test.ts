@@ -11,7 +11,7 @@ let SQL: any
 
 beforeAll(async () => {
   SQL = await initSqlJs({
-    locateFile: (file: string) => path.join(__dirname, '../node_modules/sql.js/dist', file),
+    locateFile: (file: string) => path.join(path.dirname(require.resolve('sql.js')), file),
   })
 })
 

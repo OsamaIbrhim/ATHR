@@ -831,7 +831,7 @@ function requireFullCatalogRefresh() {
 async function initDb() {
   const wasmPath = app.isPackaged
     ? path.join(process.resourcesPath, 'sql-wasm.wasm')
-    : path.join(__dirname, '../node_modules/sql.js/dist/sql-wasm.wasm')
+    : require.resolve('sql.js/dist/sql-wasm.wasm')
   SQL = await initSqlJs({ locateFile: () => wasmPath })
   const file = dbPath()
   db = fs.existsSync(file)
