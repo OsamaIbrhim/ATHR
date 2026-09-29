@@ -20,7 +20,7 @@ export default function BarcodeList({ barcodes, onChange, precision }: {
             value={barcode.code} onChange={event => update(index, { code: event.target.value })} />
           <div className="flex items-center gap-1 text-xs text-gray-500">
             ×
-            <input className="input-sm w-16" type="number" min="0" step={packQtyStep(precision)} aria-label="كمية العبوة"
+            <input className="input-sm w-20" type="number" min="0" step={packQtyStep(precision)} aria-label="كمية العبوة"
               title="عدد الوحدات التي يضيفها مسح الباركود مرة واحدة"
               value={barcode.kind === 'scale_plu' ? '1' : barcode.pack_qty}
               disabled={barcode.kind === 'scale_plu'}

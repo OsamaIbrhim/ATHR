@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { clothingType } from './fixtures'
-import { cartesian, generateMatrix, MAX_VARIANTS, suggestSku } from './variant-matrix'
+import { cartesian, generateMatrix, MAX_VARIANTS, rebaseSkus, suggestSku } from './variant-matrix'
 import { variantLabel, variantTitle } from './variant-label'
 
 const defs = clothingType.attributes
@@ -57,6 +57,14 @@ describe('matrix generation', () => {
     const result = generateMatrix([defs[0]], { size: many }, [])
     expect(result.rows).toHaveLength(MAX_VARIANTS)
     expect(result.truncated).toBe(true)
+  })
+
+  it('re-bases suggested skus but keeps typed and saved ones', () => {
+    const rows = generateMatrix(defs, { size: ['S', 'M'], color: ['red'] }, []).rows
+    rows[1] = { ...rows[1], sku: 'MINE' }
+    const next = rebaseSkus(rows, '', 'TS', defs)
+    expect(next.map(row => row.sku)).toEqual(['TS-S-red', 'MINE'])
+    expect(rebaseSkus([{ ...rows[0], id: 'v1' }], '', 'TS', defs)[0].sku).toBe('S-red')
   })
 
   it('suggests a sku from base and axis values', () => {

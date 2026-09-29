@@ -8,7 +8,7 @@ import { axisAttributes, emptyVariantRow, productLevelAttributes, type ProductFo
 import { buildCreatePayload } from '@/lib/catalog/product-payload'
 import { planProductEdit, stateFromProduct, type ProductDetail } from '@/lib/catalog/product-plan'
 import { applyPlan } from '@/lib/catalog/product-save'
-import { fillSkus, generateMatrix } from '@/lib/catalog/variant-matrix'
+import { rebaseSkus, generateMatrix } from '@/lib/catalog/variant-matrix'
 import AxisPicker from './AxisPicker'
 import TypeAttributeFields from './TypeAttributeFields'
 import VariantMatrix from './VariantMatrix'
@@ -112,7 +112,7 @@ export default function ProductForm({ product, onSaved }: { product?: ProductDet
               <label className="flex items-center gap-2 text-xs text-gray-600">
                 بادئة SKU
                 <input className="input-sm w-32 font-mono" dir="ltr" value={skuBase}
-                  onChange={e => { setSkuBase(e.target.value); setState(c => ({ ...c, variants: fillSkus(c.variants, e.target.value, definitions) })) }} />
+                  onChange={e => { const next = e.target.value; setSkuBase(next); setState(c => ({ ...c, variants: rebaseSkus(c.variants, skuBase, next, definitions) })) }} />
               </label>
             )}
           </div>

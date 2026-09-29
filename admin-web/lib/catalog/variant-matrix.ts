@@ -77,13 +77,20 @@ export function generateMatrix(
   return { rows: [...rows, ...persisted].slice(0, MAX_VARIANTS), truncated: combos.length > MAX_VARIANTS }
 }
 
-/** Fills empty SKUs from a new base (never overwrites what the user typed). */
-export function fillSkus(
+/**
+ * Re-bases the SKUs that were auto-suggested from the old base (never touches
+ * a SKU the user typed or a row that already exists on the server).
+ */
+export function rebaseSkus(
   rows: readonly VariantRow[],
-  base: string,
+  oldBase: string,
+  newBase: string,
   definitions: readonly AttributeDefinition[],
 ): VariantRow[] {
-  return rows.map(row => row.sku || row.id ? row : { ...row, sku: suggestSku(base, row.attributes, definitions) })
+  return rows.map(row =>
+    row.id || (row.sku && row.sku !== suggestSku(oldBase, row.attributes, definitions))
+      ? row
+      : { ...row, sku: suggestSku(newBase, row.attributes, definitions) })
 }
 
 export const canAddBarcode = (row: VariantRow) => row.barcodes.length < MAX_BARCODES_PER_VARIANT
