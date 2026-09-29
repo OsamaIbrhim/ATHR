@@ -36,7 +36,6 @@ model Branch {
 
   @@unique([tenant_id, code])
   @@unique([tenant_id, id])
-  @@index([tenant_id])
 }
 
 model User {
@@ -155,7 +154,6 @@ model Warehouse {
   inventory_cost_movements InventoryCostMovement[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([branch_id])
 }
 
@@ -249,7 +247,6 @@ model Invitation {
   created_at             DateTime         @default(now())
   updated_at             DateTime         @updatedAt
 
-  @@index([tenant_id])
   @@index([tenant_id, email])
 }
 
@@ -304,7 +301,6 @@ model SupportAccessGrant {
   reason                  String
   created_at              DateTime          @default(now())
 
-  @@index([tenant_id])
   @@index([tenant_id, expires_at])
 }
 
@@ -348,7 +344,6 @@ model SellerCommissionPeriod {
   @@unique([tenant_id, period_start, period_end_exclusive], map: "SellerCommissionPeriod_tenant_period_dates_key")
   @@unique([tenant_id, id])
   @@index([closed_at(sort: Desc)])
-  @@index([tenant_id])
 }
 
 model SellerCommissionPeriodRow {
@@ -389,7 +384,6 @@ model Supplier {
   tenant_id        String            @db.Uuid
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
 }
 
 model Category {
@@ -401,7 +395,6 @@ model Category {
   tenant_id String    @db.Uuid
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
 }
 
 // WP-008 Phase A (BR-CLS-103): Brand is an independent, archivable entity —
@@ -420,7 +413,6 @@ model Brand {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, name])
-  @@index([tenant_id])
 }
 
 model Product {
@@ -558,7 +550,6 @@ model UnitOfMeasure {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, code])
-  @@index([tenant_id])
 }
 
 enum UomConversionStatus {
@@ -591,7 +582,6 @@ model UomConversion {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, from_uom_id, to_uom_id, version])
-  @@index([tenant_id])
   @@index([from_uom_id])
   @@index([to_uom_id])
 }
@@ -616,7 +606,6 @@ model Assortment {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, branch_id, variant_id])
-  @@index([tenant_id])
   @@index([branch_id])
   @@index([variant_id])
 }
@@ -707,7 +696,6 @@ model PriceBook {
   entries        PriceBookEntry[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, status])
 }
 
@@ -783,7 +771,6 @@ model PriceBookEntry {
   created_at       DateTime            @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, price_book_id, scope_type, scope_id, status])
 }
 
@@ -803,7 +790,6 @@ model PriceOverridePolicy {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, role])
-  @@index([tenant_id])
 }
 
 // WP-008 Phase B (BR-OVP-100): a manual override is a distinct, audited
@@ -832,7 +818,6 @@ model PriceOverride {
   created_at     DateTime       @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, variant_id])
 }
 
@@ -870,7 +855,6 @@ model Discount {
   created_at  DateTime       @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, variant_id])
 }
 
@@ -939,7 +923,6 @@ model TaxCategory {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, code])
-  @@index([tenant_id])
   @@index([tenant_id, is_active])
 }
 
@@ -998,7 +981,6 @@ model TaxCode {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, code, version])
-  @@index([tenant_id])
   @@index([tenant_id, status])
   @@index([tenant_id, tax_category_id, status])
 }
@@ -1034,7 +1016,6 @@ model TaxExemption {
   snapshots          SalesTaxSnapshot[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, customer_id, status])
 }
 
@@ -1087,7 +1068,6 @@ model SalesTaxSnapshot {
   created_at               DateTime          @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, sales_invoice_id])
   @@index([sales_invoice_item_id])
   @@index([tenant_id, tax_code_id])
@@ -1109,7 +1089,6 @@ model InventoryStock {
 
   @@id([warehouse_id, variant_id])
   @@index([tenant_id, variant_id])
-  @@index([tenant_id])
 }
 
 enum InventoryMovementType {
@@ -1159,7 +1138,6 @@ model InventoryMovement {
   @@index([movement_type, occurred_at])
   @@index([recorded_at])
   @@index([created_by, occurred_at])
-  @@index([tenant_id])
 }
 
 enum InventoryCostMovementType {
@@ -1218,7 +1196,6 @@ model InventoryCostMovement {
   @@index([supplier_return_id, sequence], map: "InventoryCostMovement_supplier_return_sequence_idx")
   @@index([supplier_return_item_id], map: "InventoryCostMovement_supplier_return_item_idx")
   @@index([created_by, occurred_at], map: "InventoryCostMovement_created_by_occurred_at_idx")
-  @@index([tenant_id])
 }
 
 model Customer {
@@ -1239,7 +1216,6 @@ model Customer {
   @@unique([tenant_id, phone])
   @@unique([tenant_id, id])
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Customer_name_trgm_idx")
-  @@index([tenant_id])
 }
 
 model SalesInvoice {
@@ -1288,8 +1264,8 @@ model SalesInvoice {
   @@unique([tenant_id, invoice_number])
   @@unique([tenant_id, id])
   @@unique([terminal_id, terminal_sequence])
-  @@index([branch_id, occurred_at])
-  @@index([occurred_at(sort: Desc), id(sort: Desc)])
+  @@index([tenant_id, branch_id, occurred_at])
+  @@index([tenant_id, occurred_at(sort: Desc), id(sort: Desc)])
   @@index([branch_id, payment_method, occurred_at])
   @@index([branch_id, status, occurred_at])
   @@index([terminal_id, occurred_at])
@@ -1299,7 +1275,6 @@ model SalesInvoice {
   @@index([customer_id, occurred_at(sort: Desc), id(sort: Desc)])
   @@index([received_at])
   @@index([invoice_number(ops: raw("gin_trgm_ops"))], type: Gin, map: "SalesInvoice_invoice_number_trgm_idx")
-  @@index([tenant_id])
 }
 
 model PosTerminal {
@@ -1329,7 +1304,6 @@ model PosTerminal {
   @@unique([tenant_id, terminal_code])
   @@unique([tenant_id, id])
   @@index([branch_id, last_seen_at])
-  @@index([tenant_id])
 }
 
 model PosTerminalEnrollment {
@@ -1383,7 +1357,6 @@ model SalesInvoiceItem {
 
   @@unique([tenant_id, id])
   @@index([sales_invoice_id])
-  @@index([tenant_id])
 }
 
 model Return {
@@ -1413,7 +1386,7 @@ model Return {
   @@unique([tenant_id, id])
   @@index([original_invoice_id, created_at])
   @@index([shift_id, created_at])
-  @@index([tenant_id])
+  @@index([tenant_id, created_at])
 }
 
 enum ReturnStatus {
@@ -1436,7 +1409,7 @@ model ReturnItem {
   tenant_id             String           @db.Uuid
 
   @@index([sales_invoice_item_id])
-  @@index([tenant_id])
+  @@index([tenant_id, return_id])
 }
 
 enum PurchaseInvoiceStatus {
@@ -1481,10 +1454,10 @@ model PurchaseInvoice {
   @@unique([tenant_id, idempotency_key])
   @@unique([tenant_id, reversal_idempotency_key])
   @@unique([tenant_id, id])
+  @@index([tenant_id, received_at])
   @@index([branch_id, received_at], map: "PurchaseInvoice_branch_received_at_idx")
   @@index([supplier_id, invoice_date], map: "PurchaseInvoice_supplier_invoice_date_idx")
   @@index([status, received_at], map: "PurchaseInvoice_status_received_at_idx")
-  @@index([tenant_id])
 }
 
 model PurchaseInvoiceItem {
@@ -1506,7 +1479,6 @@ model PurchaseInvoiceItem {
   @@unique([tenant_id, id])
   @@index([purchase_invoice_id])
   @@index([variant_id])
-  @@index([tenant_id])
 }
 
 enum SupplierReturnStatus {
@@ -1543,7 +1515,6 @@ model SupplierReturn {
   @@index([purchase_invoice_id, occurred_at])
   @@index([supplier_id, occurred_at])
   @@index([branch_id, occurred_at])
-  @@index([tenant_id])
 }
 
 model SupplierReturnItem {
@@ -1567,7 +1538,6 @@ model SupplierReturnItem {
   @@index([supplier_return_id])
   @@index([purchase_invoice_item_id])
   @@index([variant_id])
-  @@index([tenant_id])
 }
 
 model Transfer {
@@ -1601,10 +1571,10 @@ model Transfer {
 
   @@unique([tenant_id, transfer_number])
   @@unique([tenant_id, id])
+  @@index([tenant_id, created_at])
   @@index([from_branch_id, created_at])
   @@index([to_branch_id, created_at])
   @@index([status, updated_at], map: "Transfer_status_updated_at_idx")
-  @@index([tenant_id])
 }
 
 enum TransferStatus {
@@ -1634,7 +1604,6 @@ model TransferItem {
 
   @@unique([transfer_id, variant_id], map: "TransferItem_transfer_id_variant_id_key")
   @@unique([tenant_id, id])
-  @@index([tenant_id])
 }
 
 enum TransferCommandType {
@@ -1658,7 +1627,6 @@ model TransferCommand {
 
   @@unique([tenant_id, idempotency_key])
   @@index([transfer_id, created_at])
-  @@index([tenant_id])
 }
 
 enum TransferTransitMovementType {
@@ -1693,7 +1661,6 @@ model TransferTransitMovement {
   @@index([transfer_id, sequence], map: "TransferTransitMovement_transfer_sequence_idx")
   @@index([transfer_item_id, sequence], map: "TransferTransitMovement_item_sequence_idx")
   @@index([variant_id, sequence], map: "TransferTransitMovement_variant_sequence_idx")
-  @@index([tenant_id])
 }
 
 model OfferSuggestion {
@@ -1713,7 +1680,7 @@ model OfferSuggestion {
   tenant_id         String         @db.Uuid
 
   @@index([branch_id, status, created_at])
-  @@index([tenant_id])
+  @@index([tenant_id, status, created_at(sort: Desc)])
 }
 
 model AuditLog {
@@ -1726,7 +1693,7 @@ model AuditLog {
   created_at DateTime @default(now())
   tenant_id  String   @db.Uuid
 
-  @@index([tenant_id])
+  @@index([tenant_id, created_at])
 }
 
 model Shift {
@@ -1751,7 +1718,7 @@ model Shift {
 
   @@unique([tenant_id, id])
   @@index([branch_id, opened_at])
-  @@index([tenant_id])
+  @@index([tenant_id, opened_at(sort: Desc)])
 }
 
 // ---------------------------------------------------------------------------
@@ -1951,7 +1918,6 @@ model Promotion {
   coupons        Coupon[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, status])
   @@index([tenant_id, status, priority])
   @@index([tenant_id, scope_type, scope_id])
@@ -2007,7 +1973,6 @@ model Coupon {
   // coupon. Proven against real Postgres in `verify-promotion-behaviour.cjs`
   // -- `fakePrisma` enforces no unique constraint (backlog item F7c).
   @@unique([tenant_id, code_normalized])
-  @@index([tenant_id])
   @@index([tenant_id, promotion_id])
 }
 
@@ -2032,7 +1997,6 @@ model CouponRedemption {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, coupon_id, idempotency_key])
-  @@index([tenant_id])
   @@index([tenant_id, coupon_id])
 }
 
@@ -2092,7 +2056,6 @@ model Bundle {
   components         BundleComponent[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, status])
 }
 
@@ -2112,7 +2075,6 @@ model BundleComponent {
   created_at  DateTime        @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, bundle_id])
 }
 
