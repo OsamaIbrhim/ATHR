@@ -29,14 +29,14 @@ export class AccessScopeRepository {
 
   async findById(context: TenantScope, id: string): Promise<AccessScopeAssignment | null> {
     return this.prisma.accessScopeAssignment.findFirst({
-      where: { id, membership: { tenantId: context.tenantId } },
+      where: { id, membership: { tenant_id: context.tenantId } },
     });
   }
 
   async list(context: TenantScope, filters: AccessScopeAssignmentFilters): Promise<AccessScopeAssignment[]> {
     return this.prisma.accessScopeAssignment.findMany({
       where: {
-        membership: { tenantId: context.tenantId },
+        membership: { tenant_id: context.tenantId },
         ...(filters.membershipId ? { membership_id: filters.membershipId } : {}),
         ...(filters.effectiveOnly ? { effective_to: null } : {}),
       },
@@ -46,7 +46,7 @@ export class AccessScopeRepository {
 
   async save(context: TenantScope, input: CreateAccessScopeAssignmentInput): Promise<AccessScopeAssignment> {
     const membership = await this.prisma.membership.findFirst({
-      where: { id: input.membershipId, tenantId: context.tenantId },
+      where: { id: input.membershipId, tenant_id: context.tenantId },
     });
     if (!membership) {
       throw new AthrDomainError('MEMBERSHIP_NOT_FOUND', `Membership ${input.membershipId} not found in this Tenant.`);

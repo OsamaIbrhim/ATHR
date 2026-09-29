@@ -4,23 +4,13 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { getJwtSecret } from './jwt.config';
 import { PrismaService } from '../prisma/prisma.service';
 import { PermissionPolicyService } from '../identity/permission-policy.service';
-import { IdentityClaims, resolveIdentityClaims } from './identity-claims';
-import { Capability, effectiveCapabilities } from './permissions';
-
-// WP-006 §2 item 6: `IdentityClaims` fields are additive — every field that
-// existed before this WP (sub/role/branch_id/capabilities) is unchanged;
-// old-shape consumers that only read those keep working identically.
-type EffectiveUser = {
-  sub: string;
-  role: string;
-  branch_id: string | null;
-  capabilities: Capability[];
-} & IdentityClaims;
+import { resolveIdentityClaims } from './identity-claims';
+import { AuthenticatedUser } from './authenticated-user';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  private readonly cache = new Map<string, { expiresAt: number; user: EffectiveUser }>();
-  private readonly inFlight = new Map<string, Promise<EffectiveUser>>();
+  private readonly cache = new Map<string, { expiresAt: number; user: AuthenticatedUser }>();
+  private readonly inFlight = new Map<string, Promise<AuthenticatedUser>>();
 
   constructor(private prisma: PrismaService, private permissionPolicy: PermissionPolicyService) {
     super({
@@ -38,7 +28,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     let lookup = this.inFlight.get(key);
     if (!lookup) {
-      lookup = this.loadEffectiveUser(payload.sub, tenantId);
+      lookup = this.loadAuthenticatedUser(payload.sub, tenantId);
       this.inFlight.set(key, lookup);
     }
     try {
@@ -54,24 +44,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
   }
 
-  private async loadEffectiveUser(userId: string, tenantId: string | null): Promise<EffectiveUser> {
+  private async loadAuthenticatedUser(userId: string, tenantId: string | null): Promise<AuthenticatedUser> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true, role: true, branch_id: true, is_active: true,
-        granted_capabilities: true, revoked_capabilities: true,
-      },
+      select: { id: true, is_active: true },
     });
     if (!user?.is_active) throw new UnauthorizedException();
     // The very short cache coalesces bursts from one logged-in user while role,
-    // branch, disable, and revocation changes still take effect within 1 second.
-    const identityClaims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id, tenantId);
-    return {
-      sub: user.id,
-      role: user.role,
-      branch_id: user.branch_id,
-      capabilities: effectiveCapabilities(user),
-      ...identityClaims,
-    };
+    // scope, permission, disable, and revocation changes still take effect
+    // within 1 second.
+    const claims = await resolveIdentityClaims(this.prisma, this.permissionPolicy, user.id, tenantId);
+    return { sub: user.id, ...claims };
   }
 }

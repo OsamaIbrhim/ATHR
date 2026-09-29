@@ -18,7 +18,7 @@ import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { createHash, randomUUID } from 'crypto';
-import { assertBranchAccess } from '../auth/branch-access';
+import { assertBranchAccess, canAccessAllBranches, hasBranchAccess, toScopeSet } from '../auth/branch-access';
 import { ListSalesDto } from './dto/list-sales.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { ListReturnsDto } from './dto/list-returns.dto';
@@ -127,16 +127,16 @@ export class SalesService {
       include: {
         items: { include: { variant: { include: { product: true } }, return_items: { where: { return_record: { status: 'completed' } } } } },
         branch: true, customer: true,
-        cashier: { select: { id: true, name: true, role: true } },
-        seller: { select: { id: true, name: true, role: true } },
-        receiver: { select: { id: true, name: true, role: true } },
+        cashier: { select: { id: true, name: true } },
+        seller: { select: { id: true, name: true } },
+        receiver: { select: { id: true, name: true } },
         shift: true,
         terminal: { select: { id: true, terminal_code: true, name: true } },
         original_returns: { include: { items: true }, orderBy: { created_at: 'desc' } },
       },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    assertBranchAccess(actor, invoice.branch_id, ['owner']);
+    assertBranchAccess(actor, invoice.branch_id);
     // BR-CST-101 / Matrix §17 §51: this row discloses exact cost four ways —
     // `items[].unit_cost` (cost at the moment of sale), the joined
     // `items[].variant.cost_price` (cost today), and the same sale-line cost
@@ -367,20 +367,14 @@ export class SalesService {
       const [branch, shift, originCashier, seller, sequenceOwner] = await Promise.all([
         tx.branch.findFirst({ where: { id: dto.branch_id, tenant_id: context.tenantId } }),
         tx.shift.findFirst({ where: { id: dto.shift_id, tenant_id: context.tenantId } }),
-        // Identities are scoped through Membership — `User` has no tenant_id.
-        tx.user.findFirst({
-          where: {
-            id: dto.origin_cashier_id,
-            memberships: { some: { tenantId: context.tenantId } },
-          },
-          select: { id: true, branch_id: true, name: true },
+        // Staff are resolved through their Membership — `User` has no tenant data.
+        tx.membership.findFirst({
+          where: { user_id: dto.origin_cashier_id, tenant_id: context.tenantId },
+          select: { user_id: true, role: true, access_scope_assignments: true },
         }),
-        tx.user.findFirst({
-          where: {
-            id: dto.seller_id,
-            memberships: { some: { tenantId: context.tenantId } },
-          },
-          select: { id: true, branch_id: true, role: true, name: true },
+        tx.membership.findFirst({
+          where: { user_id: dto.seller_id, tenant_id: context.tenantId },
+          select: { user_id: true, role: true, access_scope_assignments: true },
         }),
         tx.salesInvoice.findFirst({
           where: {
@@ -392,15 +386,14 @@ export class SalesService {
         }),
       ]);
       if (!branch) throw new NotFoundException('Branch not found');
-      const linkedCashier =
-        originCashier?.branch_id === dto.branch_id ? originCashier : null;
+      const worksInBranch = (m: typeof originCashier) =>
+        !!m && hasBranchAccess({ scope_set: toScopeSet(m.access_scope_assignments) }, dto.branch_id);
+      const linkedCashier = originCashier && worksInBranch(originCashier) ? { id: originCashier.user_id } : null;
       if (!linkedCashier) {
         warningCodes.add('CASHIER_REFERENCE_MISSING');
       }
       const linkedSeller =
-        seller?.branch_id === dto.branch_id && seller.role === 'seller'
-          ? seller
-          : null;
+        seller && seller.role === 'seller' && worksInBranch(seller) ? { id: seller.user_id } : null;
       if (!linkedSeller) {
         warningCodes.add('SELLER_REFERENCE_MISSING');
       }
@@ -779,12 +772,13 @@ export class SalesService {
         include: { items: true },
       });
       if (!original) throw new NotFoundException('Original invoice not found');
-      if (actor.role !== 'owner' && actor.branch_id !== original.branch_id) {
+      if (!hasBranchAccess(actor, original.branch_id)) {
         throw new ForbiddenException('You cannot return a sale from another branch');
       }
 
       let shiftId: string | null = null;
-      if (actor.role !== 'owner') {
+      // A tenant-wide actor (owner) may return without a till shift.
+      if (!canAccessAllBranches(actor)) {
         const currentShift = await tx.shift.findFirst({
           where: {
             tenant_id: context.tenantId, branch_id: original.branch_id, status: 'open' },

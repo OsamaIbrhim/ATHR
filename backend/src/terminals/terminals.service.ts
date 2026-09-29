@@ -16,7 +16,7 @@ import {
   TerminalHeartbeatDto,
   UpdateTerminalDto,
 } from './dto/terminal.dto';
-import { assertBranchAccess } from '../auth/branch-access';
+import { assertBranchAccess, hasBranchAccess, primaryBranchId, resolveBranchScope } from '../auth/branch-access';
 import { TerminalsRepository } from './terminals.repository';
 import type { TenantContext } from '../identity/tenant-context.type';
 
@@ -32,9 +32,9 @@ export class TerminalsService {
     dto: CreateTerminalEnrollmentDto,
     actor: AuthenticatedUser,
   ) {
-    const branchId = actor.role === 'owner' ? dto.branch_id || actor.branch_id : actor.branch_id;
+    const branchId = dto.branch_id || primaryBranchId(actor);
     if (!branchId) throw new BadRequestException('branch_id is required for terminal enrollment');
-    if (actor.role !== 'owner' && dto.branch_id && dto.branch_id !== actor.branch_id) {
+    if (dto.branch_id && !hasBranchAccess(actor, dto.branch_id)) {
       throw new ForbiddenException('You cannot enroll a terminal for another branch');
     }
     // Previously any active branch id was accepted, so an operator could mint
@@ -147,14 +147,13 @@ export class TerminalsService {
     deviceToken: string | undefined,
     actor: AuthenticatedUser,
   ) {
-    if (actor.role !== 'branch_manager') {
-      throw new ForbiddenException('Only a branch manager can decommission this POS terminal');
-    }
-
-    if (!actor.branch_id) throw new ForbiddenException('POS manager must be linked to a branch');
+    // `terminal.retire` is enforced by the route; the manager must also be
+    // scoped to a branch, and only that branch's terminal can be retired here.
+    const branchId = primaryBranchId(actor);
+    if (!branchId) throw new ForbiddenException('POS manager must be linked to a branch');
     const existing = await this.repository.findByDeviceId(context, dto.device_id);
     if (!existing) throw new UnauthorizedException('This POS terminal must be enrolled before use');
-    if (existing.branch_id !== actor.branch_id) {
+    if (existing.branch_id !== branchId) {
       throw new ConflictException('This POS terminal is registered to another branch');
     }
     if (existing.terminal_code !== dto.terminal_code.trim().toUpperCase()) {
@@ -214,7 +213,7 @@ export class TerminalsService {
   }
 
   async authenticate(deviceId: string | undefined, deviceToken: string | undefined, actor: AuthenticatedUser) {
-    if (!actor.branch_id) throw new ForbiddenException('POS user must be linked to a branch');
+    if (!primaryBranchId(actor)) throw new ForbiddenException('POS user must be linked to a branch');
     const existing = await this.authenticateDevice(deviceId, deviceToken);
     // WP-007 Phase C (§C.3.3): every sync/offline handshake through this
     // method (pull, heartbeat, return, invoice lookup, offline-context issue,
@@ -226,7 +225,7 @@ export class TerminalsService {
     if (existing.tenant_id !== actor.tenant_id) {
       throw new ConflictException('This POS terminal is registered to another branch');
     }
-    if (existing.branch_id !== actor.branch_id) {
+    if (!hasBranchAccess(actor, existing.branch_id)) {
       throw new ConflictException('This POS terminal is registered to another branch');
     }
     return existing;
@@ -246,10 +245,7 @@ export class TerminalsService {
   }
 
   async list(context: TenantContext, actor: AuthenticatedUser) {
-    const terminals = await this.repository.list(
-      context,
-      actor.role === 'owner' ? undefined : actor.branch_id || undefined,
-    );
+    const terminals = await this.repository.list(context, resolveBranchScope(actor));
     const now = Date.now();
     const onlineThreshold = Number(process.env.POS_ONLINE_THRESHOLD_MS || 90000);
     return {
@@ -272,7 +268,7 @@ export class TerminalsService {
   ) {
     const terminal = await this.repository.findById(context, id);
     if (!terminal) throw new NotFoundException('POS terminal not found');
-    assertBranchAccess(actor, terminal.branch_id, ['owner']);
+    assertBranchAccess(actor, terminal.branch_id);
     return this.repository.update(context, id, {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
         ...(dto.revoked !== undefined ? { is_revoked: dto.revoked } : {}),

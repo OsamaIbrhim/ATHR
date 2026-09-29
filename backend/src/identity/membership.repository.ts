@@ -10,7 +10,7 @@ export interface MembershipFilters {
 }
 
 export interface CreateMembershipInput {
-  readonly identityId: string;
+  readonly userId: string;
   readonly role: MembershipRole;
   readonly status?: MembershipStatus;
 }
@@ -25,13 +25,13 @@ export class MembershipRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async findById(context: TenantScope, id: string): Promise<Membership | null> {
-    return this.prisma.membership.findFirst({ where: { id, tenantId: context.tenantId } });
+    return this.prisma.membership.findFirst({ where: { id, tenant_id: context.tenantId } });
   }
 
   async list(context: TenantScope, filters: MembershipFilters = {}): Promise<Membership[]> {
     return this.prisma.membership.findMany({
       where: {
-        tenantId: context.tenantId,
+        tenant_id: context.tenantId,
         ...(filters.status ? { status: filters.status } : {}),
         ...(filters.role ? { role: filters.role } : {}),
       },
@@ -39,22 +39,22 @@ export class MembershipRepository {
     });
   }
 
-  /** BR-MEM-100: at most one active Membership per (Identity, Tenant) pair. */
-  async findByIdentity(context: TenantScope, identityId: string): Promise<Membership | null> {
+  /** BR-MEM-100: at most one active Membership per (User, Tenant) pair. */
+  async findByUser(context: TenantScope, userId: string): Promise<Membership | null> {
     return this.prisma.membership.findUnique({
-      where: { identityId_tenantId: { identityId, tenantId: context.tenantId } },
+      where: { user_id_tenant_id: { user_id: userId, tenant_id: context.tenantId } },
     });
   }
 
   async countActiveByRole(context: TenantScope, role: MembershipRole): Promise<number> {
-    return this.prisma.membership.count({ where: { tenantId: context.tenantId, role, status: 'active' } });
+    return this.prisma.membership.count({ where: { tenant_id: context.tenantId, role, status: 'active' } });
   }
 
   async save(context: TenantScope, input: CreateMembershipInput): Promise<Membership> {
     return this.prisma.membership.create({
       data: {
-        tenantId: context.tenantId,
-        identityId: input.identityId,
+        tenant_id: context.tenantId,
+        user_id: input.userId,
         role: input.role,
         status: input.status ?? 'invited',
       },

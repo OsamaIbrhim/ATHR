@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { randomUUID } from 'crypto';
 import { PriceBookRepository } from './price-book.repository';
 import { PriceBookService } from './price-book.service';
@@ -11,20 +12,11 @@ const CHECKER = randomUUID();
 
 /**
  * Entry mutation on an *active* book additionally requires
- * `pricing.price-book.activate` (Matrix §17) — these fakes stand in for the
- * two sides of that check without booting the real policy snapshot.
+ * `pricing.price-book.activate` (Matrix §17): a location manager holds it, a
+ * warehouse manager does not.
  */
-const PRICING_MANAGER = { sub: MAKER, membership_role: 'location_manager' } as any;
-const ENTRY_CLERK = { sub: MAKER, membership_role: 'warehouse_manager' } as any;
-
-function fakePermissionPolicy() {
-  return {
-    hasPermission: async (role: string, permission: string) =>
-      role === 'location_manager' || role === 'tenant_owner'
-        ? true
-        : permission !== 'pricing.price-book.activate',
-  } as any;
-}
+const PRICING_MANAGER = actorFor('location_manager', { sub: MAKER });
+const ENTRY_CLERK = actorFor('warehouse_manager', { sub: MAKER });
 
 function bookRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -65,7 +57,7 @@ function setup(rows: ReturnType<typeof bookRow>[] = [], entryRows: Record<string
   return {
     prisma,
     repository,
-    service: new PriceBookService(repository, prisma, fakePermissionPolicy()),
+    service: new PriceBookService(repository, prisma),
   };
 }
 
@@ -333,7 +325,7 @@ describe('PriceBookService — a database uniqueness conflict never leaks as a r
   }
 
   function serviceFor(prisma: any) {
-    return new PriceBookService(new PriceBookRepository(prisma), prisma, fakePermissionPolicy());
+    return new PriceBookService(new PriceBookRepository(prisma), prisma);
   }
 
   it('maps the default-book index collision to PRICING_DEFAULT_PRICE_BOOK_CONFLICT', async () => {

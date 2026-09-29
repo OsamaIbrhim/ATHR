@@ -158,9 +158,9 @@ export class SalesReadService {
           ? this.prisma.user.findMany({
               where: {
                 id: { in: sellerIds },
-                memberships: { some: { tenantId: context.tenantId } },
+                memberships: { some: { tenant_id: context.tenantId } },
               },
-              select: { id: true, name: true, role: true },
+              select: { id: true, name: true },
             })
           : Promise.resolve([]),
         this.prisma.salesInvoiceItem.groupBy({

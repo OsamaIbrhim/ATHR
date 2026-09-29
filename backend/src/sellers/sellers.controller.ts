@@ -1,7 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { SellersService } from './sellers.service';
-import { RequireCapabilities } from '../auth/roles.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -18,8 +17,7 @@ export class SellersController {
   constructor(private service: SellersService) {}
 
   @Get('report')
-  @RequireCapabilities('seller_reports.read')
-  @RequirePermission('reports.sales.view')
+  @RequirePermission('sellers.report.view')
   report(
     @TenantCtx() ctx: TenantContext,
     @Query('from') from: string,
@@ -32,51 +30,44 @@ export class SellersController {
       ctx,
       from,
       to,
-      resolveBranchScope(req.user, branchId, ['owner']),
+      resolveBranchScope(req.user, branchId),
       sellerId,
     );
   }
 
   @Get('commission-settings')
-  @RequireCapabilities('seller_reports.read')
-  @RequirePermission('reports.sales.view')
+  @RequirePermission('sellers.report.view')
   settings(@TenantCtx() ctx: TenantContext, @Req() req: Request & { user: AuthenticatedUser }) {
     return this.service.settings(ctx, req.user);
   }
 
   @Patch('commission-settings')
-  @RequireCapabilities('seller_settings.manage')
-  @RequirePermission('pricing.price-entry.manage')
+  @RequirePermission('sellers.commission.manage')
   updateSettings(
     @TenantCtx() ctx: TenantContext,
     @Body() dto: UpdateCommissionSettingsDto,
-    @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.service.updateSettings(ctx, dto, req.user);
+    return this.service.updateSettings(ctx, dto);
   }
 
   @Patch(':id/commission-settings')
-  @RequireCapabilities('seller_settings.manage')
-  @RequirePermission('pricing.price-entry.manage')
+  @RequirePermission('sellers.commission.manage')
   updateSellerSettings(
     @TenantCtx() ctx: TenantContext,
     @Param('id') sellerId: string,
     @Body() dto: UpdateSellerCommissionDto,
-    @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.service.updateSellerSettings(ctx, sellerId, dto, req.user);
+    return this.service.updateSellerSettings(ctx, sellerId, dto);
   }
 
   @Get('periods')
-  @RequireCapabilities('seller_reports.read')
-  @RequirePermission('reports.sales.view')
+  @RequirePermission('sellers.report.view')
   periods(@TenantCtx() ctx: TenantContext, @Req() req: Request & { user: AuthenticatedUser }) {
     return this.service.periods(ctx, req.user);
   }
 
   @Post('periods/close')
-  @RequireCapabilities('seller_periods.close')
-  @RequirePermission('reports.sales.view-cost-margin')
+  @RequirePermission('sellers.period.close')
   closePeriod(
     @TenantCtx() ctx: TenantContext,
     @Body() dto: CloseSellerPeriodDto,

@@ -7,12 +7,12 @@ import { NAV_ITEMS } from '@/lib/permissions'
 
 export default function Sidebar(){
   const p = usePathname()
-  const [capabilities, setCapabilities] = useState<string[]>([])
+  const [permissions, setPermissions] = useState<string[]>([])
   const [userName, setUserName] = useState('')
   useEffect(() => {
     const update = () => {
       const user = getStoredUser()
-      setCapabilities(user?.capabilities || [])
+      setPermissions(user?.permissions || [])
       setUserName(user?.name || '')
     }
     update()
@@ -20,7 +20,7 @@ export default function Sidebar(){
     return () => window.removeEventListener('athr-user-updated', update)
   }, [])
   if (p === '/login') return null
-  const visible = NAV_ITEMS.filter(({ capability }) => capabilities.includes(capability))
+  const visible = NAV_ITEMS.filter(({ permission }) => permissions.includes(permission))
   return (
     <aside className="w-64 shrink-0 bg-athr text-white min-h-screen p-4 overflow-y-auto">
       <div className="text-2xl font-bold mb-6">ATHR <span className="text-accent">Operations</span></div>

@@ -15,7 +15,7 @@ import {
   TransferCommandDto,
 } from './dto/transfer.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
-import { assertBranchAccess } from '../auth/branch-access';
+import { assertBranchAccess, canAccessAllBranches, hasBranchAccess } from '../auth/branch-access';
 import {
   commandFingerprint,
   resolveCommandId,
@@ -104,10 +104,7 @@ export class TransfersService {
         'Source and destination branches must be different',
       );
     }
-    assertBranchAccess(actor, dto.from_branch_id, [
-      'owner',
-      'warehouse_manager',
-    ]);
+    assertBranchAccess(actor, dto.from_branch_id);
 
     const quantities = new Map<string, number>();
     for (const item of dto.items) {
@@ -218,10 +215,7 @@ export class TransfersService {
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
       const transfer = await this.lockTransfer(tx, context, id);
-      assertBranchAccess(actor, transfer.from_branch_id, [
-        'owner',
-        'warehouse_manager',
-      ]);
+      assertBranchAccess(actor, transfer.from_branch_id);
       if (
         await this.replayCommand(tx, context, id, 'ship', commandId, fingerprint)
       ) {
@@ -305,10 +299,7 @@ export class TransfersService {
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
       const transfer = await this.lockTransfer(tx, context, id);
-      assertBranchAccess(actor, transfer.to_branch_id, [
-        'owner',
-        'warehouse_manager',
-      ]);
+      assertBranchAccess(actor, transfer.to_branch_id);
       if (
         await this.replayCommand(tx, context, id, 'receive', commandId, fingerprint)
       ) {
@@ -455,10 +446,7 @@ export class TransfersService {
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
       const transfer = await this.lockTransfer(tx, context, id);
-      assertBranchAccess(actor, transfer.from_branch_id, [
-        'owner',
-        'warehouse_manager',
-      ]);
+      assertBranchAccess(actor, transfer.from_branch_id);
       if (
         await this.replayCommand(tx, context, id, 'cancel', commandId, fingerprint)
       ) {
@@ -497,9 +485,9 @@ export class TransfersService {
   }
 
   async reconcileInTransit(context: TenantContext, actor: AuthenticatedUser) {
-    if (actor.role !== 'owner' && actor.role !== 'warehouse_manager') {
+    if (!canAccessAllBranches(actor)) {
       throw new ConflictException(
-        'Only owner or warehouse manager can reconcile in-transit inventory',
+        'Only a tenant-wide user can reconcile in-transit inventory',
       );
     }
     const mismatches = await this.prisma.$queryRaw<
@@ -554,13 +542,8 @@ export class TransfersService {
     actor: AuthenticatedUser,
     transfer: Pick<Transfer, 'from_branch_id' | 'to_branch_id'>,
   ) {
-    if (actor.role === 'owner' || actor.role === 'warehouse_manager') return;
-    if (
-      actor.branch_id !== transfer.from_branch_id &&
-      actor.branch_id !== transfer.to_branch_id
-    ) {
-      assertBranchAccess(actor, transfer.from_branch_id);
-    }
+    if (hasBranchAccess(actor, transfer.from_branch_id) || hasBranchAccess(actor, transfer.to_branch_id)) return;
+    assertBranchAccess(actor, transfer.from_branch_id);
   }
 
   private serializable<T>(

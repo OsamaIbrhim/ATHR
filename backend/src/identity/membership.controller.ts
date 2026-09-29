@@ -6,7 +6,6 @@ import { assertIdentityPermission } from './authorize.util';
 import { ChangeMembershipRoleDto } from './dto/change-membership-role.dto';
 import { MembershipRepository } from './membership.repository';
 import { MembershipService } from './membership.service';
-import { PermissionPolicyService } from './permission-policy.service';
 import { RequestWithIdentity, resolveContextOrThrow } from './resolve-tenant-context.util';
 import { TenantContextResolver } from './tenant-context.resolver';
 import { unwrapOrThrow } from './unwrap-result.util';
@@ -23,7 +22,6 @@ export class MembershipController {
   constructor(
     private readonly memberships: MembershipService,
     private readonly membershipRepository: MembershipRepository,
-    private readonly permissionPolicy: PermissionPolicyService,
     private readonly tenantContext: TenantContextResolver,
   ) {}
 
@@ -56,7 +54,7 @@ export class MembershipController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'membership.status.change');
+    await assertIdentityPermission(context, this.membershipRepository, 'membership.status.change');
     return unwrapOrThrow(await this.memberships.suspend(context, membershipId));
   }
 
@@ -70,7 +68,7 @@ export class MembershipController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'membership.status.change');
+    await assertIdentityPermission(context, this.membershipRepository, 'membership.status.change');
     return unwrapOrThrow(await this.memberships.reinstate(context, membershipId));
   }
 
@@ -84,7 +82,7 @@ export class MembershipController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'membership.status.change');
+    await assertIdentityPermission(context, this.membershipRepository, 'membership.status.change');
     return unwrapOrThrow(await this.memberships.deactivate(context, membershipId));
   }
 
@@ -99,7 +97,7 @@ export class MembershipController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'membership.role.assign');
+    await assertIdentityPermission(context, this.membershipRepository, 'membership.role.assign');
     return unwrapOrThrow(await this.memberships.changeRole(context, membershipId, dto.role));
   }
 }

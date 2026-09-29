@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { Prisma } from '@prisma/client';
@@ -19,11 +19,6 @@ const TAX_CODE_ID = '00000000-0000-0000-0000-0000000c0de1';
  * `sales.sale.view-cost-margin` receives; `sales.cost-visibility.spec.ts` pins
  * the gate's own behaviour on both sides.
  */
-const costVisibilityAnswering = (allowed: boolean) =>
-  new CostVisibilityService({
-    hasPermission: async () => allowed,
-  } as unknown as PermissionPolicyService);
-const maskedCostVisibility = () => costVisibilityAnswering(false);
 
 // WP-007 Phase A: sales entry points take the resolved TenantContext first.
 const ctx = contextFor(TENANT_A);
@@ -46,11 +41,7 @@ const syncId = '66666666-6666-4666-8666-666666666666';
 const sellerId = '77777777-7777-4777-8777-777777777777';
 const cashierId = '88888888-8888-4888-8888-888888888888';
 const occurredAt = '2026-07-22T10:00:00.000Z';
-const actor = {
-  sub: cashierId,
-  role: 'cashier' as const,
-  branch_id: branchId,
-};
+const actor = actorFor('cashier', { sub: cashierId, branchId });
 
 function saleDto(overrides: Record<string, unknown> = {}) {
   return {
@@ -95,8 +86,6 @@ function setupSale(options: {
   closedShift?: boolean;
   missingCashier?: boolean;
   missingSeller?: boolean;
-  /** Only the POS-response cost case needs this — see that test for why. */
-  hasCostMargin?: boolean;
 } = {}) {
   let rawCall = 0;
   const tx = {
@@ -144,29 +133,23 @@ function setupSale(options: {
       ),
       update: jest.fn().mockResolvedValue({}),
     },
-    user: {
+    // Staff are looked up through their Membership (role + branch scope).
+    membership: {
       findFirst: jest.fn().mockImplementation(({ where }) => {
-        if (where.id === sellerId) {
+        const scope = [
+          { scope_type: 'location', scope_ref_id: branchId, effective_from: new Date('2020-01-01'), effective_to: null },
+        ];
+        if (where.user_id === sellerId) {
           return Promise.resolve(
             options.missingSeller
               ? null
-              : {
-                  id: sellerId,
-                  name: 'Seller One',
-                  role: 'seller',
-                  branch_id: branchId,
-                },
+              : { user_id: sellerId, role: 'seller', access_scope_assignments: scope },
           );
         }
         return Promise.resolve(
           options.missingCashier
             ? null
-            : {
-                id: cashierId,
-                name: 'Cashier One',
-                role: 'cashier',
-                branch_id: branchId,
-              },
+            : { user_id: cashierId, role: 'cashier', access_scope_assignments: scope },
         );
       }),
     },
@@ -260,7 +243,7 @@ function setupSale(options: {
     service: new SalesService(
       prisma as any,
       pricing as any,
-      costVisibilityAnswering(options.hasCostMargin ?? false),
+      new CostVisibilityService(),
       new SalesTaxSnapshotService(),
     ),
     prisma,
@@ -278,7 +261,7 @@ function fingerprint(service: SalesService, dto: any) {
   );
 }
 
-function setupReturn(alreadyReturned = 0, hasCostMargin = false) {
+function setupReturn(alreadyReturned = 0) {
   const soldItem = {
     id: 'sale-item-1',
     variant_id: variantId,
@@ -325,7 +308,7 @@ function setupReturn(alreadyReturned = 0, hasCostMargin = false) {
   };
   const prisma = { $transaction: jest.fn((callback) => callback(tx)) };
   return {
-    service: new SalesService(prisma as any, {} as any, costVisibilityAnswering(hasCostMargin), new SalesTaxSnapshotService()),
+    service: new SalesService(prisma as any, {} as any, new CostVisibilityService(), new SalesTaxSnapshotService()),
     tx,
   };
 }
@@ -420,11 +403,10 @@ describe('SalesService acceptance-first sale synchronization', () => {
   /**
    * Unconditional, unlike every other cost mask in this codebase: `POST
    * /pos/sale` is authenticated by device token, so there is no membership for
-   * the gate to resolve. `hasCostMargin: true` is the point of the case — even
-   * an answering gate must not put cost on the wire here.
+   * the gate to resolve, so cost never goes on the wire here.
    */
-  it('never returns unit_cost on the POS sale response, whatever the gate answers', async () => {
-    const { service, tx } = setupSale({ hasCostMargin: true });
+  it('never returns unit_cost on the POS sale response', async () => {
+    const { service, tx } = setupSale();
     const result: any = await service.createSale(saleDto(), terminal);
 
     expect(result.items).toHaveLength(1);
@@ -607,7 +589,7 @@ describe('SalesService returns', () => {
   });
 
   it('returns unit_cost on a return to an actor holding cost/margin visibility', async () => {
-    const { service } = setupReturn(0, true);
+    const { service } = setupReturn();
     const result: any = await service.createReturn(
       ctx,
       {
@@ -615,18 +597,16 @@ describe('SalesService returns', () => {
         items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
         reason: 'Wrong size',
       },
-      // `membership_role` is what the gate resolves the grant against; the
-      // module's other cases omit it, which is why they mask regardless.
-      { ...actor, membership_role: 'location_manager' } as any,
+      // A location manager holds `sales.sale.view-cost-margin`; the cashier
+      // the module's other cases use does not, which is why they mask.
+      actorFor('location_manager', { sub: cashierId, branchId }),
     );
 
     expect(Number(result.items[0].unit_cost)).toBe(100);
   });
 
-  it('masks the return response when the actor carries no membership_role, gate permissive', async () => {
-    // Fail-closed: no membership means no resolvable grant, so the answer is
-    // "no" even against a gate that would otherwise allow it.
-    const { service } = setupReturn(0, true);
+  it('masks the return response when the key was revoked from the actor', async () => {
+    const { service } = setupReturn();
     const result: any = await service.createReturn(
       ctx,
       {
@@ -634,7 +614,7 @@ describe('SalesService returns', () => {
         items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
         reason: 'Wrong size',
       },
-      actor,
+      actorFor('location_manager', { sub: cashierId, branchId, revoked: ['sales.sale.view-cost-margin'] }),
     );
 
     expect(result.items[0]).not.toHaveProperty('unit_cost');

@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { SalesController } from './sales.controller';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 
@@ -5,16 +6,8 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 const ctx = contextFor(TENANT_A);
 
 describe('SalesController POS terminal enforcement', () => {
-  const cashier = {
-    sub: 'cashier-1',
-    role: 'cashier',
-    branch_id: 'branch-1',
-  } as any;
-  const owner = {
-    sub: 'owner-1',
-    role: 'owner',
-    branch_id: null,
-  } as any;
+  const cashier = actorFor('cashier', { sub: 'cashier-1', branchId: 'branch-1' });
+  const owner = actorFor('tenant_owner', { sub: 'owner-1', tenantWide: true });
   const request = (user: any) => ({ user }) as any;
   const sale = {
     branch_id: 'branch-1',

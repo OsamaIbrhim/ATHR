@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { SellersService } from './sellers.service';
 import { SellersRepository } from './sellers.repository';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
@@ -12,11 +13,15 @@ const ctx = contextFor(TENANT_A);
 describe('SellersService', () => {
   it('subtracts in-period returns from pre-tax seller sales', async () => {
     const prisma = {
-      user: {
-        findMany: jest.fn().mockResolvedValue([
-          { id: 'seller-1', name: 'Seller', branch_id: 'branch-1', is_active: true, branch: null, seller_commission_override: null },
-        ])
+      membership: {
+        findMany: jest.fn().mockResolvedValue([{
+          user: { id: 'seller-1', name: 'Seller', is_active: true, seller_commission_override: null },
+          access_scope_assignments: [
+            { scope_type: 'location', scope_ref_id: 'branch-1', effective_from: new Date('2020-01-01'), effective_to: null },
+          ],
+        }])
       },
+      branch: { findMany: jest.fn().mockResolvedValue([]) },
       salesInvoice: {
         findMany: jest.fn().mockResolvedValue([
           { seller_id: 'seller-1', subtotal: 1000 },
@@ -109,7 +114,7 @@ describe('SellersService', () => {
       ctx,
       '2026-06-01',
       '2026-06-30',
-      { sub: 'owner-1', role: 'owner', branch_id: null } as any,
+      actorFor('tenant_owner', { sub: 'owner-1', tenantWide: true }),
     );
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({

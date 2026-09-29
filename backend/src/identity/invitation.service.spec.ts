@@ -44,7 +44,7 @@ function fakeInvitationRepository(rows: Record<string, any> = {}) {
 
 function fakeMembershipRepository(existing: any = null) {
   return {
-    findByIdentity: jest.fn(async () => existing),
+    findByUser: jest.fn(async () => existing),
     save: jest.fn(async (_ctx: any, input: any) => ({ id: 'membership-1', status: input.status, role: input.role })),
   } as any;
 }

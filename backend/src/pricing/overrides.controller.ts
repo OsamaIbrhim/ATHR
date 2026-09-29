@@ -2,7 +2,6 @@ import { Body, Controller, Get, Param, Post, Put, Query, Req } from '@nestjs/com
 import { Request } from 'express';
 import type { MembershipRole } from '@prisma/client';
 import { OverridesService } from './overrides.service';
-import { RequireCapabilities } from '../auth/roles.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -14,7 +13,6 @@ type AuthedRequest = Request & { user: AuthenticatedUser };
 
 /** WP-008 Phase B (BR-OVP-1xx, BR-DSC-2xx): manual override and discount as distinct, audited entities. */
 @Controller('pricing')
-@RequireCapabilities('products.read')
 export class OverridesController {
   constructor(private readonly svc: OverridesService) {}
 

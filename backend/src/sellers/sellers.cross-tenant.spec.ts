@@ -12,29 +12,26 @@ const SELLER_B = randomUUID();
 const BRANCH_A = randomUUID();
 const BRANCH_B = randomUUID();
 
+/** A seller Membership row as the repository reads it (user + scope embedded). */
+function seller(id: string, tenantId: string, branchId: string, name: string) {
+  return {
+    id: randomUUID(),
+    tenant_id: tenantId,
+    user_id: id,
+    role: 'seller',
+    user: { id, name, is_active: true, seller_commission_override: null },
+    access_scope_assignments: [
+      { scope_type: 'location', scope_ref_id: branchId, effective_from: new Date('2020-01-01'), effective_to: null },
+    ],
+  };
+}
+
 function setup() {
   const prisma = fakePrisma({
-    user: [
-      {
-        id: SELLER_A,
-        name: 'Seller A',
-        role: 'seller',
-        branch_id: BRANCH_A,
-        is_active: true,
-        memberships: [{ tenantId: TENANT_A }],
-        branch: { id: BRANCH_A, code: 'A', name_ar: 'A' },
-        seller_commission_override: null,
-      },
-      {
-        id: SELLER_B,
-        name: 'Seller B',
-        role: 'seller',
-        branch_id: BRANCH_B,
-        is_active: true,
-        memberships: [{ tenantId: TENANT_B }],
-        branch: { id: BRANCH_B, code: 'B', name_ar: 'B' },
-        seller_commission_override: null,
-      },
+    membership: [seller(SELLER_A, TENANT_A, BRANCH_A, 'Seller A'), seller(SELLER_B, TENANT_B, BRANCH_B, 'Seller B')],
+    branch: [
+      { id: BRANCH_A, tenant_id: TENANT_A, code: 'A', name_ar: 'A' },
+      { id: BRANCH_B, tenant_id: TENANT_B, code: 'B', name_ar: 'B' },
     ],
     salesInvoice: [
       aSalesInvoice({
@@ -70,24 +67,10 @@ function setup() {
     sellerCommissionPeriodRow: [],
   });
 
-  // `memberships: { some: { tenantId } }` is a to-many filter.
-  prisma.user.findMany = async ({ where }: any) =>
-    prisma.user.rows.filter((row: any) => {
-      const tenantId = where?.memberships?.some?.tenantId;
-      if (tenantId && !row.memberships.some((m: any) => m.tenantId === tenantId)) return false;
-      if (where?.role && row.role !== where.role) return false;
-      if (where?.branch_id && row.branch_id !== where.branch_id) return false;
-      if (where?.id && row.id !== where.id) return false;
-      return true;
-    });
-  prisma.user.findFirst = async ({ where }: any) =>
-    (await prisma.user.findMany({ where }))[0] ?? null;
-
   const repository = new SellersRepository(prisma);
   return { prisma, repository, service: new SellersService(repository) };
 }
 
-const owner = { sub: randomUUID(), role: 'owner', branch_id: null, capabilities: [] } as any;
 
 describe('sellers — cross-tenant isolation', () => {
   it('reports only the calling tenant\'s sellers and their sales', async () => {
@@ -140,7 +123,7 @@ describe('sellers — cross-tenant isolation', () => {
   it('refuses to set a commission override on another tenant\'s seller', async () => {
     const { service } = setup();
     await expect(
-      service.updateSellerSettings(contextFor(TENANT_B), SELLER_A, { rate: 50 } as any, owner),
+      service.updateSellerSettings(contextFor(TENANT_B), SELLER_A, { rate: 50 } as any),
     ).rejects.toThrow('Seller not found');
   });
 

@@ -164,14 +164,13 @@ async function createSupplier(tenantId, label) {
 // tenant-scoped -- User has no tenant_id, identities are scoped through
 // Membership), so the acting user must actually exist. Created once in
 // main() below; ownerActor.sub is filled in before any W1/W2 fixture runs.
-const ownerActor = { sub: null, role: 'owner', branch_id: null, capabilities: [] };
+const ownerActor = { sub: null, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
 
 async function createVerifyActorUser() {
   const user = await prisma.user.create({
     data: {
       name: 'Verify actor',
       password_hash: 'not-a-real-hash',
-      role: 'owner',
     },
   });
   ownerActor.sub = user.id;
@@ -470,7 +469,7 @@ async function verifyReconcileInTransitScoping() {
   const a = await seedInTransitMismatchTenant('a');
   const b = await seedInTransitMismatchTenant('b');
   const service = new TransfersService(prisma);
-  const actor = { sub: randomUUID(), role: 'owner', branch_id: null, capabilities: [] };
+  const actor = { sub: randomUUID(), membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
 
   const resultA = await service.reconcileInTransit({ tenantId: a.tenant.id }, actor);
   const itemIdsA = resultA.mismatches.map((row) => row.transfer_item_id);

@@ -83,7 +83,7 @@ function setup() {
       },
     ],
     pricingRule: [],
-    user: [],
+    membership: [],
   }, {
     productVariant: { product: { table: 'product', localKey: 'product_id' } },
     priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } },

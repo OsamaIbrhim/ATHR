@@ -201,20 +201,19 @@ export class SyncService {
     });
   }
 
-  private sellers(context: TenantContext, branchId: string) {
-    const users = (this.prisma as any).user;
-    if (!users) return Promise.resolve([]);
-    return users.findMany({
+  /** The branch's active sellers: `seller` Memberships scoped to the branch. */
+  private async sellers(context: TenantContext, branchId: string) {
+    const memberships = await this.prisma.membership.findMany({
       where: {
-        // User has no tenant_id column (ADR-0003); scope through Membership.
-        memberships: { some: { tenantId: context.tenantId } },
-        branch_id: branchId,
+        tenant_id: context.tenantId,
         role: 'seller',
-        is_active: true,
+        access_scope_assignments: { some: { scope_type: 'location', scope_ref_id: branchId } },
+        user: { is_active: true },
       },
-      select: { id: true, name: true },
-      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      select: { user: { select: { id: true, name: true } } },
+      orderBy: [{ user: { name: 'asc' } }, { user_id: 'asc' }],
     });
+    return memberships.map(({ user }) => user);
   }
 
   private productSnapshot(

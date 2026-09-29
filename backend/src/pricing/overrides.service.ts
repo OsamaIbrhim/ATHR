@@ -3,7 +3,6 @@ import type { MembershipRole } from '@prisma/client';
 import { OverridesRepository } from './overrides.repository';
 import { PricingService } from './pricing.service';
 import { CostVisibilityService } from './cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { decimal, money } from '../common/money';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -27,7 +26,6 @@ export class OverridesService {
   constructor(
     private readonly repository: OverridesRepository,
     private readonly pricing: PricingService,
-    private readonly permissionPolicy: PermissionPolicyService,
     private readonly costVisibility: CostVisibilityService,
   ) {}
 
@@ -101,9 +99,7 @@ export class OverridesService {
       // implied by `pricing.manual-override.apply`. It authorizes *requesting*
       // a below-floor override; the approval itself is a second, separate act
       // by a different identity (see `approveOverride`).
-      const canRequestBelowFloor = role
-        ? await this.permissionPolicy.hasPermission(role, 'pricing.manual-override.above-threshold')
-        : false;
+      const canRequestBelowFloor = actor.permissions.has('pricing.manual-override.above-threshold');
       if (!canRequestBelowFloor) {
         // BR-CST-101/Matrix §51: the floor is the variant's cost whenever the
         // resolved entry has no explicit floor, so the *rejection* must not

@@ -1,10 +1,11 @@
 import {
-  BadRequestException, ConflictException, ForbiddenException, Injectable,
+  BadRequestException, ConflictException, Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { money, moneyNumber } from '../common/money';
 import { AuthenticatedUser } from '../auth/authenticated-user';
+import { resolveBranchScope } from '../auth/branch-access';
 import { businessDateRange } from '../common/business-time';
 import {
   UpdateCommissionSettingsDto,
@@ -108,7 +109,7 @@ export class SellersService {
     const settings = await this.repository.getSettings(context);
     const overrides = await this.repository.listOverrides(
       context,
-      actor.role === 'owner' ? undefined : actor.branch_id || undefined,
+      resolveBranchScope(actor),
     );
     return { settings, overrides };
   }
@@ -116,9 +117,7 @@ export class SellersService {
   updateSettings(
     context: TenantContext,
     dto: UpdateCommissionSettingsDto,
-    actor: AuthenticatedUser,
   ) {
-    if (actor.role !== 'owner') throw new ForbiddenException('Only the owner can change commission defaults');
     return this.repository.updateSettings(context, {
       ...dto,
       period_anchor: new Date(dto.period_anchor),
@@ -129,19 +128,14 @@ export class SellersService {
     context: TenantContext,
     sellerId: string,
     dto: UpdateSellerCommissionDto,
-    actor: AuthenticatedUser,
   ) {
-    if (actor.role !== 'owner') throw new ForbiddenException('Only the owner can change seller commissions');
     const seller = await this.repository.findSeller(context, sellerId);
     if (!seller) throw new NotFoundException('Seller not found');
     return this.repository.saveOverride(context, sellerId, dto);
   }
 
   periods(context: TenantContext, actor: AuthenticatedUser) {
-    return this.repository.listPeriods(
-      context,
-      actor.role === 'owner' ? undefined : actor.branch_id || undefined,
-    );
+    return this.repository.listPeriods(context, resolveBranchScope(actor));
   }
 
   async closePeriod(
@@ -150,9 +144,6 @@ export class SellersService {
     to: string,
     actor: AuthenticatedUser,
   ) {
-    if (actor.role !== 'owner') {
-      throw new ForbiddenException('Only the owner can close seller periods');
-    }
     const { start, endExclusive } = this.periodBounds(from, to);
     if (endExclusive > new Date()) {
       throw new BadRequestException('Only a completed period can be closed');

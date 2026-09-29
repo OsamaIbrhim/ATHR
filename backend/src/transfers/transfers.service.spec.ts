@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import {
   BadRequestException,
   ConflictException,
@@ -22,21 +23,10 @@ const SHIP_COMMAND_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const RECEIVE_COMMAND_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CANCEL_COMMAND_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
-const sourceActor = {
-  sub: SOURCE_ACTOR_ID,
-  role: 'warehouse_manager' as const,
-  branch_id: SOURCE_BRANCH_ID,
-};
-const destinationActor = {
-  sub: DESTINATION_ACTOR_ID,
-  role: 'warehouse_manager' as const,
-  branch_id: DESTINATION_BRANCH_ID,
-};
-const branchManager = {
-  sub: SOURCE_ACTOR_ID,
-  role: 'branch_manager' as const,
-  branch_id: SOURCE_BRANCH_ID,
-};
+// Warehouse managers work across the tenant (tenant-wide scope) from their own branch.
+const sourceActor = actorFor('warehouse_manager', { sub: SOURCE_ACTOR_ID, tenantWide: true, branchId: SOURCE_BRANCH_ID });
+const destinationActor = actorFor('warehouse_manager', { sub: DESTINATION_ACTOR_ID, tenantWide: true, branchId: DESTINATION_BRANCH_ID });
+const branchManager = actorFor('location_manager', { sub: SOURCE_ACTOR_ID, branchId: SOURCE_BRANCH_ID });
 
 const pendingTransfer = {
   id: TRANSFER_ID,

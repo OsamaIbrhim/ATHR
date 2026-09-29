@@ -77,7 +77,7 @@ export class NotificationsService {
     const owners = await this.prisma.user.findMany({
       where: {
         is_active: true,
-        memberships: { some: { tenantId, role: 'tenant_owner', status: 'active' } },
+        memberships: { some: { tenant_id: tenantId, role: 'tenant_owner', status: 'active' } },
       },
       select: { email: true, phone: true },
     });

@@ -44,7 +44,7 @@ describe('AuthGate', () => {
       .mockRejectedValueOnce(new ApiError({ code: 'NETWORK_ERROR', message_ar: 'offline' }))
       .mockResolvedValueOnce({
         id: 'owner-1',
-        capabilities: ['reports.read'],
+        permissions: ['reports.sales.view'],
       })
     render(<AuthGate><div>بيانات مالية محمية</div></AuthGate>)
     fireEvent.click(await screen.findByRole('button', { name: 'إعادة المحاولة' }))
@@ -54,7 +54,7 @@ describe('AuthGate', () => {
 
   it('loads the session once and keeps children mounted across navigation', async () => {
     nav.pathname = '/reports'
-    apiGet.mockResolvedValue({ id: 'owner-1', name: 'Owner', capabilities: ['reports.read', 'sales.read'] })
+    apiGet.mockResolvedValue({ id: 'owner-1', name: 'Owner', permissions: ['reports.sales.view', 'sales.sale.view'] })
     const Page = () => <div>مرحبا {useSessionUser()?.name}</div>
     const { rerender } = render(<AuthGate><Page /></AuthGate>)
     expect(await screen.findByText('مرحبا Owner')).toBeInTheDocument()

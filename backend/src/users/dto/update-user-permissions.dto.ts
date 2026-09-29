@@ -1,16 +1,17 @@
 import { ArrayUnique, IsArray, IsIn, IsString } from 'class-validator';
-import { CAPABILITIES } from '../../auth/permissions';
+import { ALL_PERMISSIONS } from '../../identity/permission-catalog';
 
+/** Per-user overrides on top of the role's default permissions. */
 export class UpdateUserPermissionsDto {
   @IsArray()
   @ArrayUnique()
   @IsString({ each: true })
-  @IsIn(CAPABILITIES, { each: true })
-  granted_capabilities: string[];
+  @IsIn(ALL_PERMISSIONS, { each: true })
+  granted_permissions: string[];
 
   @IsArray()
   @ArrayUnique()
   @IsString({ each: true })
-  @IsIn(CAPABILITIES, { each: true })
-  revoked_capabilities: string[];
+  @IsIn(ALL_PERMISSIONS, { each: true })
+  revoked_permissions: string[];
 }

@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { randomUUID } from 'crypto';
 import { createHash } from 'crypto';
 import { TerminalsRepository } from './terminals.repository';
@@ -63,7 +64,7 @@ function setup() {
 }
 
 const ownerOf = (branchId: string, tenantId: string) =>
-  ({ sub: randomUUID(), role: 'owner', branch_id: branchId, tenant_id: tenantId, capabilities: [] }) as any;
+  actorFor('tenant_owner', { sub: randomUUID(), tenantWide: true, branchId, tenantId });
 
 describe('terminals — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s terminals', async () => {
@@ -150,13 +151,7 @@ describe('terminals — cross-tenant isolation', () => {
 
   it('refuses to decommission another tenant\'s terminal', async () => {
     const { service, prisma } = setup();
-    const manager = {
-      sub: randomUUID(),
-      role: 'branch_manager',
-      branch_id: BRANCH_B,
-      tenant_id: TENANT_B,
-      capabilities: [],
-    } as any;
+    const manager = actorFor('location_manager', { sub: randomUUID(), branchId: BRANCH_B, tenantId: TENANT_B });
 
     await expect(
       service.selfDecommission(
@@ -213,7 +208,7 @@ describe('terminals — cross-tenant isolation', () => {
    */
   it('fails closed when the calling actor carries no tenant_id at all', async () => {
     const { service } = setup();
-    const actorWithoutTenant = { sub: randomUUID(), role: 'owner', branch_id: BRANCH_A } as any;
+    const actorWithoutTenant = { ...ownerOf(BRANCH_A, TENANT_A), tenant_id: null };
     await expect(
       service.authenticate(DEVICE_A, 'token-a', actorWithoutTenant),
     ).rejects.toThrow('registered to another branch');

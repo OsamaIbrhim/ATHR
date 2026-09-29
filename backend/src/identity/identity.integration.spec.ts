@@ -29,9 +29,9 @@ const TENANT_ID = randomUUID();
 const OWNER_IDENTITY_ID = randomUUID();
 const OWNER_MEMBERSHIP_ID = randomUUID();
 
-function makeReq(identityId: string): RequestWithIdentity {
+function makeReq(user_id: string): RequestWithIdentity {
   return {
-    user: { sub: identityId },
+    user: { sub: user_id },
     requestId: `req-${randomUUID()}`,
     correlationId: `corr-${randomUUID()}`,
   } as unknown as RequestWithIdentity;
@@ -45,8 +45,8 @@ class FakePrismaService {
       OWNER_MEMBERSHIP_ID,
       {
         id: OWNER_MEMBERSHIP_ID,
-        tenantId: TENANT_ID,
-        identityId: OWNER_IDENTITY_ID,
+        tenant_id: TENANT_ID,
+        user_id: OWNER_IDENTITY_ID,
         role: 'tenant_owner',
         status: 'active',
         created_at: new Date(),
@@ -69,17 +69,17 @@ class FakePrismaService {
         rows.find(
           (m) =>
             (!where.id || m.id === where.id) &&
-            (!where.tenantId || m.tenantId === where.tenantId) &&
-            (!where.identityId || m.identityId === where.identityId) &&
+            (!where.tenant_id || m.tenant_id === where.tenant_id) &&
+            (!where.user_id || m.user_id === where.user_id) &&
             (!where.status || m.status === where.status),
         ) ?? null
       );
     },
     findUnique: async ({ where, include }: any) => {
       let row: any = null;
-      if (where.identityId_tenantId) {
-        const { identityId, tenantId } = where.identityId_tenantId;
-        row = [...this.memberships.values()].find((m) => m.identityId === identityId && m.tenantId === tenantId) ?? null;
+      if (where.user_id_tenant_id) {
+        const { user_id, tenant_id } = where.user_id_tenant_id;
+        row = [...this.memberships.values()].find((m) => m.user_id === user_id && m.tenant_id === tenant_id) ?? null;
       } else {
         row = this.memberships.get(where.id) ?? null;
       }
@@ -94,12 +94,12 @@ class FakePrismaService {
     findMany: async ({ where }: any) =>
       [...this.memberships.values()].filter(
         (m) =>
-          m.tenantId === where.tenantId &&
+          m.tenant_id === where.tenant_id &&
           (!where.status || m.status === where.status) &&
           (!where.role || m.role === where.role),
       ),
     count: async ({ where }: any) =>
-      [...this.memberships.values()].filter((m) => m.tenantId === where.tenantId && m.role === where.role && m.status === where.status)
+      [...this.memberships.values()].filter((m) => m.tenant_id === where.tenant_id && m.role === where.role && m.status === where.status)
         .length,
     create: async ({ data }: any) => {
       const id = randomUUID();
@@ -118,14 +118,14 @@ class FakePrismaService {
     findFirst: async ({ where }: any) => {
       const rows = [...this.accessScopeAssignments.values()];
       return (
-        rows.find((a) => (!where.id || a.id === where.id) && (!where.membership || this.memberships.get(a.membership_id)?.tenantId === where.membership.tenantId)) ??
+        rows.find((a) => (!where.id || a.id === where.id) && (!where.membership || this.memberships.get(a.membership_id)?.tenant_id === where.membership.tenant_id)) ??
         null
       );
     },
     findMany: async ({ where }: any) =>
       [...this.accessScopeAssignments.values()].filter(
         (a) =>
-          this.memberships.get(a.membership_id)?.tenantId === where.membership.tenantId &&
+          this.memberships.get(a.membership_id)?.tenant_id === where.membership.tenant_id &&
           (!where.membership_id || a.membership_id === where.membership_id) &&
           (!where.effective_to || a.effective_to === null),
       ),

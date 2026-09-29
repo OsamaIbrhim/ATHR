@@ -48,7 +48,7 @@ export class InventoryRepository {
             product: { select: { name_ar: true, name_en: true } },
           },
         },
-        creator: { select: { id: true, name: true, role: true } },
+        creator: { select: { id: true, name: true } },
       },
       orderBy: [{ occurred_at: 'desc' }, { recorded_at: 'desc' }, { id: 'desc' }],
       take: Math.min(500, Math.max(1, take)),

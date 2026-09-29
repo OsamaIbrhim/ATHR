@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { ConflictException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { TerminalsService } from './terminals.service';
@@ -11,8 +12,8 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 const ctx = contextFor(TENANT_A);
 
 describe('TerminalsService', () => {
-  const actor = { sub: 'user-1', role: 'cashier' as const, branch_id: 'branch-1' };
-  const manager = { sub: 'manager-1', role: 'branch_manager' as const, branch_id: 'branch-1' };
+  const actor = actorFor('cashier', { sub: 'user-1', branchId: 'branch-1' });
+  const manager = actorFor('location_manager', { sub: 'manager-1', branchId: 'branch-1' });
   const dto = { device_id: '93de7eb8-4fbe-4f78-8c83-2fefea327ffc', sync_status: 'success', pending_count: 0 };
   const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -54,7 +55,7 @@ describe('TerminalsService', () => {
 
   it('accepts heartbeats only from an enrolled device in the cashier branch', async () => {
     const token = 'device-secret';
-    const existing = { id: 'terminal-1', branch_id: 'branch-1', is_revoked: false, device_token_hash: hash(token) };
+    const existing = { id: 'terminal-1', tenant_id: 'tenant-1', branch_id: 'branch-1', is_revoked: false, device_token_hash: hash(token) };
     const prisma = {
       posTerminal: {
         // Heartbeat authenticates the device first (global `findUnique`, since
@@ -119,7 +120,7 @@ describe('TerminalsService', () => {
     const result = await new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).heartbeat(
       dto,
       token,
-      { ...actor, tenant_id: 'tenant-a' } as any,
+      { ...actor, tenant_id: 'tenant-a' },
     );
     expect(result.terminal.tenant_id).toBe('tenant-a');
   });
@@ -212,7 +213,7 @@ describe('TerminalsService', () => {
       { id: 'online', is_revoked: false, last_seen_at: new Date(Date.now() - 1000) },
       { id: 'offline', is_revoked: false, last_seen_at: new Date(Date.now() - 120000) },
     ]) } };
-    const result = await new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).list(ctx, { ...actor, role: 'owner' });
+    const result = await new TerminalsService(prisma as any, new TerminalsRepository(prisma as any)).list(ctx, actorFor('tenant_owner', { tenantWide: true }));
     expect(result.items.map((item:any) => [item.id, item.online])).toEqual([['online', true], ['offline', false]]);
   });
 });

@@ -105,34 +105,40 @@ async function main() {
       const owner = await tx.user.upsert({
         where: { phone: configuration.owner.phone },
         update: {
-          branch_id: branch.id,
           name: configuration.owner.name,
           email: configuration.owner.email,
           password_hash: passwordHash,
-          role: 'owner',
           is_active: true,
         },
         create: {
-          branch_id: branch.id,
           name: configuration.owner.name,
           phone: configuration.owner.phone,
           email: configuration.owner.email,
           password_hash: passwordHash,
-          role: 'owner',
           is_active: true,
         },
       });
 
-      await tx.membership.upsert({
-        where: { identityId_tenantId: { identityId: owner.id, tenantId: tenant.id } },
+      const membership = await tx.membership.upsert({
+        where: { user_id_tenant_id: { user_id: owner.id, tenant_id: tenant.id } },
         update: { role: 'tenant_owner', status: 'active' },
         create: {
-          tenantId: tenant.id,
-          identityId: owner.id,
+          tenant_id: tenant.id,
+          user_id: owner.id,
           role: 'tenant_owner',
           status: 'active',
         },
       });
+
+      // The owner sees every branch: one tenant-wide scope, created once.
+      const hasTenantWideScope = await tx.accessScopeAssignment.findFirst({
+        where: { membership_id: membership.id, scope_type: 'tenant_wide' },
+      });
+      if (!hasTenantWideScope) {
+        await tx.accessScopeAssignment.create({
+          data: { membership_id: membership.id, scope_type: 'tenant_wide', grant_source: 'seed-production' },
+        });
+      }
 
       return { branch, owner, tenant };
     },

@@ -29,5 +29,5 @@ export class AuthController {
   logout(@Body() dto: RefreshTokenDto) { return this.auth.logout(dto.refresh_token); }
 
   @Get('me')
-  me(@Req() req: Request & { user: AuthenticatedUser }) { return this.auth.me(req.user.sub); }
+  me(@Req() req: Request & { user: AuthenticatedUser }) { return this.auth.me(req.user); }
 }

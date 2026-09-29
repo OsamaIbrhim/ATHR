@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { randomUUID } from 'crypto';
 import { PurchasingService } from './purchasing.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
@@ -67,7 +68,7 @@ function setup() {
   return { prisma, captured, service: new PurchasingService(prisma) };
 }
 
-const actor = { sub: randomUUID(), role: 'warehouse_manager', branch_id: BRANCH_A, capabilities: [] } as any;
+const actor = actorFor('warehouse_manager', { sub: randomUUID(), tenantWide: true, branchId: BRANCH_A });
 
 describe('purchasing — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s purchase invoices', async () => {

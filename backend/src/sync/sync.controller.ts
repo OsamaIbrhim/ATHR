@@ -1,23 +1,21 @@
 import { BadRequestException, Controller, Get, Headers, NotImplementedException, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { SyncService } from './sync.service';
-import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
-import { resolveBranchScope } from '../auth/branch-access';
+import { canAccessAllBranches, resolveBranchScope } from '../auth/branch-access';
 import { TerminalsService } from '../terminals/terminals.service';
 import { PosProtocolGuard } from '../updates/pos-protocol.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 @Controller('sync')
-@Roles('owner', 'branch_manager', 'cashier')
-@RequireCapabilities('sales.create')
 export class SyncController {
   constructor(private svc: SyncService, private terminals: TerminalsService) {}
+  @RequirePermission('sales.sale.create')
   @Post('push') push() {
     throw new NotImplementedException('Batch push is disabled; use the idempotent command endpoints');
   }
-  @RequirePermission('catalog.product.view')
+  @RequirePermission('sales.sale.create', 'catalog.product.view')
   @Get('pull')
   @UseGuards(new PosProtocolGuard())
   async pull(
@@ -30,9 +28,9 @@ export class SyncController {
   ) {
     const effectiveBranch = resolveBranchScope(req.user, branch_id);
     if (!effectiveBranch) throw new BadRequestException('branch_id is required');
-    // Owners may call this endpoint for support/performance diagnostics. Every
+    // Tenant-wide users may call this endpoint for support/performance diagnostics. Every
     // branch-bound POS user must also prove that the physical till is enrolled.
-    if (req.user.role !== 'owner') await this.terminals.authenticate(deviceId, deviceToken, req.user);
+    if (!canAccessAllBranches(req.user)) await this.terminals.authenticate(deviceId, deviceToken, req.user);
     return this.svc.pull(ctx, effectiveBranch, cursor);
   }
 }

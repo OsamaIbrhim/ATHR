@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { SalesService } from './sales.service';
 import { SalesReadService } from './sales-read.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aBranch, aCustomer, aSalesInvoice } from '../identity/testing/fixture-builders';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
@@ -76,9 +76,7 @@ function setup() {
   // with the fail-closed answer so the isolation checks run against the same
   // projection an unprivileged actor would get; `sales.cost-visibility.spec.ts`
   // is what pins the gate itself.
-  const costVisibility = new CostVisibilityService({
-    hasPermission: async () => false,
-  } as unknown as PermissionPolicyService);
+  const costVisibility = new CostVisibilityService();
   return {
     prisma,
     service: new SalesService(prisma, pricing, costVisibility, new SalesTaxSnapshotService()),
@@ -86,8 +84,8 @@ function setup() {
   };
 }
 
-const actorFor = (branchId: string) =>
-  ({ sub: randomUUID(), role: 'owner', branch_id: branchId, capabilities: [] }) as any;
+const ownerFor = (branchId: string) =>
+  actorFor('tenant_owner', { sub: randomUUID(), tenantWide: true, branchId });
 
 const listDto = { q: '', page: 1, page_size: 20 } as any;
 
@@ -126,7 +124,7 @@ describe('sales — cross-tenant isolation', () => {
   it('does not return another tenant\'s invoice by id', async () => {
     const { service } = setup();
     await expect(
-      service.getInvoice(contextFor(TENANT_B), INVOICE_A, actorFor(BRANCH_B)),
+      service.getInvoice(contextFor(TENANT_B), INVOICE_A, ownerFor(BRANCH_B)),
     ).rejects.toThrow();
   });
 
@@ -136,7 +134,7 @@ describe('sales — cross-tenant isolation', () => {
     const found: any = await service.findReturnableInvoice(
       contextFor(TENANT_A),
       'B-100',
-      actorFor(BRANCH_A),
+      ownerFor(BRANCH_A),
     );
     expect(found.id).toBe(INVOICE_A);
   });
@@ -154,7 +152,7 @@ describe('sales — cross-tenant isolation', () => {
       service.createReturn(
         contextFor(TENANT_B),
         { original_invoice_id: INVOICE_A, items: [] } as any,
-        actorFor(BRANCH_B),
+        ownerFor(BRANCH_B),
       ),
     ).rejects.toThrow();
   });

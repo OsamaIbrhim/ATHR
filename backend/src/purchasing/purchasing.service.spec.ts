@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import {
   BadRequestException,
   ConflictException,
@@ -10,15 +11,12 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 const ctx = contextFor(TENANT_A);
 
 describe('PurchasingService accounting transaction', () => {
-  const actor = {
-    sub: '11111111-1111-4111-8111-111111111111',
-    role: 'branch_manager' as const,
-    branch_id: '22222222-2222-4222-8222-222222222222',
-  };
+  const branchId = '22222222-2222-4222-8222-222222222222';
+  const actor = actorFor('location_manager', { sub: '11111111-1111-4111-8111-111111111111', branchId });
   const dto = {
     command_id: '99999999-9999-4999-8999-999999999999',
     supplier_id: '33333333-3333-4333-8333-333333333333',
-    branch_id: actor.branch_id,
+    branch_id: branchId,
     invoice_number: 'SUP-42',
     discount_amount: 20,
     items: [

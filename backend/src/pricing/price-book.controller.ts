@@ -1,7 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { PriceBookService } from './price-book.service';
-import { RequireCapabilities } from '../auth/roles.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -18,7 +17,6 @@ type AuthedRequest = Request & { user: AuthenticatedUser };
 
 /** WP-008 Phase B (BR-PRB-1xx, Permission Matrix §17): the Price Book maker-checker lifecycle. */
 @Controller('pricing/price-books')
-@RequireCapabilities('products.read')
 export class PriceBookController {
   constructor(private readonly svc: PriceBookService) {}
 

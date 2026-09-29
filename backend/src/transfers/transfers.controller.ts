@@ -1,7 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { TransfersService } from './transfers.service';
-import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -15,8 +14,6 @@ import {
 } from './dto/transfer.dto';
 
 @Controller('transfers')
-@Roles('owner', 'branch_manager', 'warehouse_manager')
-@RequireCapabilities('transfers.manage')
 export class TransfersController {
   constructor(private svc: TransfersService) {}
 
@@ -29,7 +26,7 @@ export class TransfersController {
   ) {
     return this.svc.list(
       ctx,
-      resolveBranchScope(req.user, branch_id, ['owner', 'warehouse_manager']),
+      resolveBranchScope(req.user, branch_id),
     );
   }
 

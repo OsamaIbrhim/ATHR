@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, type MembershipRole } from '@prisma/client';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/authenticated-user';
 import { sameMoney } from '../common/money';
 import type { MoneyInput } from '../common/money';
@@ -37,8 +36,6 @@ import type { PriceQuote } from './pricing.service';
  */
 @Injectable()
 export class CostVisibilityService {
-  constructor(private readonly permissionPolicy: PermissionPolicyService) {}
-
   /**
    * Matrix §17 `sales.sale.view-cost-margin` — the same question asked of a
    * *sale line* rather than of a price quote, and deliberately a different key
@@ -54,21 +51,13 @@ export class CostVisibilityService {
    * would silently re-grant it to every role that happens to hold the pricing
    * key and deny it to one that holds only the sales key.
    */
-  async canViewSaleCostMargin(actor: Pick<AuthenticatedUser, 'membership_role'>): Promise<boolean> {
-    const role: MembershipRole | null = actor.membership_role ?? null;
-    if (!role) return false;
-    return this.permissionPolicy.hasPermission(role, 'sales.sale.view-cost-margin');
+  async canViewSaleCostMargin(actor: Pick<AuthenticatedUser, 'permissions'>): Promise<boolean> {
+    return actor.permissions.has('sales.sale.view-cost-margin');
   }
 
   /** Either key grants it — Matrix §17 lists them separately, both imply cost-derived visibility. */
-  async canViewCostDerivedValues(actor: Pick<AuthenticatedUser, 'membership_role'>): Promise<boolean> {
-    const role: MembershipRole | null = actor.membership_role ?? null;
-    if (!role) return false;
-    const [cost, margin] = await Promise.all([
-      this.permissionPolicy.hasPermission(role, 'pricing.cost.view'),
-      this.permissionPolicy.hasPermission(role, 'pricing.margin.view'),
-    ]);
-    return cost || margin;
+  async canViewCostDerivedValues(actor: Pick<AuthenticatedUser, 'permissions'>): Promise<boolean> {
+    return actor.permissions.has('pricing.cost.view') || actor.permissions.has('pricing.margin.view');
   }
 
   /**
@@ -77,7 +66,7 @@ export class CostVisibilityService {
    * price-source identifiers that would let them enumerate entries.
    */
   async projectQuote(
-    actor: Pick<AuthenticatedUser, 'membership_role'>,
+    actor: Pick<AuthenticatedUser, 'permissions'>,
     quote: PriceQuote,
   ): Promise<PriceQuote | Omit<PriceQuote, 'min_allowed_price' | 'floor_is_cost_derived' | 'source'>> {
     if (await this.canViewCostDerivedValues(actor)) return quote;
@@ -87,7 +76,7 @@ export class CostVisibilityService {
 
   /** Strips `floor_price` from a persisted override/list row before it leaves the API. */
   async maskFloor<T extends { floor_price?: unknown }>(
-    actor: Pick<AuthenticatedUser, 'membership_role'>,
+    actor: Pick<AuthenticatedUser, 'permissions'>,
     row: T,
   ): Promise<T | Omit<T, 'floor_price'>> {
     if (await this.canViewCostDerivedValues(actor)) return row;
@@ -96,7 +85,7 @@ export class CostVisibilityService {
   }
 
   async maskFloors<T extends { floor_price?: unknown }>(
-    actor: Pick<AuthenticatedUser, 'membership_role'>,
+    actor: Pick<AuthenticatedUser, 'permissions'>,
     rows: readonly T[],
   ): Promise<(T | Omit<T, 'floor_price'>)[]> {
     if (await this.canViewCostDerivedValues(actor)) return [...rows];
@@ -129,12 +118,11 @@ export class CostVisibilityService {
    * roles that clear `GET /offers/suggestions` today (`tenant_owner`,
    * `location_manager`) both hold `pricing.cost.view`, so a freshly-seeded
    * environment masks nothing. It is worth routing through the gate anyway —
-   * grants are read from the `PermissionPolicySnapshot` row rather than from
-   * the catalog constant, and nothing but this call ties the offers read path
-   * to cost visibility if a later phase narrows either role.
+   * nothing but this call ties the offers read path to cost visibility if a
+   * later phase narrows either role, or revokes the key from one user.
    */
   async maskOfferSuggestion<T extends CostDisclosingSuggestion>(
-    actor: Pick<AuthenticatedUser, 'membership_role'>,
+    actor: Pick<AuthenticatedUser, 'permissions'>,
     row: T,
   ): Promise<MaskedSuggestion<T>> {
     if (await this.canViewCostDerivedValues(actor)) return row;
@@ -143,7 +131,7 @@ export class CostVisibilityService {
 
   /** The permission is resolved once for the whole page, not once per row. */
   async maskOfferSuggestions<T extends CostDisclosingSuggestion>(
-    actor: Pick<AuthenticatedUser, 'membership_role'>,
+    actor: Pick<AuthenticatedUser, 'permissions'>,
     rows: readonly T[],
   ): Promise<MaskedSuggestion<T>[]> {
     if (await this.canViewCostDerivedValues(actor)) return [...rows];
