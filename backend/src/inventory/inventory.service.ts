@@ -2,6 +2,7 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { InventoryRepository, type TrackingReconciliationRow } from './inventory.repository';
 import { applyStock, readAverageCosts } from './inventory-writer';
+import { readDrawnLots } from './inventory-lot-sql';
 import type { ApplyStockCommand, StockAfter } from './inventory.types';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { quantityNumber } from '../common/quantity';
@@ -21,6 +22,16 @@ export class InventoryService {
   /** Applies one command atomically inside the caller's transaction (see inventory-writer.ts). */
   apply(tx: Prisma.TransactionClient, command: ApplyStockCommand): Promise<StockAfter[]> {
     return applyStock(tx, command);
+  }
+
+  /** The serials / batches a document's lines took out of stock (a return finds what its sale line sold). */
+  drawnLots(
+    db: Pick<Prisma.TransactionClient, '$queryRaw'>,
+    tenantId: string,
+    reference: { type: string; id: string },
+    lineIds: string[],
+  ) {
+    return readDrawnLots(db, tenantId, reference, lineIds);
   }
 
   /** Current moving-average cost per variant in a warehouse (rows that do not exist yet are absent). */

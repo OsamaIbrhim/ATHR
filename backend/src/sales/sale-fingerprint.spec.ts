@@ -1,4 +1,7 @@
+import 'reflect-metadata';
+import { plainToInstance } from 'class-transformer';
 import { SalesService } from './sales.service';
+import { CreateSaleDto } from './dto/create-sale.dto';
 
 // A POS 1.6.0 payload has no tracking fields. Its fingerprint is stored on
 // every accepted invoice, so a replay of an old outbox item after an upgrade
@@ -48,5 +51,29 @@ function fingerprintOf(payload: any) {
 describe('sale command fingerprint', () => {
   it('keeps the exact fingerprint of a POS 1.6.0 payload (no tracking fields)', () => {
     expect(fingerprintOf(dto)).toBe(GOLDEN);
+  });
+
+  it('keeps it when the payload goes through the real DTO (no serials / batch_no appear from nowhere)', () => {
+    const parsed = plainToInstance(CreateSaleDto, JSON.parse(JSON.stringify(dto)));
+    expect(parsed.items[0].serials).toBeUndefined();
+    expect(parsed.items[0].batch_no).toBeUndefined();
+    expect(fingerprintOf(parsed)).toBe(GOLDEN);
+  });
+
+  const withItem = (extra: Record<string, unknown>) => ({ ...dto, items: [{ ...dto.items[0], ...extra }] });
+
+  it('changes only when the line names serials or a batch, and not with their order', () => {
+    const plain = fingerprintOf(dto);
+    const serial = fingerprintOf(withItem({ serials: ['B', 'A'] }));
+    const batch = fingerprintOf(withItem({ batch_no: 'L1' }));
+    expect(new Set([plain, serial, batch]).size).toBe(3);
+    expect(fingerprintOf(withItem({ serials: ['A', 'B'] }))).toBe(serial);
+    expect(fingerprintOf(withItem({ serials: ['A', 'C'] }))).not.toBe(serial);
+  });
+
+  it('is the same for one line with two serials as for the same variant split over two lines', () => {
+    const line = dto.items[0];
+    const split = { ...dto, items: [{ ...line, qty: 1, serials: ['A'] }, { ...line, qty: 1, serials: ['B'] }] };
+    expect(fingerprintOf(split)).toBe(fingerprintOf(withItem({ serials: ['A', 'B'] })));
   });
 });

@@ -196,6 +196,16 @@ describe('TransfersService', () => {
       expect(tx.$executeRaw).not.toHaveBeenCalled();
     });
 
+    it.each(['serial', 'batch'])('refuses a %s-tracked item with a clear error until W2b-2', async (tracking) => {
+      const { service, tx } = setup({ id: VARIANT_ID, sku: 'TRK-1', item_type: 'stocked', tracking, base_uom: null });
+      mockCreateFlow(service);
+
+      await expect(service.create(ctx, createDto(1), sourceActor)).rejects.toMatchObject({
+        response: { code: 'TRACKED_TRANSFER_NOT_SUPPORTED', variant_id: VARIANT_ID },
+      });
+      expect(tx.$executeRaw).not.toHaveBeenCalled();
+    });
+
     it('does not transfer service or non-stock items', async () => {
       const { service } = setup({ id: VARIANT_ID, sku: 'SVC-1', item_type: 'service', base_uom: null });
       mockCreateFlow(service);

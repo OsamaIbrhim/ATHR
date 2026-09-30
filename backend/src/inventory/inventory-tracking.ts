@@ -69,7 +69,7 @@ export async function applyTracking(
   const batchLines = lines.filter((line) => line.tracking === 'batch').map(withMovement);
   if (batchLines.length) {
     const rows = await readBatchRows(tx, command.tenantId, command.warehouseId, batchLines.map((line) => line.variantId));
-    const plan = planBatches({ lines: batchLines, rows, tolerant });
+    const plan = planBatches({ lines: batchLines, rows, tolerant, settleDeficit: command.type !== 'return' });
     await writeBatchChanges(tx, command.tenantId, command.warehouseId, plan.changes);
     collect(plan.warnings);
   }

@@ -200,7 +200,10 @@ function requestedBatches(line: BatchLine) {
 }
 
 /** Oldest expiry first, undated after dated, the unallocated row last of all. */
-function fefoOrder(left: BatchRow, right: BatchRow) {
+export function fefoOrder(
+  left: Pick<BatchRow, 'batch_no' | 'expiry_date' | 'created_at'>,
+  right: Pick<BatchRow, 'batch_no' | 'expiry_date' | 'created_at'>,
+) {
   const unallocated = Number(left.batch_no === UNALLOCATED) - Number(right.batch_no === UNALLOCATED);
   if (unallocated) return unallocated;
   const leftDate = left.expiry_date?.getTime() ?? Number.POSITIVE_INFINITY;
@@ -217,7 +220,12 @@ const batchesRequired = (variantId: string, total: Prisma.Decimal) =>
     { variant_id: variantId },
   );
 
-export function planBatches(input: { lines: BatchLine[]; rows: BatchRow[]; tolerant: boolean }) {
+/**
+ * `settleDeficit`: a receipt first pays off a negative unallocated row (the
+ * units were already sold without a batch). Goods coming back from a customer
+ * do not: they return to the batch they were sold from.
+ */
+export function planBatches(input: { lines: BatchLine[]; rows: BatchRow[]; tolerant: boolean; settleDeficit?: boolean }) {
   const changes: BatchChange[] = [];
   const warnings: Warnings = new Map();
 
@@ -236,7 +244,7 @@ export function planBatches(input: { lines: BatchLine[]; rows: BatchRow[]; toler
       // Units already sold without a batch (negative unallocated row) belong
       // to the first batch received, so the deficit is settled, not carried.
       const unallocated = rows.find((row) => row.batch_no === UNALLOCATED)?.qty ?? ZERO;
-      let deficit = unallocated.isNegative() ? unallocated.negated() : ZERO;
+      let deficit = unallocated.isNegative() && input.settleDeficit !== false ? unallocated.negated() : ZERO;
       for (const [batchNo, batch] of requested) {
         if (batchNo === UNALLOCATED) {
           add(UNALLOCATED, batch.qty);

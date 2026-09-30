@@ -1,5 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, SerialStatus } from '@prisma/client';
 import type { BatchChange, BatchRow, SerialRow, SerialWrite } from './inventory-lot-plan';
 
 type Tx = Prisma.TransactionClient;
@@ -11,6 +11,33 @@ type Tx = Prisma.TransactionClient;
  * one command at a time; the row locks here are the second, explicit layer.
  * Rows are always locked in a fixed order.
  */
+
+/** What one document line drew from lots: the serials and batches its stock movement took out. */
+export type DrawnLots = {
+  line_id: string;
+  serial: string | null;
+  serial_status: SerialStatus | null;
+  batch_no: string | null;
+  expiry_date: Date | null;
+  batch_created_at: Date | null;
+  qty: Prisma.Decimal;
+};
+
+/** The lots the stock movements of some document lines took out (a customer return finds its sale line's lots here). */
+export function readDrawnLots(tx: Pick<Tx, '$queryRaw'>, tenantId: string, reference: { type: string; id: string }, lineIds: string[]) {
+  return tx.$queryRaw<DrawnLots[]>`
+    SELECT m."reference_line_id" AS "line_id", s."serial", s."status" AS "serial_status",
+           b."batch_no", b."expiry_date", b."created_at" AS "batch_created_at", -lm."qty_delta" AS "qty"
+    FROM "InventoryLotMovement" lm
+    JOIN "InventoryMovement" m ON m."id" = lm."movement_id"
+    LEFT JOIN "InventorySerial" s ON s."id" = lm."serial_id"
+    LEFT JOIN "InventoryBatch" b ON b."id" = lm."batch_id"
+    WHERE m."tenant_id" = ${tenantId}::uuid
+      AND m."reference_type" = ${reference.type} AND m."reference_id" = ${reference.id}
+      AND m."reference_line_id" = ANY(${lineIds}::text[])
+      AND lm."qty_delta" < 0
+  `;
+}
 
 /** Live batch rows (and the unallocated row) of some variants in one warehouse. */
 export function readBatchRows(tx: Tx, tenantId: string, warehouseId: string, variantIds: string[]) {

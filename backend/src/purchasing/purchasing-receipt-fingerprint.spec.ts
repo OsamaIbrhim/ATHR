@@ -21,4 +21,29 @@ describe('purchase receipt fingerprint', () => {
   it('is unchanged for a receipt without tracking data', () => {
     expect(preparePurchaseReceipt(receipt).commandFingerprint).toBe(GOLDEN);
   });
+
+  const first = receipt.items[0];
+  const withLots = (extra: Record<string, unknown>) => ({ ...receipt, items: [{ ...first, ...extra }, receipt.items[1]] });
+  const fingerprint = (input: any) => preparePurchaseReceipt(input).commandFingerprint;
+
+  it('changes when the line names serials or batches, but not with their order', () => {
+    const serials = fingerprint(withLots({ qty: 2, serials: ['B', 'A'] }));
+    const batch = fingerprint(withLots({ batch_no: 'L1', expiry_date: '2027-01-01' }));
+    expect(new Set([GOLDEN, serials, batch]).size).toBe(3);
+    expect(fingerprint(withLots({ qty: 2, serials: ['A', 'B'] }))).toBe(serials);
+    expect(fingerprint(withLots({ batch_no: 'L1', expiry_date: '2027-02-01' }))).not.toBe(batch);
+  });
+
+  it('carries the lots of every item of a variant received in several batches', () => {
+    const prepared = preparePurchaseReceipt({
+      ...receipt,
+      items: [
+        { ...first, qty: 1, batch_no: 'L1', expiry_date: '2027-01-01' },
+        { ...first, qty: 3, batch_no: 'L2' },
+      ],
+    } as any);
+    const line = prepared.lines.find((candidate) => candidate.variant_id === first.variant_id)!;
+    expect(line.qty.toNumber()).toBe(4);
+    expect(line.lots.batches.map((batch) => [batch.batchNo, batch.qty.toNumber()])).toEqual([['L1', 1], ['L2', 3]]);
+  });
 });

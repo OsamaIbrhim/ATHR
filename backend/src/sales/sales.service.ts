@@ -44,9 +44,12 @@ import {
   variantQuantityPrecision,
 } from '../common/quantity';
 import { InventoryService } from '../inventory/inventory.service';
+import type { StockLots } from '../inventory/inventory.types';
+import { addLots, lotsFingerprint, lotsOfItem, stockLots, type SaleLots } from './sale-lots';
+import { planReturnLots, type ReturnLine } from './sale-return-lots';
 
 /** A sale line after merging duplicate variants; the quantity is exact (Decimal(14,3)). */
-type SaleLine = Omit<CreateSaleItemDto, 'qty'> & { qty: Prisma.Decimal };
+type SaleLine = Omit<CreateSaleItemDto, 'qty' | 'serials' | 'batch_no'> & { qty: Prisma.Decimal; lots: SaleLots };
 
 @Injectable()
 export class SalesService {
@@ -137,6 +140,8 @@ export class SalesService {
           name_ar_snapshot: item.name_ar_snapshot.trim(),
           name_en_snapshot: item.name_en_snapshot?.trim() || null,
           variant_label_snapshot: item.variant_label_snapshot?.trim() || null,
+          // Only when named: a POS without tracking keeps its exact fingerprint.
+          ...lotsFingerprint(item.lots),
         }))
         .sort((left, right) => left.variant_id.localeCompare(right.variant_id)),
     };
@@ -147,9 +152,10 @@ export class SalesService {
 
   private normalizeLines(items: CreateSaleItemDto[]) {
     const lines = new Map<string, SaleLine>();
-    for (const item of items) {
+    for (const { serials, batch_no, ...item } of items) {
       const existing = lines.get(item.variant_id);
-      if (!existing) lines.set(item.variant_id, { ...item, qty: quantity(item.qty) });
+      const lots = lotsOfItem({ serials, batch_no }, quantity(item.qty));
+      if (!existing) lines.set(item.variant_id, { ...item, qty: quantity(item.qty), lots });
       else {
         if (
           !sameMoney(existing.unit_price, item.unit_price) ||
@@ -166,6 +172,7 @@ export class SalesService {
           });
         }
         existing.qty = existing.qty.plus(quantity(item.qty));
+        addLots(existing.lots, lots);
       }
     }
     return { lines: [...lines.values()] };
@@ -420,6 +427,7 @@ export class SalesService {
           name_ar_snapshot: line.name_ar_snapshot.trim(),
           name_en_snapshot: line.name_en_snapshot?.trim() || null,
           variant_label_snapshot: line.variant_label_snapshot?.trim() || null,
+          lots: stockLots(line.lots),
         };
       });
 
@@ -471,12 +479,15 @@ export class SalesService {
                 variantId: item.variant_id,
                 qtyDelta: item.qty.negated(),
                 referenceLineId: itemIds.get(item.variant_id),
+                ...(item.lots ? { lots: item.lots } : {}),
               })),
           })
         ).map((stock) => [stock.variantId, stock]),
       );
       for (const stock of stockAfter.values()) {
         if (stock.qtyAfter.minus(stock.reserved).isNegative()) warningCodes.add('NEGATIVE_STOCK');
+        // Missing / unknown serials and unallocated batches: accepted, never refused.
+        for (const code of stock.warnings ?? []) warningCodes.add(code);
       }
       // Cost of goods at the moment of sale: the warehouse average; catalog cost for items without stock.
       const costOf = (variantId: string) =>
@@ -663,11 +674,15 @@ export class SalesService {
 
   async createReturn(context: TenantContext, dto: CreateReturnDto, actor: AuthenticatedUser) {
     const requested = new Map<string, Prisma.Decimal>();
+    const requestedSerials = new Map<string, string[]>();
     for (const item of dto.items) {
       requested.set(
         item.sales_invoice_item_id,
         (requested.get(item.sales_invoice_item_id) ?? new Prisma.Decimal(0)).plus(quantity(item.qty)),
       );
+      if (item.serials?.length) {
+        requestedSerials.set(item.sales_invoice_item_id, [...(requestedSerials.get(item.sales_invoice_item_id) ?? []), ...item.serials]);
+      }
     }
     const saleItemIds = [...requested.keys()].sort();
 
@@ -676,7 +691,7 @@ export class SalesService {
         where: { tenant_id: context.tenantId, id: dto.original_invoice_id },
         include: {
           items: {
-            include: { variant: { select: { item_type: true, base_uom: { select: { precision: true } } } } },
+            include: { variant: { select: { item_type: true, tracking: true, base_uom: { select: { precision: true } } } } },
           },
         },
       });
@@ -803,12 +818,39 @@ export class SalesService {
         include: { items: true },
       });
 
+      // Serial / batch variants go back to the lots their sale line drew.
+      const trackedLines: ReturnLine[] = [];
+      for (const [saleItemId, qty] of requested) {
+        const sold = soldById.get(saleItemId)!;
+        const { tracking } = sold.variant;
+        if (sold.variant.item_type !== 'stocked' || (tracking !== 'serial' && tracking !== 'batch')) continue;
+        trackedLines.push({
+          saleItemId,
+          tracking,
+          soldQty: sold.qty,
+          returnedBefore: returnedBefore.get(saleItemId) ?? new Prisma.Decimal(0),
+          qty,
+          serials: requestedSerials.get(saleItemId) ?? [],
+        });
+      }
+      const returnLots = trackedLines.length
+        ? planReturnLots(
+            trackedLines,
+            await this.inventory.drawnLots(
+              tx,
+              context.tenantId,
+              { type: 'SalesInvoice', id: original.id },
+              trackedLines.map((line) => line.saleItemId),
+            ),
+          )
+        : new Map();
+
       // Goods come back at the cost they were sold at (moving average), one
       // line per variant.
-      const stockLines = new Map<string, { qty: Prisma.Decimal; value: Prisma.Decimal; lineId: string }>();
+      const stockLines = new Map<string, { qty: Prisma.Decimal; value: Prisma.Decimal; lineId: string; lots?: StockLots }>();
       for (const item of returnRecord.items) {
         if (soldById.get(item.sales_invoice_item_id)!.variant.item_type !== 'stocked') continue;
-        const line = stockLines.get(item.variant_id) ?? { qty: new Prisma.Decimal(0), value: new Prisma.Decimal(0), lineId: item.id };
+        const line = stockLines.get(item.variant_id) ?? { qty: new Prisma.Decimal(0), value: new Prisma.Decimal(0), lineId: item.id, lots: returnLots.get(item.sales_invoice_item_id) };
         line.qty = line.qty.plus(item.qty);
         line.value = line.value.plus(item.unit_cost.mul(item.qty));
         stockLines.set(item.variant_id, line);
@@ -833,6 +875,7 @@ export class SalesService {
           referenceLineId: line.lineId,
           unitCost: unitCost(line.value.div(line.qty)),
           value: line.value,
+          ...(line.lots ? { lots: line.lots } : {}),
         })),
       });
 

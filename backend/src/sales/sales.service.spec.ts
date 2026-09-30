@@ -10,6 +10,10 @@ import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { Prisma } from '@prisma/client';
+import 'reflect-metadata';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
+import { CreateSaleItemDto } from './dto/create-sale.dto';
 
 const TAX_CODE_ID = '00000000-0000-0000-0000-0000000c0de1';
 
@@ -85,6 +89,7 @@ const warehouseId = '99999999-0000-4000-8000-000000000001';
 function inventoryDouble(qtyAfter = 8, reserved = 0, avgCost = 100) {
   return {
     defaultWarehouseId: jest.fn().mockResolvedValue(warehouseId),
+    drawnLots: jest.fn().mockResolvedValue([]),
     apply: jest.fn().mockImplementation((_tx: unknown, command: any) =>
       Promise.resolve(
         command.lines.map((line: any) => ({
@@ -260,7 +265,7 @@ function fingerprint(service: SalesService, dto: any) {
   );
 }
 
-function setupReturn(alreadyReturned = 0, itemType = 'stocked') {
+function setupReturn(alreadyReturned = 0, itemType = 'stocked', tracking = 'none') {
   const soldItem = {
     id: 'sale-item-1',
     variant_id: variantId,
@@ -268,7 +273,7 @@ function setupReturn(alreadyReturned = 0, itemType = 'stocked') {
     unit_price: 150,
     unit_cost: 100,
     unit_tax: 21,
-    variant: { item_type: itemType, base_uom: null },
+    variant: { item_type: itemType, tracking, base_uom: null },
   };
   const tx = {
     $queryRaw: jest.fn().mockResolvedValue([]),
@@ -703,5 +708,136 @@ describe('SalesService returns', () => {
     );
 
     expect(result.items[0]).not.toHaveProperty('unit_cost');
+  });
+});
+
+describe('SalesService tracked items', () => {
+  const withLots = (item: Record<string, unknown>) => saleDto({ items: [{ ...saleDto().items[0], ...item }] });
+
+  it('hands the serials and the picked batch of a line to the engine', async () => {
+    const serial = setupSale();
+    await serial.service.createSale(withLots({ serials: ['S1', 'S2'] }), terminal);
+    expect(serial.inventory.apply.mock.calls[0][1].lines[0].lots).toEqual({ serials: ['S1', 'S2'] });
+
+    const batch = setupSale();
+    await batch.service.createSale(withLots({ batch_no: 'LOT-7' }), terminal);
+    const [entry] = batch.inventory.apply.mock.calls[0][1].lines[0].lots.batches;
+    expect(entry.batchNo).toBe('LOT-7');
+    expect(entry.qty.toString()).toBe('2');
+  });
+
+  it('sends no lots at all for a line that names none (a POS without tracking)', async () => {
+    const { service, inventory } = setupSale();
+    await service.createSale(saleDto(), terminal);
+    expect(inventory.apply.mock.calls[0][1].lines[0]).not.toHaveProperty('lots');
+  });
+
+  it('merges the serials and batches of duplicate lines of one variant', async () => {
+    const line = saleDto().items[0];
+    const { service, inventory } = setupSale();
+    await service.createSale(
+      saleDto({
+        items: [
+          { ...line, qty: 1, serials: ['A'], batch_no: 'X' },
+          { ...line, qty: 1, serials: ['B', 'A'], batch_no: 'Y' },
+        ],
+      }),
+      terminal,
+    );
+    const lots = inventory.apply.mock.calls[0][1].lines[0].lots;
+    expect(lots.serials).toEqual(['A', 'B']);
+    expect(lots.batches.map((batch: any) => [batch.batchNo, batch.qty.toString()])).toEqual([['X', '1'], ['Y', '1']]);
+  });
+
+  it('records what the engine caveats about serials and batches as warning codes, never as a refusal', async () => {
+    const { service, inventory } = setupSale();
+    inventory.apply.mockImplementation(async (_tx: unknown, command: any) =>
+      command.lines.map((line: any) => ({
+        variantId: line.variantId,
+        qtyBefore: new Prisma.Decimal(5),
+        qtyAfter: new Prisma.Decimal(3),
+        reserved: new Prisma.Decimal(0),
+        avgCostBefore: new Prisma.Decimal(100),
+        avgCost: new Prisma.Decimal(100),
+        warnings: ['SERIAL_NOT_CAPTURED', 'SERIAL_NOT_IN_STOCK', 'BATCH_UNALLOCATED'],
+      })),
+    );
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.warning_codes).toEqual(['BATCH_UNALLOCATED', 'SERIAL_NOT_CAPTURED', 'SERIAL_NOT_IN_STOCK']);
+  });
+
+  it('cleans serials instead of validating them: garbage never blocks an upload', () => {
+    const dto = (serials: unknown, batch_no?: unknown) =>
+      plainToInstance(CreateSaleItemDto, { ...saleDto().items[0], serials, batch_no });
+    expect(dto([' A ', '', 'A', 7, null, {}, 'x'.repeat(192)]).serials).toEqual(['A', '7']);
+    expect(dto('not-an-array').serials).toBeUndefined();
+    expect(dto([]).serials).toBeUndefined();
+    expect(dto(undefined, '  ').batch_no).toBeUndefined();
+    expect(dto(undefined, ' L1 ').batch_no).toBe('L1');
+    expect(validateSync(dto(['A', ''], 42), { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
+  });
+
+  describe('customer returns', () => {
+    const returnOf = (qty: number, serials?: string[]) => ({
+      original_invoice_id: 'sale-1',
+      items: [{ sales_invoice_item_id: 'sale-item-1', qty, ...(serials ? { serials } : {}) }],
+    });
+    const drawnSerial = (serial: string, status: string) => ({
+      line_id: 'sale-item-1', serial, serial_status: status, batch_no: null, expiry_date: null, batch_created_at: null, qty: new Prisma.Decimal(1),
+    });
+    const drawnBatch = (batchNo: string, qty: number) => ({
+      line_id: 'sale-item-1', serial: null, serial_status: null, batch_no: batchNo, expiry_date: null,
+      batch_created_at: new Date('2026-01-01'), qty: new Prisma.Decimal(qty),
+    });
+
+    it('does not look up lots for an untracked variant', async () => {
+      const { service, inventory } = setupReturn();
+      await service.createReturn(ctx, returnOf(1), actor);
+      expect(inventory.drawnLots).not.toHaveBeenCalled();
+      expect(inventory.apply.mock.calls[0][1].lines[0]).not.toHaveProperty('lots');
+    });
+
+    it('puts back the serials that were sold on the line', async () => {
+      const { service, inventory } = setupReturn(0, 'stocked', 'serial');
+      inventory.drawnLots.mockResolvedValue([drawnSerial('S1', 'sold'), drawnSerial('S2', 'sold'), drawnSerial('S3', 'sold')]);
+      await service.createReturn(ctx, returnOf(2, ['S1', 'S3']), actor);
+      expect(inventory.drawnLots).toHaveBeenCalledWith(expect.anything(), ctx.tenantId, { type: 'SalesInvoice', id: 'sale-1' }, ['sale-item-1']);
+      expect(inventory.apply.mock.calls[0][1].lines[0].lots).toEqual({ serials: ['S1', 'S3'] });
+    });
+
+    it('refuses a serial that was not sold on the line or is already back', async () => {
+      const { service, inventory } = setupReturn(0, 'stocked', 'serial');
+      inventory.drawnLots.mockResolvedValue([drawnSerial('S1', 'sold'), drawnSerial('S2', 'in_stock'), drawnSerial('S3', 'sold')]);
+      await expect(service.createReturn(ctx, returnOf(1, ['S2']), actor)).rejects.toMatchObject({
+        response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['S2'] },
+      });
+      await expect(service.createReturn(ctx, returnOf(1, ['OTHER']), actor)).rejects.toMatchObject({
+        response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE' },
+      });
+      expect(inventory.apply).not.toHaveBeenCalled();
+    });
+
+    it('takes back an unrecorded serial for a unit that was sold without one (POS without serial scanning)', async () => {
+      // Sold 3, only S1 was recorded: two units have no serial on record.
+      const { service, inventory } = setupReturn(0, 'stocked', 'serial');
+      inventory.drawnLots.mockResolvedValue([drawnSerial('S1', 'sold')]);
+      await service.createReturn(ctx, returnOf(2, ['NEW-1', 'NEW-2']), actor);
+      expect(inventory.apply.mock.calls[0][1].lines[0].lots).toEqual({ serials: ['NEW-1', 'NEW-2'] });
+
+      const three = setupReturn(0, 'stocked', 'serial');
+      three.inventory.drawnLots.mockResolvedValue([drawnSerial('S1', 'sold')]);
+      await expect(three.service.createReturn(ctx, returnOf(3, ['N1', 'N2', 'N3']), actor)).rejects.toMatchObject({
+        response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['N3'] },
+      });
+    });
+
+    it('sends batch goods back to the batches the line drew, newest draw first, skipping earlier returns', async () => {
+      // The sale drew 2 from A (soonest) and 1 from B; 1 unit was already returned (it went back to B).
+      const { service, inventory } = setupReturn(1, 'stocked', 'batch');
+      inventory.drawnLots.mockResolvedValue([drawnBatch('A', 2), drawnBatch('B', 1)]);
+      await service.createReturn(ctx, returnOf(2), actor);
+      const { batches } = inventory.apply.mock.calls[0][1].lines[0].lots;
+      expect(batches.map((batch: any) => [batch.batchNo, batch.qty.toString()])).toEqual([['A', '2']]);
+    });
   });
 });

@@ -198,6 +198,26 @@ describe('planBatches', () => {
       expect(deltasOf(changes)).toEqual({ A: 0, '(unallocated)': 3, B: 3 });
     });
 
+    it('does not settle the deficit with goods coming back from a customer: they return to their own batch', () => {
+      const { changes } = planBatches({
+        lines: [batchLine(2, [{ batchNo: 'A', qty: 2 }])],
+        rows: [batch('', -3)],
+        tolerant: true,
+        settleDeficit: false,
+      });
+      expect(deltasOf(changes)).toEqual({ A: 2 });
+    });
+
+    it('adds goods returned from the unallocated row back to it', () => {
+      const { changes } = planBatches({
+        lines: [batchLine(2, [{ batchNo: '', qty: 2 }])],
+        rows: [batch('', -3)],
+        tolerant: true,
+        settleDeficit: false,
+      });
+      expect(deltasOf(changes)).toEqual({ '(unallocated)': 2 });
+    });
+
     it('does not touch a positive unallocated row', () => {
       const { changes } = planBatches({ lines: [batchLine(4, [{ batchNo: 'A', qty: 4 }])], rows: [batch('', 2)], tolerant: true });
       expect(deltasOf(changes)).toEqual({ A: 4 });

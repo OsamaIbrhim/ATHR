@@ -301,4 +301,146 @@ describe('PurchasingService accounting transaction', () => {
     expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
   });
 
+
+  describe('tracked items', () => {
+    const line = dto.items[0];
+    const receipt = (item: Record<string, unknown>[] | Record<string, unknown>) => ({
+      ...dto,
+      discount_amount: 0,
+      items: (Array.isArray(item) ? item : [item]).map((entry) => ({ ...line, ...entry })),
+    });
+    const serialVariant = { id: VARIANT_ID, sku: 'PHONE-1', tracking: 'serial' };
+    const batchVariant = { id: VARIANT_ID, sku: 'MILK-1', tracking: 'batch' };
+
+    it('hands the serials of a received line to the engine', async () => {
+      const { service, inventory } = setup(null, serialVariant);
+      await service.receive(ctx, receipt({ serials: ['A1', ' B2 '] }), actor);
+      expect(inventory.apply.mock.calls[0][1].lines[0].lots).toEqual({ serials: ['A1', 'B2'] });
+    });
+
+    it('hands each batch of a variant received in several batches, with its expiry', async () => {
+      const { service, inventory } = setup(null, batchVariant);
+      await service.receive(
+        ctx,
+        receipt([
+          { qty: 1, batch_no: 'L1', expiry_date: '2027-01-31' },
+          { qty: 3, batch_no: 'L2' },
+        ]),
+        actor,
+      );
+      const command = inventory.apply.mock.calls[0][1];
+      expect(command.lines).toHaveLength(1);
+      expect(command.lines[0].qtyDelta.toString()).toBe('4');
+      expect(command.lines[0].lots.batches.map((b: any) => [b.batchNo, b.expiryDate ?? null, b.qty.toString()])).toEqual([
+        ['L1', '2027-01-31', '1'],
+        ['L2', null, '3'],
+      ]);
+    });
+
+    it('sends no lots for an untracked line', async () => {
+      const { service, inventory } = setup();
+      await service.receive(ctx, dto, actor);
+      expect(inventory.apply.mock.calls[0][1].lines[0]).not.toHaveProperty('lots');
+    });
+
+    it('refuses tracking data the variant is not tracked by, before any stock moves', async () => {
+      for (const [variant, item] of [
+        [{ id: VARIANT_ID, sku: 'PLAIN' }, { serials: ['A', 'B'] }],
+        [{ id: VARIANT_ID, sku: 'PLAIN' }, { batch_no: 'L1' }],
+        [serialVariant, { batch_no: 'L1' }],
+        [batchVariant, { serials: ['A', 'B'] }],
+      ] as const) {
+        const { service, inventory } = setup(null, variant);
+        await expect(service.receive(ctx, receipt(item), actor)).rejects.toMatchObject({
+          response: { code: 'TRACKING_DATA_NOT_EXPECTED' },
+        });
+        expect(inventory.apply).not.toHaveBeenCalled();
+      }
+    });
+
+    it('refuses an expiry date without a batch, and a line naming both serials and a batch', async () => {
+      const { service, inventory } = setup(null, batchVariant);
+      await expect(service.receive(ctx, receipt({ expiry_date: '2027-01-01' }), actor)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.receive(ctx, receipt({ serials: ['A', 'B'], batch_no: 'L1' }), actor)).rejects.toBeInstanceOf(BadRequestException);
+      expect(inventory.apply).not.toHaveBeenCalled();
+    });
+
+    it('treats a replay with different serials as a different command', async () => {
+      const first = setup(null, serialVariant);
+      await first.service.receive(ctx, receipt({ serials: ['A', 'B'] }), actor);
+      const fingerprint = first.tx.purchaseInvoice.create.mock.calls[0][0].data.command_fingerprint;
+
+      const replay = { id: 'existing', command_fingerprint: fingerprint, items: [], cost_movements: [] };
+      await expect(setup(replay, serialVariant).service.receive(ctx, receipt({ serials: ['B', 'A'] }), actor)).resolves.toBeDefined();
+      await expect(setup(replay, serialVariant).service.receive(ctx, receipt({ serials: ['A', 'C'] }), actor)).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    describe('supplier return and reversal', () => {
+      const purchaseLineId = '77777777-7777-4777-8777-777777777777';
+      function returnSetup(variant: Record<string, unknown>) {
+        const inventory = inventoryDouble(80);
+        const tx = {
+          $queryRaw: jest.fn().mockResolvedValue([]),
+          supplierReturn: {
+            findFirst: jest.fn().mockResolvedValue(null),
+            create: jest.fn().mockImplementation(({ data }) =>
+              Promise.resolve({ id: 'sr-1', ...data, items: [{ id: 'sri-1', purchase_invoice_item_id: purchaseLineId, variant_id: VARIANT_ID, qty: new Prisma.Decimal(2) }] }),
+            ),
+            findFirstOrThrow: jest.fn().mockResolvedValue({ id: 'sr-1', items: [], cost_movements: [] }),
+          },
+          purchaseInvoice: {
+            findFirst: jest.fn().mockResolvedValue({
+              id: 'purchase-1', supplier_id: dto.supplier_id, branch_id: dto.branch_id, status: 'posted', accounting_version: 2,
+              items: [{ id: purchaseLineId, variant_id: VARIANT_ID, qty: new Prisma.Decimal(10), unit_cost: new Prisma.Decimal(100), net_unit_cost: new Prisma.Decimal(90), net_line_total: new Prisma.Decimal(900) }],
+            }),
+          },
+          productVariant: { findMany: jest.fn().mockResolvedValue([{ id: VARIANT_ID, sku: 'SKU-1', cost_price: new Prisma.Decimal(80), ...variant }]) },
+          supplierReturnItem: { groupBy: jest.fn().mockResolvedValue([]) },
+          auditLog: { create: jest.fn().mockResolvedValue({}) },
+        };
+        const prisma = { $transaction: jest.fn((callback) => callback(tx)), supplierReturn: { findFirst: jest.fn() } };
+        return { service: new PurchasingService(prisma as any, inventory as any), inventory, tx };
+      }
+      const giveBack = (service: PurchasingService, item: Record<string, unknown>) =>
+        service.returnToSupplier(
+          ctx, 'purchase-1',
+          { command_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', reason: 'Faulty', items: [{ purchase_invoice_item_id: purchaseLineId, qty: 2, ...item }] } as any,
+          actor,
+        );
+
+      it('names the serials or the batch of the units returned', async () => {
+        const serial = returnSetup({ tracking: 'serial' });
+        await giveBack(serial.service, { serials: ['A', 'B'] });
+        expect(serial.inventory.apply.mock.calls[0][1].lines[0].lots).toEqual({ serials: ['A', 'B'] });
+
+        const batch = returnSetup({ tracking: 'batch' });
+        await giveBack(batch.service, { batch_no: 'L9' });
+        const [entry] = batch.inventory.apply.mock.calls[0][1].lines[0].lots.batches;
+        expect([entry.batchNo, entry.qty.toString()]).toEqual(['L9', '2']);
+      });
+
+      it('refuses tracking data on an untracked line', async () => {
+        const { service, inventory } = returnSetup({});
+        await expect(giveBack(service, { serials: ['A', 'B'] })).rejects.toMatchObject({ response: { code: 'TRACKING_DATA_NOT_EXPECTED' } });
+        expect(inventory.apply).not.toHaveBeenCalled();
+      });
+
+      it('does not reverse a receipt of tracked items', async () => {
+        const tx = {
+          $queryRaw: jest.fn().mockResolvedValue([]),
+          purchaseInvoice: { findFirst: jest.fn().mockResolvedValue({ id: 'purchase-1', branch_id: dto.branch_id, status: 'posted', items: [{ id: 'l1', variant_id: VARIANT_ID, qty: new Prisma.Decimal(1) }] }) },
+          inventoryCostMovement: { findMany: jest.fn().mockResolvedValue([]) },
+          inventoryMovement: { findMany: jest.fn().mockResolvedValue([]) },
+          productVariant: { findMany: jest.fn().mockResolvedValue([{ id: VARIANT_ID, item_type: 'stocked', tracking: 'batch' }]) },
+        };
+        const inventory = inventoryDouble();
+        const service = new PurchasingService({ $transaction: jest.fn((callback) => callback(tx)) } as any, inventory as any);
+        await expect(service.reverse(ctx, 'purchase-1', { reason: 'oops' }, actor)).rejects.toMatchObject({
+          response: { code: 'TRACKED_PURCHASE_REVERSAL_NOT_SUPPORTED' },
+        });
+        expect(inventory.apply).not.toHaveBeenCalled();
+      });
+    });
+  });
+
 });
