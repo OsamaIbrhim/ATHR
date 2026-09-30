@@ -1,3 +1,4 @@
+import { BRAND_INITIAL, POS_APP_NAME } from '../../electron/brand'
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../api'
 import { athr } from '../electron'
@@ -188,7 +189,7 @@ export function RegisterScreen({
 
   return <div className="app-shell">
     <header className="app-header">
-      <div className="header-brand"><div className="brand-mark small">A</div><div><b>ATHR POS</b><span>{device.terminal_code}</span></div></div>
+      <div className="header-brand"><div className="brand-mark small">{BRAND_INITIAL}</div><div><b>{POS_APP_NAME}</b><span>{device.terminal_code}</span></div></div>
       <nav className="main-nav"><button className="active">نقطة البيع</button><button onClick={onSales}>الفواتير والمرتجعات</button></nav>
       <div className="header-status"><button className={`sync-pill ${syncState.sync_status}`} onClick={onSync}><span/><b>{syncState.sync_status==='success'?'متصل':syncState.sync_status==='syncing'?'مزامنة…':syncState.sync_status==='offline'?'غير متصل':'تنبيه'}</b><small>{syncState.pending_count} معلّق</small></button><div className="cashier-chip"><b>{session.user.name}</b><span>وردية منذ {new Date(shift.opened_at).toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})}</span></div><button className="button secondary compact" onClick={onLogout}>تسجيل الخروج</button><button className="button secondary compact" onClick={onCloseShift}>إغلاق الوردية</button></div>
     </header>

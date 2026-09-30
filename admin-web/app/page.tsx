@@ -5,6 +5,7 @@ import { useSessionUser } from '@/components/AuthGate'
 import { loadDashboardData } from '@/lib/dashboard'
 import { hasPermission, type Permission } from '@/lib/permissions'
 import { businessDate } from '@/lib/business-time'
+import { ADMIN_APP_NAME, BRAND_NAME } from '@/lib/brand'
 
 export default function Dashboard(){
   const user = useSessionUser()
@@ -35,7 +36,7 @@ export default function Dashboard(){
   useEffect(() => { void load() }, [load])
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">لوحة تحكم ATHR Operations</h1>
+      <h1 className="text-2xl font-bold">لوحة تحكم {ADMIN_APP_NAME}</h1>
       {error && (
         <div className="card border border-red-200 bg-red-50 text-red-800" role="alert">
           {error}{' '}
@@ -56,7 +57,7 @@ export default function Dashboard(){
             .map(({ href, label, className }) => <a key={href} href={href} className={className}>{label}</a>)}
         </div>
       </div>
-      <div className="text-sm text-gray-500">ATHR API: متصل عبر بوابة الخادم الآمنة</div>
+      <div className="text-sm text-gray-500">{BRAND_NAME} API: متصل عبر بوابة الخادم الآمنة</div>
     </div>
   )
 }

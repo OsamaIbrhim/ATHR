@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import * as os from 'os'
+import { POS_APP_NAME } from './brand'
 import { catalogNeedsFullRefresh, requireFullCatalogRefresh, snapshotProgress } from './db/catalog'
 import { initDb } from './db/connection'
 import { requeueInterruptedSends } from './db/outbox'
@@ -17,7 +18,7 @@ export function openLocalDatabase() {
   requeueInterruptedSends()
 
   if (!getMeta('device_id')) setMeta('device_id', randomUUID())
-  if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'ATHR POS')
+  if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || POS_APP_NAME)
   if (!getMeta('sync_status')) setMeta('sync_status', 'never')
   setMeta(
     'terminal_sale_sequence',

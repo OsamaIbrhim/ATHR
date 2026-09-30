@@ -1,3 +1,4 @@
+import { BRAND_NAME } from '../brand'
 import { BrowserWindow, ipcMain } from 'electron'
 import { formatMoney, fromCents, lineCents } from '../money'
 
@@ -47,7 +48,7 @@ export function registerPrintingIpc() {
     </style>
   </head>
   <body>
-    <h2>ATHR</h2>
+    <h2>${escapeHtml(BRAND_NAME)}</h2>
     <div class="center small">
       ${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br>
       ${new Date(invoice.occurred_at || Date.now()).toLocaleString(isAr ? 'ar-EG' : 'en-GB')}
@@ -74,7 +75,7 @@ export function registerPrintingIpc() {
     <hr>
     <div class="center small">
       ${isAr ? 'سياسة الإرجاع: 14 يوم بحالة الشراء الأصلية' : 'Returns: 14 days original condition'}<br>
-      شكرًا لاستخدامكم ATHR – Thank you
+      شكرًا لاستخدامكم ${escapeHtml(BRAND_NAME)} – Thank you
     </div>
   </body>
   </html>`

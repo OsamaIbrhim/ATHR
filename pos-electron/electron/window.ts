@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
+import { POS_APP_NAME } from './brand'
 
 let win: BrowserWindow | undefined
 
@@ -21,6 +22,7 @@ export function createWindow() {
     height: 768,
     minWidth: 1100,
     minHeight: 680,
+    title: POS_APP_NAME,
     backgroundColor: '#ffffff',
     icon: appIconPath(),
     webPreferences: {

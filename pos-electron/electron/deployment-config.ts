@@ -2,6 +2,7 @@ import { app } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
 import { ApiConfigurationError, resolveApiBase } from './api-base'
+import { BRAND_NAME } from './brand'
 import { deploymentConfigPath } from './paths'
 
 type DeploymentConfig = {
@@ -69,7 +70,7 @@ export function apiConfiguration() {
       error:
         error instanceof Error
           ? error.message
-          : 'عنوان خادم ATHR غير مضبوط.',
+          : `عنوان خادم ${BRAND_NAME} غير مضبوط.`,
     }
   }
 }
@@ -79,6 +80,6 @@ export function currentApiBase() {
   const configuration = apiConfiguration()
   if (configuration.configured) return configuration.api_base_url
   throw new ApiConfigurationError(
-    configuration.error || 'عنوان خادم ATHR مطلوب.',
+    configuration.error || `عنوان خادم ${BRAND_NAME} مطلوب.`,
   )
 }

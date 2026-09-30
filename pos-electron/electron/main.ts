@@ -1,4 +1,5 @@
 import { app, dialog } from 'electron'
+import { POS_APP_NAME } from './brand'
 import { apiConfiguration } from './deployment-config'
 import { openLocalDatabase } from './db-startup'
 import { cleanupFactoryResetArtifacts } from './factory-reset-runtime'
@@ -15,7 +16,7 @@ app.whenReady().then(() => {
     // Never run against a database that failed to open or migrate; the
     // original file is left untouched.
     dialog.showErrorBox(
-      'ATHR POS',
+      POS_APP_NAME,
       `تعذر فتح قاعدة بيانات الجهاز. لم يتم تعديل أي بيانات.\n${app.getPath('userData')}\n${
         error instanceof Error ? error.message : String(error)
       }`,

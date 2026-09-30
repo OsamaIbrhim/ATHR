@@ -1,3 +1,4 @@
+import { BRAND_INITIAL, POS_APP_NAME } from '../../electron/brand'
 import React, {
   useEffect,
   useState,
@@ -335,9 +336,9 @@ export function SalesScreen({
     <div className="app-shell">
       <header className="app-header">
         <div className="header-brand">
-          <div className="brand-mark small">B</div>
+          <div className="brand-mark small">{BRAND_INITIAL}</div>
           <div>
-            <b>ATHR POS</b>
+            <b>{POS_APP_NAME}</b>
             <span>{device.terminal_code}</span>
           </div>
         </div>
