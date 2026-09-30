@@ -13,6 +13,7 @@ import { TaxModule } from './tax/tax.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { OpeningBalanceModule } from './opening-balance/opening-balance.module';
+import { AdjustmentsModule } from './adjustments/adjustments.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
 import { CustomersModule } from './customers/customers.module';
@@ -53,6 +54,7 @@ import { EntitlementGuard } from './entitlements/entitlement.guard';
     PromotionsModule,
     InventoryModule,
     OpeningBalanceModule,
+    AdjustmentsModule,
     SuppliersModule,
     PurchasingModule,
     CustomersModule,

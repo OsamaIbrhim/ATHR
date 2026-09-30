@@ -32,6 +32,7 @@ model Branch {
   pos_terminals            PosTerminal[]
   pos_enrollment_codes     PosTerminalEnrollment[]
   assortments              Assortment[]
+  stock_adjustments        StockAdjustment[]
 
   @@unique([tenant_id, code])
   @@unique([tenant_id, id])
@@ -159,6 +160,7 @@ model Warehouse {
   inventory_cost_movements InventoryCostMovement[]
   inventory_batches        InventoryBatch[]
   inventory_serials        InventorySerial[]
+  stock_adjustments        StockAdjustment[]
 
   @@unique([tenant_id, id])
   @@index([branch_id])
@@ -534,6 +536,7 @@ model ProductVariant {
   // because a bundle component always names a Variant specifically, never a
   // product/brand/category, so there is no polymorphism to preserve.
   bundle_components          BundleComponent[]
+  stock_adjustment_items     StockAdjustmentItem[]
   tenant_id                  String                    @db.Uuid
 
   @@unique([tenant_id, sku])
@@ -2287,4 +2290,68 @@ model SubscriptionEvent {
   created_at      DateTime            @default(now())
 
   @@index([tenant_id, created_at])
+}
+
+// L1: a stock adjustment document (draft -> approved -> posted, or cancelled).
+// Posting is one InventoryService.apply command (type adjustment); the item
+// rows are stamped with the quantities and cost it was valued at. A posted or
+// cancelled document is immutable (trigger in the migration). Actor ids are
+// plain columns like AuditLog: the audit log records every step.
+enum StockAdjustmentStatus {
+  draft
+  approved
+  posted
+  cancelled
+}
+
+model StockAdjustment {
+  id                  String                @id @default(uuid()) @db.Uuid
+  tenant_id           String                @db.Uuid
+  branch_id           String                @db.Uuid
+  branch              Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse_id        String                @db.Uuid
+  warehouse           Warehouse             @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  adjustment_number   String                @db.VarChar(40)
+  status              StockAdjustmentStatus @default(draft)
+  note                String?               @db.VarChar(300)
+  idempotency_key     String?               @db.VarChar(191)
+  command_fingerprint String?               @db.VarChar(64)
+  created_by          String?               @db.Uuid
+  approved_by         String?               @db.Uuid
+  approved_at         DateTime?
+  posted_by           String?               @db.Uuid
+  posted_at           DateTime?
+  cancelled_by        String?               @db.Uuid
+  cancelled_at        DateTime?
+  cancellation_reason String?               @db.VarChar(500)
+  created_at          DateTime              @default(now())
+  updated_at          DateTime              @default(now())
+  items               StockAdjustmentItem[]
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, adjustment_number])
+  @@unique([tenant_id, idempotency_key])
+  @@index([tenant_id, status, created_at(sort: Desc)])
+  @@index([tenant_id, branch_id, created_at(sort: Desc)])
+}
+
+model StockAdjustmentItem {
+  id            String          @id @default(uuid()) @db.Uuid
+  tenant_id     String          @db.Uuid
+  adjustment_id String          @db.Uuid
+  adjustment    StockAdjustment @relation(fields: [tenant_id, adjustment_id], references: [tenant_id, id], onDelete: Cascade)
+  variant_id    String          @db.Uuid
+  variant       ProductVariant  @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  qty_delta     Decimal         @db.Decimal(14, 3)
+  reason_code   String          @db.VarChar(32)
+  note          String?         @db.VarChar(300)
+  // Stamped when the document is posted.
+  qty_before    Decimal?        @db.Decimal(14, 3)
+  qty_after     Decimal?        @db.Decimal(14, 3)
+  unit_cost     Decimal?        @db.Decimal(14, 4)
+  value         Decimal?        @db.Decimal(14, 2)
+
+  @@unique([tenant_id, adjustment_id, variant_id])
+  @@unique([tenant_id, id])
+  @@index([tenant_id, variant_id])
 }
