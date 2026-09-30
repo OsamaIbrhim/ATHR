@@ -56,9 +56,9 @@ DATABASE_URL=postgresql://...
 DIRECT_URL=postgresql://...
 JWT_SECRET=<unique random value of at least 32 characters>
 CORS_ORIGINS=https://bold-system.vercel.app
-POS_PROTOCOL_MIN=2
+POS_PROTOCOL_MIN=3
 POS_PROTOCOL_MAX=3
-POS_MIN_APP_VERSION=1.4.0
+POS_MIN_APP_VERSION=1.6.0
 ```
 
 Price-signing and offline-ticket secrets are intentionally absent from sales

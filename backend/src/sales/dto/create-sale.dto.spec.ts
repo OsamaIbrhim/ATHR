@@ -19,10 +19,10 @@ describe('sale line label snapshot', () => {
     expect(dto.variant_label_snapshot).toBe('L · أسود');
   });
 
-  it('still accepts size/color queued by a POS <= 1.5 (ignored)', () => {
+  it('rejects the removed size/color fields', () => {
     const dto = plainToInstance(CreateSaleItemDto, { ...line, size_snapshot: 'M', color_snapshot: 'Blue' });
-    expect(validateSync(dto, { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
-    expect(dto.variant_label_snapshot).toBeUndefined();
+    const errors = validateSync(dto, { whitelist: true, forbidNonWhitelisted: true });
+    expect(errors.map((error) => error.property).sort()).toEqual(['color_snapshot', 'size_snapshot']);
   });
 
   it('leaves the label empty for a simple product', () => {

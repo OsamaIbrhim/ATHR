@@ -39,10 +39,9 @@ This release is a clean protocol cutover. Do not deploy only one part of it.
 8. Set the backend compatibility variables:
 
    ```text
-   POS_PROTOCOL_MIN=2
-   POS_PROTOCOL_MAX=2
-   POS_REQUIRE_PROTOCOL_HEADERS=true
-   POS_MIN_APP_VERSION=1.4.0
+   POS_PROTOCOL_MIN=3
+   POS_PROTOCOL_MAX=3
+   POS_MIN_APP_VERSION=1.6.0
    ```
 
 9. Remove the obsolete price-snapshot and offline-ticket key variables.

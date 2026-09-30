@@ -17,23 +17,14 @@ function headerValue(value: string | string[] | undefined): string {
 }
 
 export class PosProtocolGuard implements CanActivate {
-  /**
-   * `minimumProtocol` lets one route demand a newer protocol than the range the
-   * backend accepts overall (the catalog pull needs 3 while a POS on protocol 2
-   * may still upload its already-completed sales).
-   */
-  constructor(private readonly minimumProtocol = 0) {}
-
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
     const manifest = readPosCompatibilityManifest();
     const rawProtocol = headerValue(request.headers['x-pos-protocol-version']);
     const appVersion = headerValue(request.headers['x-pos-app-version']);
 
-    // Staged rollout: legacy tills remain accepted until every installation has
-    // upgraded. Explicit malformed or unsupported headers still fail closed.
+    // Every POS request carries its protocol and app version; no header, no access.
     if (!rawProtocol || !appVersion) {
-      if (!manifest.require_protocol_headers && !this.minimumProtocol) return true;
       throw new HttpException({
         code: 'POS_PROTOCOL_HEADER_REQUIRED',
         retryable: false,
@@ -48,7 +39,7 @@ export class PosProtocolGuard implements CanActivate {
     const protocol = Number(rawProtocol);
     if (
       !Number.isSafeInteger(protocol) ||
-      protocol < Math.max(manifest.api_protocol.minimum, this.minimumProtocol) ||
+      protocol < manifest.api_protocol.minimum ||
       protocol > manifest.api_protocol.maximum
     ) {
       throw new ConflictException({

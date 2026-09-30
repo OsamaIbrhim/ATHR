@@ -91,17 +91,6 @@ export class CreateSaleItemDto {
   @Transform(({ value }) => cleanBatchNo(value))
   @IsString()
   batch_no?: string;
-
-  /** Deprecated and ignored: accepted only so sales queued by POS <= 1.5 still validate and upload. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  size_snapshot?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  color_snapshot?: string;
 }
 
 export class CreateSaleDto {
