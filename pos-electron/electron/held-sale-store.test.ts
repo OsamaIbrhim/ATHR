@@ -1,12 +1,16 @@
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { applyCatalogPull } from './db/catalog-sync'
 import { closeDb, initDb } from './db/connection'
 import { run } from './db/queries'
 import { wirePage, wireProduct } from './db/test-support'
 import { hydrateHeldSale } from './held-sale-store'
+
+// held-sale-store reaches secure-state, which imports Electron; CI installs
+// no Electron binary, and these tests never touch the secure state.
+vi.mock('electron', () => ({ app: { getPath: () => os.tmpdir() }, safeStorage: {} }))
 
 const SHIRT = '11111111-1111-4111-8111-111111111111'
 const KG = '22222222-2222-4222-8222-222222222222'
