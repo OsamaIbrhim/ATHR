@@ -1,7 +1,6 @@
 import { app, ipcMain } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
-import { PRE_ENGINE_BACKUP_SUFFIX } from './db/connection'
 import {
   assertFactoryResetAllowed,
   FactoryResetPolicyError,
@@ -90,7 +89,6 @@ export function cleanupFactoryResetArtifacts() {
   for (const name of names) {
     if (
       name.startsWith('athr_pos.sqlite.factory-reset-') ||
-      name.startsWith('bold_pos.sqlite.factory-reset-') ||
       name.startsWith('secure-state.bin.factory-reset-')
     ) {
       bestEffortRemove(path.join(directory, name))
@@ -187,9 +185,8 @@ export function registerFactoryResetIpc(
           bestEffortRemove(path.join(app.getPath('userData'), 'updates'))
           if (secureMoved) bestEffortRemove(stagedSecure)
           if (databaseMoved) bestEffortRemove(stagedDatabase)
-          // A confirmed wipe also removes the one-time pre-WAL safety copy and
-          // any WAL sidecar files, so no customer data is left behind.
-          for (const leftover of ['-wal', '-shm', PRE_ENGINE_BACKUP_SUFFIX]) {
+          // A confirmed wipe also removes the WAL sidecar files, so no customer data is left behind.
+          for (const leftover of ['-wal', '-shm']) {
             bestEffortRemove(`${database}${leftover}`)
           }
 

@@ -1,3 +1,4 @@
+import { POS_APP_NAME } from './brand'
 import {
   app,
   BrowserWindow,
@@ -98,7 +99,7 @@ async function offerUpdate(
   const notes = manifest.notes ? `\n\n${manifest.notes}` : ''
   const offer = await messageBox(options, {
     type: 'info',
-    title: 'تحديث ATHR POS',
+    title: `تحديث ${POS_APP_NAME}`,
     message: `يتوفر إصدار جديد ${manifest.version}.`,
     detail:
       `الإصدار الحالي ${app.getVersion()}.${notes}\n\n` +
@@ -128,7 +129,7 @@ async function offerUpdate(
 
   const install = await messageBox(options, {
     type: manifest.mandatory ? 'warning' : 'info',
-    title: 'تثبيت تحديث ATHR POS',
+    title: `تثبيت تحديث ${POS_APP_NAME}`,
     message: `تم تنزيل الإصدار ${manifest.version} والتحقق منه.`,
     detail:
       'سيغلق التطبيق ويفتح برنامج التثبيت. احفظ أي عملية حالية قبل المتابعة.',

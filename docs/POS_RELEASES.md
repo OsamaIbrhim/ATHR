@@ -17,16 +17,13 @@ The installed POS continues to verify the installer SHA-256 before it can run th
 
 ### 1.6.0 (POS protocol 3)
 
-Catches the POS up to the generic catalog and sync protocol 3.
+Generic catalog and sync protocol 3.
 
-- **Deploy order.** Deploy the backend first (`POS_PROTOCOL_MIN=2`, `POS_PROTOCOL_MAX=3`), then release 1.6.0.
-  Keep `POS_MIN_APP_VERSION` at `1.4.0` until every till runs 1.6.0.
-- **Upgrade of an installed till.** Local schema migrates v3 to v4 on first start: `products` is rebuilt
-  (`label`, `attributes`, unit columns; size/color become the label, old barcodes move to the new `barcodes`
-  table), `stock.qty` holds decimals. Pending sales, sent sales and held sales are not touched. The catalog cursor is
-  cleared, so the next sync is one full snapshot; until it finishes, held sales cannot be restored and price/stock
-  data of the old catalog is not trusted. Sales queued by 1.5.1 upload unchanged (the server still accepts
-  `size_snapshot`/`color_snapshot`); new sales send `variant_label_snapshot`.
+- **Protocol.** Only protocol 3 exists: `POS_PROTOCOL_MIN=3`, `POS_PROTOCOL_MAX=3` (the defaults). Every POS request must
+  carry `x-pos-protocol-version` and `x-pos-app-version`; `POS_MIN_APP_VERSION` defaults to the current POS version.
+- **Local data.** One local schema migration (v1); money is stored only as integer minor units. A database from a
+  pre-release dev build is refused, not upgraded: delete the local data folder.
+- **Sale lines** carry `variant_label_snapshot` (the backend no longer accepts `size_snapshot`/`color_snapshot`).
 - **Catalog sync.** The snapshot is paged and resumable (`snapshot_after`); the cursor and catalog format version are
   stored only after the last page, so an interrupted snapshot never leaves a partial catalog behind a valid cursor.
 - **Scan.** Exact barcode (with pack size), then SKU, then scale label (weight or price), then text search.

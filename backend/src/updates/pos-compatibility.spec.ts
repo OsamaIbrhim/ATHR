@@ -35,12 +35,11 @@ describe('POS compatibility contract', () => {
     delete process.env.POS_PROTOCOL_MIN;
     delete process.env.POS_PROTOCOL_MAX;
     delete process.env.POS_MIN_APP_VERSION;
-    delete process.env.POS_REQUIRE_PROTOCOL_HEADERS;
     expect(readPosCompatibilityManifest()).toMatchObject({
-      api_protocol: { minimum: 2, maximum: 3 },
-      minimum_pos_version: '1.4.0',
-      require_protocol_headers: false,
+      api_protocol: { minimum: 3, maximum: 3 },
+      minimum_pos_version: '1.6.0',
     });
+    expect(readPosCompatibilityManifest()).not.toHaveProperty('require_protocol_headers');
   });
 
   it('compares semantic versions including prereleases', () => {
@@ -48,22 +47,26 @@ describe('POS compatibility contract', () => {
     expect(comparePosVersions('1.4.0', '1.4.0-beta.1')).toBeGreaterThan(0);
   });
 
-  it('accepts legacy clients while header enforcement is staged off', () => {
-    process.env.POS_REQUIRE_PROTOCOL_HEADERS = 'false';
-    expect(new PosProtocolGuard().canActivate(context())).toBe(true);
+  it('requires the protocol headers on every request', () => {
+    for (const headers of [{}, { 'x-pos-protocol-version': '3' }, { 'x-pos-app-version': '1.6.0' }]) {
+      expect(responseOf(() => new PosProtocolGuard().canActivate(context(headers)))).toMatchObject({
+        status: 426,
+        response: { code: 'POS_PROTOCOL_HEADER_REQUIRED', retryable: false },
+      });
+    }
   });
 
   it('accepts a supported protocol and application version', () => {
     expect(new PosProtocolGuard().canActivate(context({
-      'x-pos-protocol-version': '2',
-      'x-pos-app-version': '1.4.0',
+      'x-pos-protocol-version': '3',
+      'x-pos-app-version': '1.6.0',
     }))).toBe(true);
   });
 
   it('rejects unsupported protocols as permanent conflicts', () => {
     const result = responseOf(() => new PosProtocolGuard().canActivate(context({
       'x-pos-protocol-version': '4',
-      'x-pos-app-version': '1.4.0',
+      'x-pos-app-version': '1.6.0',
     })));
     expect(result).toMatchObject({
       status: 409,
@@ -71,28 +74,18 @@ describe('POS compatibility contract', () => {
     });
   });
 
-  it('lets a route demand a newer protocol than the accepted range (catalog pull needs 3)', () => {
-    const pull = new PosProtocolGuard(3);
-    expect(pull.canActivate(context({ 'x-pos-protocol-version': '3', 'x-pos-app-version': '1.6.0' }))).toBe(true);
-    for (const headers of [
-      { 'x-pos-protocol-version': '2', 'x-pos-app-version': '1.5.1' },
-      {},
-    ]) {
-      expect(responseOf(() => pull.canActivate(context(headers)))).toMatchObject({ status: expect.any(Number) });
-    }
-    expect(responseOf(() => pull.canActivate(context({ 'x-pos-protocol-version': '2', 'x-pos-app-version': '1.5.1' })))).toMatchObject({
-      status: 409,
-      response: { code: 'POS_PROTOCOL_UNSUPPORTED' },
-    });
-    // The same POS may still upload its finished sales.
-    expect(new PosProtocolGuard().canActivate(context({ 'x-pos-protocol-version': '2', 'x-pos-app-version': '1.5.1' }))).toBe(true);
+  it('rejects the retired protocol 2 as a permanent conflict', () => {
+    expect(responseOf(() => new PosProtocolGuard().canActivate(context({
+      'x-pos-protocol-version': '2',
+      'x-pos-app-version': '1.6.0',
+    })))).toMatchObject({ status: 409, response: { code: 'POS_PROTOCOL_UNSUPPORTED' } });
   });
 
   it('rejects an application below the configured minimum', () => {
-    process.env.POS_MIN_APP_VERSION = '1.4.0';
+    process.env.POS_MIN_APP_VERSION = '1.6.0';
     const result = responseOf(() => new PosProtocolGuard().canActivate(context({
-      'x-pos-protocol-version': '2',
-      'x-pos-app-version': '1.3.1',
+      'x-pos-protocol-version': '3',
+      'x-pos-app-version': '1.5.9',
     })));
     expect(result).toMatchObject({
       status: 426,
@@ -100,18 +93,9 @@ describe('POS compatibility contract', () => {
     });
   });
 
-  it('can require upgraded clients after rollout completion', () => {
-    process.env.POS_REQUIRE_PROTOCOL_HEADERS = 'true';
-    const result = responseOf(() => new PosProtocolGuard().canActivate(context()));
-    expect(result).toMatchObject({
-      status: 426,
-      response: { code: 'POS_PROTOCOL_HEADER_REQUIRED', retryable: false },
-    });
-  });
-
   it('fails closed when the configured range is invalid', () => {
-    process.env.POS_PROTOCOL_MIN = '3';
-    process.env.POS_PROTOCOL_MAX = '2';
+    process.env.POS_PROTOCOL_MIN = '4';
+    process.env.POS_PROTOCOL_MAX = '3';
     expect(() => readPosCompatibilityManifest()).toThrow(
       'POS protocol bounds or POS_MIN_APP_VERSION are invalid',
     );

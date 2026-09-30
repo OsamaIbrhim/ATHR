@@ -91,7 +91,8 @@ export function validDevice(value: any): value is DeviceCredential {
     validString(value.device_id) &&
     validString(value.branch_id) &&
     validString(value.terminal_id) &&
-    validString(value.terminal_code)
+    validString(value.terminal_code) &&
+    validString(value.tenant_id)
   )
 }
 

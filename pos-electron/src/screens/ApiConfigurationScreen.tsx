@@ -1,3 +1,4 @@
+import { BRAND_INITIAL, BRAND_NAME, POS_APP_NAME } from '../../electron/brand'
 import React, { useState } from 'react'
 import { api, ApiError } from '../api'
 import { ApiConfiguration } from '../electron'
@@ -30,15 +31,15 @@ export function ApiConfigurationScreen({
   return (
     <main className="auth-shell">
       <section className="auth-card enrollment-card">
-        <div className="brand-mark">A</div>
+        <div className="brand-mark">{BRAND_INITIAL}</div>
         <span className="eyebrow">إعداد التشغيل</span>
-        <h1>ربط ATHR POS بالخادم</h1>
+        <h1>ربط {POS_APP_NAME} بالخادم</h1>
         <p className="muted">
           أدخل عنوان API المعتمد للمنشأة. لن تُحذف بيانات الجهاز أو العمليات
           المحلية عند تغيير عنوان الخادم.
         </p>
         <form onSubmit={submit} className="auth-form">
-          <label htmlFor="athr-api-base">عنوان خادم ATHR</label>
+          <label htmlFor="athr-api-base">عنوان خادم {BRAND_NAME}</label>
           <input
             id="athr-api-base"
             dir="ltr"

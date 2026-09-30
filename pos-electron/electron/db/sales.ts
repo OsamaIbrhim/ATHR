@@ -1,4 +1,4 @@
-import { decimalToMinorUnits } from '../money-codec'
+import { decimalToMinorUnits, minorUnitsToDecimal } from '../money-codec'
 import { isValidQuantity } from '../quantity'
 import { PosSaleValidationError } from '../sale-validation'
 import { get, run, setMeta, tx } from './queries'
@@ -56,14 +56,13 @@ export function commitLocalSale(sale: LocalSaleRecord) {
     }
     run(
       `INSERT INTO sales_local (
-        sync_id,invoice_number,total,created_at,occurred_at,payment_method,
-        customer_phone,cashier_id,seller_id,shift_id,offline_session_id,terminal_sequence,
-        total_minor_units
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        sync_id,invoice_number,total_minor_units,created_at,occurred_at,payment_method,
+        customer_phone,cashier_id,seller_id,shift_id,offline_session_id,terminal_sequence
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         sale.syncId,
         sale.invoiceNumber,
-        sale.localTotal,
+        decimalToMinorUnits(sale.localTotal),
         sale.occurredAt,
         sale.occurredAt,
         sale.paymentMethod,
@@ -73,7 +72,6 @@ export function commitLocalSale(sale: LocalSaleRecord) {
         sale.shiftId,
         sale.offlineSessionId,
         sale.terminalSequence,
-        decimalToMinorUnits(sale.localTotal),
       ],
     )
     run(
@@ -95,13 +93,16 @@ export function commitLocalSale(sale: LocalSaleRecord) {
 }
 
 export function findSaleBySyncId(syncId: string) {
-  return get(
-    `SELECT sync_id,invoice_number,total,terminal_sequence,
+  const row = get(
+    `SELECT sync_id,invoice_number,total_minor_units,terminal_sequence,
             COALESCE(occurred_at,created_at) AS occurred_at
      FROM sales_local
      WHERE sync_id=?`,
     [syncId],
   )
+  if (!row) return undefined
+  const { total_minor_units, ...rest } = row
+  return { ...rest, total: Number(minorUnitsToDecimal(Number(total_minor_units ?? 0))) }
 }
 
 export function highestStoredSaleSequence() {

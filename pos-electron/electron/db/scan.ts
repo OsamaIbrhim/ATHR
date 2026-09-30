@@ -2,6 +2,7 @@ import { parseScaleBarcode, type ScaleBarcodeReading } from '@athr/domain-core'
 import { toCents } from '../money'
 import type { ScanResult } from '../scan-types'
 import { QUANTITY_SCALE, quantityToMilli, roundMilli, milliToQuantity } from '../quantity'
+import { toCatalogProduct } from './product-row'
 import { q } from './queries'
 import { scaleBarcodeConfig } from './tenant-settings'
 
@@ -54,8 +55,8 @@ export function scaleQuantity(
   return milliToQuantity(roundMilli(milli, precision))
 }
 
-function withoutPackQty({ pack_qty: _packQty, ...product }: Record<string, any>) {
-  return product
+function barcodeHitProduct({ pack_qty: _packQty, ...product }: Record<string, any>) {
+  return toCatalogProduct(product)
 }
 
 /**
@@ -68,20 +69,20 @@ export function scan(rawTerm: unknown): ScanResult {
 
   const [barcode] = q(BARCODE_SQL, [term])
   if (barcode) {
-    return { kind: 'barcode', qty: Number(barcode.pack_qty), products: [withoutPackQty(barcode)] }
+    return { kind: 'barcode', qty: Number(barcode.pack_qty), products: [barcodeHitProduct(barcode)] }
   }
 
   const bySku = q(SKU_SQL, [term])
-  if (bySku.length) return { kind: 'sku', qty: 1, products: bySku }
+  if (bySku.length) return { kind: 'sku', qty: 1, products: bySku.map(toCatalogProduct) }
 
   const config = scaleBarcodeConfig()
   const reading = parseScaleBarcode(term, config)
   if (reading) {
     const [labelled] = q(SCALE_PLU_SQL, [reading.plu])
     const qty = labelled ? scaleQuantity(reading, labelled, config.price_includes_tax) : 0
-    if (labelled && qty > 0) return { kind: 'scale', qty, products: [withoutPackQty(labelled)] }
+    if (labelled && qty > 0) return { kind: 'scale', qty, products: [barcodeHitProduct(labelled)] }
   }
 
   const like = `%${term}%`
-  return { kind: 'search', qty: 1, products: q(TEXT_SEARCH_SQL, [like, like, like, like]) }
+  return { kind: 'search', qty: 1, products: q(TEXT_SEARCH_SQL, [like, like, like, like]).map(toCatalogProduct) }
 }

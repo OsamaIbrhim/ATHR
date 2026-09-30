@@ -1,3 +1,4 @@
+import { BRAND_INITIAL, POS_APP_NAME } from '../../electron/brand'
 import React, {
   useEffect,
   useState,
@@ -24,7 +25,6 @@ import {
   toCents,
 } from '../utils'
 import { OPERATIONS_PAGE_SIZE, pageWindow } from '../operations'
-import { variantLabel } from '../variant-label'
 import {
   addQuantity,
   isValidQuantity,
@@ -336,9 +336,9 @@ export function SalesScreen({
     <div className="app-shell">
       <header className="app-header">
         <div className="header-brand">
-          <div className="brand-mark small">B</div>
+          <div className="brand-mark small">{BRAND_INITIAL}</div>
           <div>
-            <b>ATHR POS</b>
+            <b>{POS_APP_NAME}</b>
             <span>{device.terminal_code}</span>
           </div>
         </div>
@@ -897,11 +897,7 @@ function itemName(item: InvoiceItem) {
     item.variant?.product?.name_en ||
     item.variant?.sku ||
     item.variant_id
-  const label = variantLabel({
-    label: item.variant_label_snapshot || item.variant?.label,
-    size: item.size_snapshot,
-    color: item.color_snapshot,
-  })
+  const label = String(item.variant_label_snapshot || item.variant?.label || '').trim()
   return label ? `${name} — ${label}` : name
 }
 

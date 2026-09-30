@@ -140,7 +140,7 @@ export function validateLocalSaleInput(
 
 type ValidatedSaleItem = ReturnType<typeof validateLocalSaleInput>['items'][number]
 
-/** One sale line as the backend's CreateSaleItemDto expects it (label snapshot, no size/color). */
+/** One sale line as the backend's CreateSaleItemDto expects it (label snapshot). */
 export function saleItemCommand(item: ValidatedSaleItem) {
   return {
     variant_id: item.variant_id,

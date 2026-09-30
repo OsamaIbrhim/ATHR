@@ -8,8 +8,6 @@ import { PosProtocolGuard } from '../updates/pos-protocol.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
-/** The catalog format (paged snapshot, entity deltas) arrived with POS protocol 3. */
-const CATALOG_PROTOCOL = 3;
 
 @Controller('sync')
 export class SyncController {
@@ -25,7 +23,7 @@ export class SyncController {
    */
   @RequirePermission('sales.sale.create', 'catalog.product.view')
   @Get('pull')
-  @UseGuards(new PosProtocolGuard(CATALOG_PROTOCOL))
+  @UseGuards(new PosProtocolGuard())
   async pull(
     @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string,
