@@ -16,11 +16,12 @@ export interface NumberInputProps {
   disabled?: boolean
   placeholder?: string
   className?: string
+  autoFocus?: boolean
 }
 
 /** Decimal box: LTR, Western digits, extra decimals refused, optional unit suffix. */
 const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(function NumberInput(
-  { value, onChange, precision, allowSign, unit, size = 'md', ariaLabel, error, selectOnFocus = true, onEnter, disabled, placeholder, className = '' }, ref,
+  { value, onChange, precision, allowSign, unit, size = 'md', ariaLabel, error, selectOnFocus = true, onEnter, disabled, placeholder, className = '', autoFocus }, ref,
 ) {
   return (
     <span className={`relative block ${className}`}>
@@ -31,6 +32,7 @@ const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(function Numb
         dir="ltr"
         autoComplete="off"
         disabled={disabled}
+        autoFocus={autoFocus}
         placeholder={placeholder}
         aria-label={ariaLabel}
         aria-invalid={error ? true : undefined}

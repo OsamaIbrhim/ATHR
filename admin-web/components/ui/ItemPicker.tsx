@@ -22,11 +22,13 @@ const ItemPicker = forwardRef<ItemPickerHandle, {
   placeholder?: string
   excludeTracked?: boolean
   disabled?: boolean
+  /** Called on Enter before any search; return true when the text was handled (e.g. a scanner code counted directly). */
+  onRawSubmit?: (text: string) => boolean
   /** Shown at the end of the field (e.g. a camera button). */
   endAdornment?: React.ReactNode
 }>(function ItemPicker({
   branchId, onPick, onUnknownBarcode, disabledWhen, autoFocus, size = 'md', disabled,
-  placeholder = 'امسح الباركود أو اكتب اسم الصنف أو SKU', excludeTracked, endAdornment,
+  placeholder = 'امسح الباركود أو اكتب اسم الصنف أو SKU', excludeTracked, endAdornment, onRawSubmit,
 }, ref) {
   const input = useRef<HTMLInputElement>(null)
   const [text, setText] = useState('')
@@ -76,6 +78,7 @@ const ItemPicker = forwardRef<ItemPickerHandle, {
   const submit = async () => {
     const code = toWesternDigits(text).trim()
     if (!code) return
+    if (onRawSubmit?.(code)) { setText(''); setResults([]); return }
     const found = await run(code)
     const exact = matchBarcode(found, code)
     if (exact) {
