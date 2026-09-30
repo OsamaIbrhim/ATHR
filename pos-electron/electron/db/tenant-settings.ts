@@ -15,7 +15,9 @@ export function isValidScaleBarcodeConfig(config: any): config is ScaleBarcodeCo
     (config.value === 'weight' || config.value === 'price') &&
     Number.isInteger(config.decimals) &&
     config.decimals >= 0 &&
-    config.decimals <= 4
+    config.decimals <= 4 &&
+    // Absent from older servers: the default (tax included) applies.
+    (config.price_includes_tax === undefined || typeof config.price_includes_tax === 'boolean')
   )
 }
 

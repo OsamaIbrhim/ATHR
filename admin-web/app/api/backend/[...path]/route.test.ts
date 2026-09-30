@@ -44,6 +44,6 @@ describe('backend proxy', () => {
   })
 
   it('exposes only the methods the app uses', () => {
-    expect(Object.keys(route).sort()).toEqual(['DELETE', 'GET', 'PATCH', 'POST'])
+    expect(Object.keys(route).sort()).toEqual(['DELETE', 'GET', 'PATCH', 'POST', 'PUT'])
   })
 })

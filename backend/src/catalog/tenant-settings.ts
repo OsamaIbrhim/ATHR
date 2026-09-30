@@ -35,5 +35,6 @@ export function parseScaleBarcodeConfig(input: unknown): ScaleBarcodeConfig {
   if (!Number.isInteger(config.decimals) || config.decimals < 0 || config.decimals > 4) {
     bad('decimals must be between 0 and 4');
   }
+  if (typeof config.price_includes_tax !== 'boolean') bad('price_includes_tax must be true or false');
   return config;
 }

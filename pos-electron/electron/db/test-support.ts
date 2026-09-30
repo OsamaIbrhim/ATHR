@@ -2,7 +2,7 @@
 import type { ScaleBarcodeConfig } from '@athr/domain-core'
 
 export const SCALE_SETTINGS: { scale_barcode: ScaleBarcodeConfig } = {
-  scale_barcode: { enabled: true, prefixes: ['20', '21'], item_digits: 5, value: 'weight', decimals: 3 },
+  scale_barcode: { enabled: true, prefixes: ['20', '21'], item_digits: 5, value: 'weight', decimals: 3, price_includes_tax: true },
 }
 
 export function wireProduct(over: Record<string, unknown> = {}) {

@@ -111,6 +111,23 @@ describe('scan resolution', () => {
     expect(scan(scaleLabel('2000001', '01235'))).toMatchObject({ kind: 'scale', qty: 1.083 })
   })
 
+  it('a price scale label divides by the net unit price when the tenant prints prices before tax', () => {
+    applyCatalogPull(
+      wirePage({
+        cursor: '8:0',
+        products: [tomato],
+        stock: [],
+        settings: {
+          scale_barcode: { ...SCALE_SETTINGS.scale_barcode, value: 'price', decimals: 2, price_includes_tax: false },
+        },
+      }),
+    )
+    // Label price 10.00 = exactly 1 kg at 10.00 net (11.40 with tax).
+    expect(scan(scaleLabel('2000001', '01000'))).toMatchObject({ kind: 'scale', qty: 1 })
+    // 11.40 / 10.00 = 1.14 kg
+    expect(scan(scaleLabel('2000001', '01140'))).toMatchObject({ kind: 'scale', qty: 1.14 })
+  })
+
   it('falls through when the label cannot be honoured', () => {
     // Unknown PLU.
     expect(scan(scaleLabel('2000009', '01250'))).toMatchObject({ kind: 'search', products: [] })

@@ -32,23 +32,25 @@ const notFound = (): ScanResult => ({ kind: 'search', qty: 1, products: [] })
 
 /**
  * The quantity a scale label stands for. A weight label is the quantity
- * itself. A price label is what the customer pays for the whole item, so the
- * quantity is that price over the unit price *including* tax (the shelf price
- * the receipt shows), rounded half up to the unit's precision. Zero means the
+ * itself. A price label is divided by the unit price, rounded half up to the
+ * unit's precision: the price including tax when the tenant's scales print
+ * the shelf price (the default), otherwise the net price. Zero means the
  * label cannot be honoured.
  */
 export function scaleQuantity(
   reading: ScaleBarcodeReading,
   product: { selling_price_minor_units?: unknown; unit_tax_minor_units?: unknown; uom_precision?: unknown },
+  priceIncludesTax = true,
 ): number {
   const precision = Math.min(QUANTITY_SCALE, Math.max(0, Number(product.uom_precision) || 0))
   if (reading.kind === 'weight') {
     return milliToQuantity(roundMilli(quantityToMilli(reading.value), precision))
   }
-  const grossCents = Number(product.selling_price_minor_units || 0) + Number(product.unit_tax_minor_units || 0)
-  if (!(grossCents > 0)) return 0
+  const unitCents =
+    Number(product.selling_price_minor_units || 0) + (priceIncludesTax ? Number(product.unit_tax_minor_units || 0) : 0)
+  if (!(unitCents > 0)) return 0
   const labelCents = toCents(reading.value)
-  const milli = Math.floor((labelCents * 1000 * 2 + grossCents) / (grossCents * 2))
+  const milli = Math.floor((labelCents * 1000 * 2 + unitCents) / (unitCents * 2))
   return milliToQuantity(roundMilli(milli, precision))
 }
 
@@ -72,10 +74,11 @@ export function scan(rawTerm: unknown): ScanResult {
   const bySku = q(SKU_SQL, [term])
   if (bySku.length) return { kind: 'sku', qty: 1, products: bySku }
 
-  const reading = parseScaleBarcode(term, scaleBarcodeConfig())
+  const config = scaleBarcodeConfig()
+  const reading = parseScaleBarcode(term, config)
   if (reading) {
     const [labelled] = q(SCALE_PLU_SQL, [reading.plu])
-    const qty = labelled ? scaleQuantity(reading, labelled) : 0
+    const qty = labelled ? scaleQuantity(reading, labelled, config.price_includes_tax) : 0
     if (labelled && qty > 0) return { kind: 'scale', qty, products: [withoutPackQty(labelled)] }
   }
 

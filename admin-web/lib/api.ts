@@ -122,6 +122,12 @@ export async function apiPatch(path: string, body: any) {
   }), path)
 }
 
+export async function apiPut(path: string, body: any) {
+  return handleResponse(await authorizedFetch(path, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }), path)
+}
+
 export async function apiDelete(path: string) {
   return handleResponse(await authorizedFetch(path, { method: 'DELETE' }), path)
 }

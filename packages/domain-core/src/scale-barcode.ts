@@ -14,6 +14,12 @@ export interface ScaleBarcodeConfig {
   readonly value: 'weight' | 'price';
   /** Decimal places of the embedded value (weight 3 => 01250 is 1.250). */
   readonly decimals: number;
+  /**
+   * Price labels only: whether the printed price already includes tax (the
+   * shelf price the customer pays) or is the net price. Decides which unit
+   * price the label is divided by to get the quantity.
+   */
+  readonly price_includes_tax: boolean;
 }
 
 export const DEFAULT_SCALE_BARCODE_CONFIG: ScaleBarcodeConfig = {
@@ -22,6 +28,7 @@ export const DEFAULT_SCALE_BARCODE_CONFIG: ScaleBarcodeConfig = {
   item_digits: 5,
   value: 'weight',
   decimals: 3,
+  price_includes_tax: true,
 };
 
 export interface ScaleBarcodeReading {
