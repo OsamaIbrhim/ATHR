@@ -1,5 +1,4 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { FEATURE_KEYS } from '../../src/entitlements/catalog';
 
 /**
  * The initial plans. This is only the starting point: once seeded, the platform
@@ -12,32 +11,39 @@ export const INITIAL_PLANS = [
     code: 'starter',
     name_ar: 'المبتدئ',
     name_en: 'Starter',
-    description: '1 branch, 2 POS terminals, 3 users.',
-    price_monthly: 499,
+    description: '1 branch, 2 POS terminals, 3 users, unlimited products.',
+    price_monthly: 449,
     limits: { branches: 1, terminals: 2, users: 3 },
-    features: [],
+    features: ['uom'],
+    is_public: true,
     sort_order: 1,
   },
   {
     code: 'pro',
     name_ar: 'الاحترافي',
     name_en: 'Pro',
-    description: '3 branches, 6 POS terminals, promotions and units of measure.',
-    price_monthly: 1299,
-    limits: { branches: 3, terminals: 6 },
-    features: ['promotions', 'uom'],
+    description: 'Up to 3 branches, 6 POS terminals, 10 users, unlimited products.',
+    price_monthly: 999,
+    limits: { branches: 3, terminals: 6, users: 10 },
+    features: ['uom'],
+    is_public: true,
     sort_order: 2,
   },
   {
+    // Offered on request (more than 3 branches); not on the public pricing page.
     code: 'business',
     name_ar: 'الأعمال',
     name_en: 'Business',
-    description: 'Unlimited, with serial/batch tracking and API access.',
-    price_monthly: 2999,
-    limits: {},
-    features: [...FEATURE_KEYS],
+    description: 'Up to 10 branches, 30 POS terminals, 30 users.',
+    price_monthly: 1999,
+    limits: { branches: 10, terminals: 30, users: 30 },
+    features: ['uom'],
+    is_public: false,
     sort_order: 3,
   },
+  // Features are listed explicitly per plan: a key added to the catalog later
+  // (or one whose screens are not built yet: promotions, tracking.*, api.access)
+  // must never reach a plan by accident. See docs/strategy/pricing.md.
 ] as const;
 
 /** Idempotent: creates the plans that do not exist yet and leaves existing ones as the owner edited them. */
