@@ -83,3 +83,7 @@
 - **Lead:** التقسيم، المعمارية، مراجعة ودمج كل تغيير.
 - **Agents (Sonnet 5.5):** Backend/DB · POS/Electron · Frontend · QA/Reviewer.
 - كل agent يعمل في worktree مستقل، وكل تغيير يُراجع قبل الدمج.
+- **خبراء متخصصون** (تعريفاتهم في `.claude/agents/`، لا يكتبون كود المنتج):
+  - `athr-strategist` — الاستراتيجية: خطة ما بعد الإطلاق، الأولويات، التسعير، دراسة السوق والمنافسين. يملك `docs/POST_LAUNCH_ROADMAP.md` و`docs/strategy/`.
+  - `athr-ux-designer` — UI/UX: يعمل مع الـFrontend أولًا بأول؛ spec قبل بناء أي شاشة (`docs/design/ui/`) ومراجعة لقطات حقيقية بعد البناء حتى لا يبقى "must fix".
+  - `athr-marketer` — التسويق: الرسائل والـpositioning، نصوص الـLanding والأسعار، خطة الإطلاق والمحتوى (`docs/marketing/`). لا يَعِد إلا بما هو مبني فعلًا.
