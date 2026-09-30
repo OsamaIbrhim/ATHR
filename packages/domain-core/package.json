@@ -18,7 +18,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/money.spec.js dist/quantity.spec.js dist/percentage.spec.js dist/ids.spec.js dist/datetime.spec.js dist/result.spec.js dist/identity-value-objects.spec.js dist/scale-barcode.spec.js"
+    "test": "npm run build && node --test dist/money.spec.js dist/quantity.spec.js dist/percentage.spec.js dist/ids.spec.js dist/datetime.spec.js dist/result.spec.js dist/identity-value-objects.spec.js dist/scale-barcode.spec.js dist/sale-pricing.spec.js"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
