@@ -46,7 +46,7 @@ import {
 import { InventoryService } from '../inventory/inventory.service';
 import type { StockLots } from '../inventory/inventory.types';
 import { addLots, lotsFingerprint, lotsOfItem, stockLots, type SaleLots } from './sale-lots';
-import { planReturnLots, type ReturnLine } from './sale-return-lots';
+import { loadReturnLots } from './sale-return-lots';
 
 /** A sale line after merging duplicate variants; the quantity is exact (Decimal(14,3)). */
 type SaleLine = Omit<CreateSaleItemDto, 'qty' | 'serials' | 'batch_no'> & { qty: Prisma.Decimal; lots: SaleLots };
@@ -819,38 +819,18 @@ export class SalesService {
       });
 
       // Serial / batch variants go back to the lots their sale line drew.
-      const trackedLines: ReturnLine[] = [];
-      for (const [saleItemId, qty] of requested) {
-        const sold = soldById.get(saleItemId)!;
-        const { tracking } = sold.variant;
-        if (sold.variant.item_type !== 'stocked' || (tracking !== 'serial' && tracking !== 'batch')) continue;
-        trackedLines.push({
-          saleItemId,
-          variantId: sold.variant_id,
-          tracking,
-          soldQty: sold.qty,
-          returnedBefore: returnedBefore.get(saleItemId) ?? new Prisma.Decimal(0),
-          qty,
-          serials: requestedSerials.get(saleItemId) ?? [],
-        });
-      }
       const returnWarehouseId = await this.inventory.defaultWarehouseId(tx, context.tenantId, original.branch_id);
-      const namedSerials = trackedLines.flatMap((line) =>
-        line.tracking === 'serial' ? line.serials.map((serial) => ({ variantId: line.variantId, serial: serial.trim() })) : [],
-      );
-      const returnLots = trackedLines.length
-        ? planReturnLots(
-            trackedLines,
-            await this.inventory.drawnLots(
-              tx,
-              context.tenantId,
-              { type: 'SalesInvoice', id: original.id },
-              trackedLines.map((line) => line.saleItemId),
-            ),
-            namedSerials.length ? await this.inventory.serialStates(tx, context.tenantId, namedSerials) : [],
-            returnWarehouseId,
-          )
-        : new Map();
+      const returnLots = await loadReturnLots({
+        inventory: this.inventory,
+        tx,
+        tenantId: context.tenantId,
+        invoiceId: original.id,
+        warehouseId: returnWarehouseId,
+        requested,
+        serials: requestedSerials,
+        sold: soldById,
+        returnedBefore,
+      });
 
       // Goods come back at the cost they were sold at (moving average), one
       // line per variant.

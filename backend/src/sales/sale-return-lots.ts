@@ -2,6 +2,7 @@ import { BadRequestException, UnprocessableEntityException } from '@nestjs/commo
 import { Prisma } from '@prisma/client';
 import { cleanSerials, fefoOrder, serialKey, UNALLOCATED, type SerialRow } from '../inventory/inventory-lot-plan';
 import type { DrawnLots } from '../inventory/inventory-lot-sql';
+import type { InventoryService } from '../inventory/inventory.service';
 import type { StockLots } from '../inventory/inventory.types';
 
 /** One returned sale line of a serial- or batch-tracked variant. */
@@ -18,6 +19,54 @@ export type ReturnLine = {
 };
 
 const ZERO = new Prisma.Decimal(0);
+
+/**
+ * Reads what a return of tracked lines needs (the sale lines' lots, the state
+ * of the serials named) and plans the lots to put back, per sale line. Costs
+ * nothing when no returned line is serial- or batch-tracked.
+ */
+export async function loadReturnLots(input: {
+  inventory: InventoryService;
+  tx: Prisma.TransactionClient;
+  tenantId: string;
+  invoiceId: string;
+  warehouseId: string;
+  /** Quantity coming back per sale line, and the serials named for it. */
+  requested: Map<string, Prisma.Decimal>;
+  serials: Map<string, string[]>;
+  /** The sale lines, and what earlier returns took back from them. */
+  sold: Map<string, { variant_id: string; qty: Prisma.Decimal; variant: { item_type: string; tracking?: string } }>;
+  returnedBefore: Map<string, Prisma.Decimal>;
+}): Promise<Map<string, StockLots>> {
+  const lines: ReturnLine[] = [];
+  for (const [saleItemId, qty] of input.requested) {
+    const sold = input.sold.get(saleItemId)!;
+    const tracking = sold.variant.tracking;
+    if (sold.variant.item_type !== 'stocked' || (tracking !== 'serial' && tracking !== 'batch')) continue;
+    lines.push({
+      saleItemId,
+      variantId: sold.variant_id,
+      tracking,
+      soldQty: sold.qty,
+      returnedBefore: input.returnedBefore.get(saleItemId) ?? ZERO,
+      qty,
+      serials: input.serials.get(saleItemId) ?? [],
+    });
+  }
+  if (!lines.length) return new Map();
+
+  const named = lines.flatMap((line) =>
+    line.tracking === 'serial' ? line.serials.map((serial) => ({ variantId: line.variantId, serial: serial.trim() })) : [],
+  );
+  const drawn = await input.inventory.drawnLots(
+    input.tx,
+    input.tenantId,
+    { type: 'SalesInvoice', id: input.invoiceId },
+    lines.map((line) => line.saleItemId),
+  );
+  const states = named.length ? await input.inventory.serialStates(input.tx, input.tenantId, named) : [];
+  return planReturnLots(lines, drawn, states, input.warehouseId);
+}
 
 /**
  * The lots a customer return puts back, decided from what the sale line took

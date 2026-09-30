@@ -125,6 +125,18 @@ describe('ProductsService pagination', () => {
     ).rejects.toThrow(/exactly one variant/);
   });
 
+  it('shows how each variant is tracked in the list and the search', async () => {
+    const variants = [
+      { id: 'v1', product_id: 'p1', cost_price: 100, tracking: 'serial' },
+      { id: 'v2', product_id: 'p1', cost_price: 100, tracking: 'none' },
+    ];
+    const service = serviceOver(productReadPrisma(variants));
+    const page = await service.list(ctx, '', 1, 20);
+    expect(page.items.map((item: any) => [item.id, item.tracking])).toEqual([['v1', 'serial'], ['v2', 'none']]);
+    const found = await service.search(ctx, 'x');
+    expect(found.map((item: any) => item.tracking)).toEqual(['serial', 'none']);
+  });
+
   it('hydrates the first page in one parallel relation wave', async () => {
     const variants = [{ id: 'v1', product_id: 'p1', cost_price: 100 }];
     const prisma = productReadPrisma(variants, 41);
