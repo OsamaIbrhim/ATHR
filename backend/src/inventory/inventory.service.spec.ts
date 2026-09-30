@@ -22,18 +22,22 @@ describe('InventoryService', () => {
       warehouse: {
         findFirst: jest.fn().mockResolvedValue({ id: 'warehouse-1' }),
       },
-      $queryRaw: jest.fn().mockResolvedValue([
-        {
-          warehouse_id: 'warehouse-1',
-          branch_id: 'branch-1',
-          variant_id: 'variant-1',
-          stock_on_hand: new Prisma.Decimal(9),
-          stock_reserved: new Prisma.Decimal(1),
-          ledger_on_hand: new Prisma.Decimal('8.500'),
-          ledger_reserved: new Prisma.Decimal(0),
-          last_movement_at: new Date('2026-07-22T12:00:00.000Z'),
-        },
-      ]),
+      // reconcile: the ledger comparison first, then the tracking invariants.
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            warehouse_id: 'warehouse-1',
+            branch_id: 'branch-1',
+            variant_id: 'variant-1',
+            stock_on_hand: new Prisma.Decimal(9),
+            stock_reserved: new Prisma.Decimal(1),
+            ledger_on_hand: new Prisma.Decimal('8.500'),
+            ledger_reserved: new Prisma.Decimal(0),
+            last_movement_at: new Date('2026-07-22T12:00:00.000Z'),
+          },
+        ])
+        .mockResolvedValueOnce([]),
     };
     return { service: new InventoryService(new InventoryRepository(prisma as any)), prisma };
   }
@@ -105,6 +109,58 @@ describe('InventoryService', () => {
           reserved_difference: 1,
         },
       ],
+    });
+  });
+
+  describe('reconciling tracked variants', () => {
+    const trackingRow = (kind: string, onHand: number, tracked: number) => ({
+      kind,
+      warehouse_id: 'warehouse-1',
+      branch_id: 'branch-1',
+      variant_id: 'variant-1',
+      stock_on_hand: new Prisma.Decimal(onHand),
+      tracked_total: new Prisma.Decimal(tracked),
+    });
+    const reconcileWith = async (rows: unknown[]) => {
+      const { service, prisma } = setup();
+      prisma.$queryRaw.mockReset().mockResolvedValueOnce([]).mockResolvedValueOnce(rows);
+      return service.reconcile(ctx);
+    };
+
+    it('is consistent when no tracked variant drifted', async () => {
+      const result = await reconcileWith([]);
+      expect(result).toMatchObject({ is_consistent: true, mismatch_count: 0, tracking_mismatches: [], needs_settlement: [] });
+    });
+
+    it('reports batches that do not add up to on hand as corruption', async () => {
+      const result = await reconcileWith([trackingRow('batch_total', 10, 8)]);
+      expect(result.is_consistent).toBe(false);
+      expect(result.tracking_mismatches).toEqual([
+        expect.objectContaining({ kind: 'batch_total', on_hand: 10, tracked_total: 8, difference: -2 }),
+      ]);
+    });
+
+    it('reports fewer in-stock serials than on hand as corruption', async () => {
+      const result = await reconcileWith([trackingRow('serial_count', 5, 3)]);
+      expect(result.tracking_mismatches).toEqual([
+        expect.objectContaining({ kind: 'serial_count', difference: -2 }),
+      ]);
+    });
+
+    it('reports units sold without a serial as needing settlement, not as corruption', async () => {
+      const result = await reconcileWith([trackingRow('serial_count', 3, 5)]);
+      expect(result.is_consistent).toBe(true);
+      expect(result.needs_settlement).toEqual([
+        expect.objectContaining({ kind: 'serial_uncaptured_sales', quantity: 2 }),
+      ]);
+    });
+
+    it('lists an unallocated batch row as needing settlement', async () => {
+      const result = await reconcileWith([trackingRow('batch_unallocated', 2, -3)]);
+      expect(result.is_consistent).toBe(true);
+      expect(result.needs_settlement).toEqual([
+        expect.objectContaining({ kind: 'batch_unallocated', quantity: -3 }),
+      ]);
     });
   });
 

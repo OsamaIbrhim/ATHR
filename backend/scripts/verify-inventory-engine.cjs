@@ -17,6 +17,8 @@
 //   E9  a real sale: constant statements for 1 vs 30 lines, service item, negative stock
 //   E10 transfer ship / partial receive with damaged units, in-transit ledger
 //   E11 reconciliation: clean after all of the above, and it detects a tampered row
+//   E12-E16 serial / batch tracking (docs/design/W2b-tracking.md): serial receive/sale/return,
+//       FEFO, unallocated shortfall + settlement, replay, reconcile invariants, concurrency
 'use strict';
 
 const path = require('node:path');
@@ -627,6 +629,217 @@ async function verifyReconciliation(worlds) {
   check('E11 reconciliation can be scoped to a branch', scoped.mismatch_count === 1);
 }
 
+// --- E12-E17: serial / batch tracking (docs/design/W2b-tracking.md) --------------
+
+const lotsOf = (world, variant) =>
+  prisma.$queryRaw`
+    SELECT COALESCE(SUM(lm."qty_delta"), 0) AS "total", COUNT(*)::int AS "rows"
+    FROM "InventoryLotMovement" lm
+    JOIN "InventoryMovement" m ON m."id" = lm."movement_id"
+    WHERE m."tenant_id" = ${world.tenant.id}::uuid AND m."variant_id" = ${variant.id}::uuid
+  `.then(([row]) => ({ total: Number(row.total), rows: row.rows }));
+const serialsOf = async (world, variant) =>
+  Object.fromEntries((await prisma.inventorySerial.findMany({ where: { tenant_id: world.tenant.id, variant_id: variant.id }, orderBy: { serial: 'asc' } })).map((row) => [row.serial, row.status]));
+const batchesOf = async (world, variant) =>
+  Object.fromEntries((await prisma.inventoryBatch.findMany({ where: { tenant_id: world.tenant.id, variant_id: variant.id }, orderBy: { batch_no: 'asc' } })).map((row) => [row.batch_no || '(unallocated)', Number(row.qty)]));
+const day = (row) => row?.expiry_date?.toISOString().slice(0, 10) ?? null;
+const codeOf = (error) => error?.response?.code;
+const receiveLots = (world, variant, lots, qty, extra = {}) =>
+  apply((tx) => inventory.apply(tx, command(world, { type: 'purchase_receipt', allowNegative: true, lines: [{ variantId: variant.id, qtyDelta: qty, lots }], ...extra })));
+const sellLots = (world, variant, qty, lots, extra = {}) =>
+  apply((tx) => inventory.apply(tx, command(world, { type: 'sale', allowNegative: true, lines: [{ variantId: variant.id, qtyDelta: -qty, lots }], ...extra })));
+
+async function verifySerialTracking() {
+  const world = await createTenantWorld('e12');
+  const variant = await createVariant(world, { tracking: 'serial' });
+  const plain = await createVariant(world);
+  await apply((tx) => inventory.apply(tx, command(world, { type: 'opening_balance', lines: [{ variantId: plain.id, qtyDelta: 10 }] })));
+
+  await receiveLots(world, variant, { serials: ['S1', 'S2', 'S3'] }, 3);
+  check('E12 receiving serials puts each in stock and adds them to on hand', (await stockOf(world, variant)).qty_on_hand.equals(3)
+    && show(await serialsOf(world, variant)) === show({ S1: 'in_stock', S2: 'in_stock', S3: 'in_stock' }));
+  check('E12 each serial has its own +1 lot movement', show(await lotsOf(world, variant)) === show({ total: 3, rows: 3 }));
+
+  const duplicate = await rejection(receiveLots(world, variant, { serials: ['S3', 'S4'] }, 2));
+  check('E12 a serial already in stock is refused on receive, and nothing of that command remains',
+    codeOf(duplicate) === 'TRACKING_SERIAL_ALREADY_IN_STOCK' && !('S4' in (await serialsOf(world, variant))) && (await stockOf(world, variant)).qty_on_hand.equals(3), duplicate?.message);
+  const wrongCount = await rejection(receiveLots(world, variant, { serials: ['S5'] }, 2));
+  check('E12 receiving fewer serials than units is refused', codeOf(wrongCount) === 'TRACKING_SERIALS_REQUIRED');
+
+  // Statement counts: an untracked sale is 3 statements; a tracked one adds a fixed number.
+  const [, untracked] = await counted(() => sellLots(world, plain, 1));
+  const [afterSale, trackedSale] = await counted(() => sellLots(world, variant, 1, { serials: ['S1'] }));
+  const [, notCapturedSale] = await counted(() => sellLots(world, variant, 1));
+  check('E12 an untracked sale is still 3 statements', untracked === 3, `got ${untracked}`);
+  check('E12 a serial sale adds two statements (lock-read + write)', trackedSale === untracked + 2, `got ${trackedSale}`);
+  check('E12 a sale naming known serials warns of nothing; one without serials (POS 1.6.0) adds no statement', notCapturedSale === untracked && show(afterSale[0].warnings ?? null) === 'null');
+  check('E12 the sold serial left stock and its sale is logged -1', (await serialsOf(world, variant)).S1 === 'sold');
+
+  const unknown = await sellLots(world, variant, 1, { serials: ['GHOST'] });
+  check('E12 a serial the system never saw is accepted as sold with SERIAL_NOT_IN_STOCK', show(unknown[0].warnings) === '["SERIAL_NOT_IN_STOCK"]' && (await serialsOf(world, variant)).GHOST === 'sold');
+  const uncaptured = await sellLots(world, variant, 1);
+  check('E12 a sale without serials is accepted with SERIAL_NOT_CAPTURED', show(uncaptured[0].warnings) === '["SERIAL_NOT_CAPTURED"]');
+  // on hand: 3 -1(S1) -1(no serial) -1(GHOST) -1(no serial) = -1 -> serial units without a known serial: 2 in stock (S2,S3) vs -1
+  const stock = await stockOf(world, variant);
+  check('E12 the sales moved on hand although serials were missing', stock.qty_on_hand.equals(-1), `on hand ${stock.qty_on_hand}`);
+
+  // Customer return: the serial sold on the line comes back.
+  await apply((tx) => inventory.apply(tx, command(world, { type: 'return', allowNegative: true, lines: [{ variantId: variant.id, qtyDelta: 1, lots: { serials: ['S1'] } }] })));
+  check('E12 a returned serial is back in stock', (await serialsOf(world, variant)).S1 === 'in_stock');
+  const stillInStock = await rejection(apply((tx) => inventory.apply(tx, command(world, { type: 'return', allowNegative: true, lines: [{ variantId: variant.id, qtyDelta: 1, lots: { serials: ['S2'] } }] }))));
+  check('E12 a serial that never left cannot be "returned"', codeOf(stillInStock) === 'TRACKING_SERIAL_ALREADY_IN_STOCK');
+
+  // Supplier return: strict. Two more units come in so there is stock to return.
+  await receiveLots(world, variant, { serials: ['S5', 'S6'] }, 2);
+  const noSerials = await rejection(apply((tx) => inventory.apply(tx, command(world, { type: 'reversal', lines: [{ variantId: variant.id, qtyDelta: -1 }] }))));
+  check('E12 a supplier return without serials is refused', codeOf(noSerials) === 'TRACKING_SERIALS_REQUIRED');
+  const notHere = await rejection(apply((tx) => inventory.apply(tx, command(world, { type: 'reversal', lines: [{ variantId: variant.id, qtyDelta: -1, lots: { serials: ['GHOST'] } }] }))));
+  check('E12 a supplier return of a serial that is not in stock is refused', codeOf(notHere) === 'TRACKING_SERIAL_NOT_IN_STOCK');
+  await apply((tx) => inventory.apply(tx, command(world, { type: 'reversal', allowNegative: false, lines: [{ variantId: variant.id, qtyDelta: -1, lots: { serials: ['S5'] } }] })));
+  check('E12 a supplier return sends the serial back to the supplier', (await serialsOf(world, variant)).S5 === 'returned_to_supplier');
+
+  // Replay of a tracked command changes nothing.
+  const replayCmd = command(world, { type: 'sale', allowNegative: true, lines: [{ variantId: variant.id, qtyDelta: -1, lots: { serials: ['S3'] } }] });
+  await apply((tx) => inventory.apply(tx, replayCmd));
+  const lotsBefore = await lotsOf(world, variant);
+  const [, replayStatements] = await counted(() => apply((tx) => inventory.apply(tx, replayCmd)));
+  check('E12 replaying a tracked command applies no lot change (and issues no lot statement)',
+    show(await lotsOf(world, variant)) === show(lotsBefore) && replayStatements <= 3, `statements ${replayStatements}`);
+
+  // DB-level guards.
+  const tamper = await rejection(prisma.$executeRaw`UPDATE "InventoryLotMovement" SET "qty_delta" = 1 WHERE "tenant_id" = ${world.tenant.id}::uuid`);
+  check('E12 the lot ledger is append-only', tamper !== null);
+  const negativeBatch = await rejection(prisma.inventoryBatch.create({ data: { tenant_id: world.tenant.id, warehouse_id: world.warehouse.id, variant_id: variant.id, batch_no: 'NEG', qty: -1 } }));
+  const negativeUnallocated = await rejection(prisma.inventoryBatch.create({ data: { tenant_id: world.tenant.id, warehouse_id: world.warehouse.id, variant_id: variant.id, batch_no: '', qty: -1 } }));
+  check('E12 only the unallocated batch row may be negative', negativeBatch !== null && negativeUnallocated === null);
+  const bothLots = await rejection(prisma.$executeRaw`INSERT INTO "InventoryLotMovement" ("tenant_id", "movement_id", "qty_delta") SELECT "tenant_id", "id", 1 FROM "InventoryMovement" WHERE "tenant_id" = ${world.tenant.id}::uuid LIMIT 1`);
+  check('E12 a lot movement must name a batch or a serial', bothLots !== null);
+}
+
+async function verifyBatchTracking() {
+  const world = await createTenantWorld('e13');
+  const variant = await createVariant(world, { tracking: 'batch' });
+
+  await receiveLots(world, variant, { batches: [
+    { batchNo: 'LATE', expiryDate: '2027-01-01', qty: 5 },
+    { batchNo: 'SOON', expiryDate: '2026-06-01', qty: 5 },
+    { batchNo: 'NOEXP', qty: 5 },
+  ] }, 15);
+  const rows = await prisma.inventoryBatch.findMany({ where: { tenant_id: world.tenant.id, variant_id: variant.id } });
+  check('E13 receiving creates batches with their expiry dates', rows.length === 3 && day(rows.find((row) => row.batch_no === 'SOON')) === '2026-06-01' && day(rows.find((row) => row.batch_no === 'NOEXP')) === null);
+
+  const plain = await createVariant(world);
+  await apply((tx) => inventory.apply(tx, command(world, { type: 'opening_balance', lines: [{ variantId: plain.id, qtyDelta: 5 }] })));
+  const [, untracked] = await counted(() => sellLots(world, plain, 1));
+  const [afterFefo, fefoStatements] = await counted(() => sellLots(world, variant, 8));
+  check('E13 FEFO takes the soonest expiry first (SOON 5, then LATE 3)', show(await batchesOf(world, variant)) === show({ LATE: 2, NOEXP: 5, SOON: 0 }), show(await batchesOf(world, variant)));
+  check('E13 a batch sale adds two statements to the 3 of an untracked one', fefoStatements === 5 && afterFefo[0].warnings === undefined, `got ${fefoStatements} (untracked sale probe counted ${untracked})`);
+  check('E13 the sale logged one lot movement per batch drawn (-5, -3)', show(await lotsOf(world, variant)) === show({ total: 15 - 8, rows: 3 + 2 }));
+
+  await sellLots(world, variant, 2, { batches: [{ batchNo: 'NOEXP', qty: 2 }] });
+  check('E13 a named batch is honoured', show(await batchesOf(world, variant)) === show({ LATE: 2, NOEXP: 3, SOON: 0 }));
+
+  const untouched = await stockOf(world, variant);
+  const sums = (await prisma.inventoryBatch.aggregate({ where: { tenant_id: world.tenant.id, variant_id: variant.id }, _sum: { qty: true } }))._sum.qty;
+  check('E13 the batches always add up to on hand', untouched.qty_on_hand.equals(sums), `${untouched.qty_on_hand} vs ${sums}`);
+
+  // Supplier return of a batch: strict.
+  const wrongBatch = await rejection(apply((tx) => inventory.apply(tx, command(world, { type: 'reversal', lines: [{ variantId: variant.id, qtyDelta: -3, lots: { batches: [{ batchNo: 'LATE', qty: 3 }] } }] }))));
+  check('E13 a supplier return of more than the batch holds is refused', codeOf(wrongBatch) === 'TRACKING_BATCH_INSUFFICIENT');
+  const noBatch = await rejection(apply((tx) => inventory.apply(tx, command(world, { type: 'reversal', lines: [{ variantId: variant.id, qtyDelta: -1 }] }))));
+  check('E13 a supplier return without a batch is refused', codeOf(noBatch) === 'TRACKING_BATCHES_REQUIRED');
+  await apply((tx) => inventory.apply(tx, command(world, { type: 'reversal', lines: [{ variantId: variant.id, qtyDelta: -1, lots: { batches: [{ batchNo: 'LATE', qty: 1 }] } }] })));
+  check('E13 a supplier return takes exactly the named batch', (await batchesOf(world, variant)).LATE === 1);
+
+  const report = await inventory.reconcile(world.context);
+  check('E13 reconciliation is clean for a batch variant', report.is_consistent === true && report.needs_settlement.length === 0, show(report));
+}
+
+async function verifyUnallocatedBatches() {
+  const world = await createTenantWorld('e14');
+  const variant = await createVariant(world, { tracking: 'batch' });
+
+  const [short] = await sellLots(world, variant, 3);
+  check('E14 a sale with no batch to draw on is accepted, charged to the unallocated row, with BATCH_UNALLOCATED',
+    show(short.warnings) === '["BATCH_UNALLOCATED"]' && show(await batchesOf(world, variant)) === show({ '(unallocated)': -3 }) && short.qtyAfter.equals(-3));
+  const report = await inventory.reconcile(world.context);
+  check('E14 the deficit shows as "needs settlement", not as corruption',
+    report.is_consistent === true && report.needs_settlement.some((row) => row.kind === 'batch_unallocated' && row.quantity === -3), show(report.needs_settlement));
+
+  await receiveLots(world, variant, { batches: [{ batchNo: 'N1', expiryDate: '2027-05-05', qty: 10 }] }, 10);
+  check('E14 the next receipt settles the deficit first (shelf 7, unallocated back to 0)', show(await batchesOf(world, variant)) === show({ '(unallocated)': 0, N1: 7 }), show(await batchesOf(world, variant)));
+  check('E14 on hand equals the batches after settlement', (await stockOf(world, variant)).qty_on_hand.equals(7));
+  check('E14 the receipt lot movements add up to the units received (7 + 3)', show(await lotsOf(world, variant)) === show({ total: 7, rows: 3 }), show(await lotsOf(world, variant)));
+  const settled = await inventory.reconcile(world.context);
+  check('E14 nothing is left to settle', settled.needs_settlement.length === 0 && settled.is_consistent === true, show(settled));
+
+  // A sale part-covered by a batch: the rest goes to the unallocated row.
+  const [partial] = await sellLots(world, variant, 9);
+  check('E14 a sale beyond the batches draws them empty and charges the rest', show(await batchesOf(world, variant)) === show({ '(unallocated)': -2, N1: 0 }) && show(partial.warnings) === '["BATCH_UNALLOCATED"]');
+
+  // Tampering with a batch is corruption.
+  await prisma.$executeRaw`UPDATE "InventoryBatch" SET "qty" = "qty" + 1 WHERE "tenant_id" = ${world.tenant.id}::uuid AND "batch_no" = 'N1'`;
+  const tampered = await inventory.reconcile(world.context);
+  check('E14 batches that no longer add up to on hand are reported as a mismatch', tampered.is_consistent === false && tampered.tracking_mismatches.some((row) => row.kind === 'batch_total' && row.difference === 1), show(tampered.tracking_mismatches));
+}
+
+async function verifySerialReconciliation() {
+  const world = await createTenantWorld('e15');
+  const variant = await createVariant(world, { tracking: 'serial' });
+  await receiveLots(world, variant, { serials: ['A', 'B', 'C'] }, 3);
+  await sellLots(world, variant, 1); // sold without a serial: on hand 2, in-stock serials 3
+
+  let report = await inventory.reconcile(world.context);
+  check('E15 a sale without a serial is "needs settlement" (1 unit), not corruption',
+    report.is_consistent === true && report.needs_settlement.some((row) => row.kind === 'serial_uncaptured_sales' && row.quantity === 1), show(report));
+
+  await prisma.$executeRaw`UPDATE "InventorySerial" SET "status" = 'sold', "warehouse_id" = NULL WHERE "tenant_id" = ${world.tenant.id}::uuid AND "serial" IN ('A', 'B', 'C')`;
+  report = await inventory.reconcile(world.context);
+  check('E15 fewer in-stock serials than on hand is corruption', report.is_consistent === false && report.tracking_mismatches.some((row) => row.kind === 'serial_count' && row.difference === -2), show(report.tracking_mismatches));
+}
+
+async function verifyTrackingReplayAndConcurrency() {
+  const world = await createTenantWorld('e16');
+  const variant = await createVariant(world, { tracking: 'batch' });
+  await receiveLots(world, variant, { batches: [{ batchNo: 'A', expiryDate: '2026-12-01', qty: 10 }, { batchNo: 'B', expiryDate: '2027-12-01', qty: 10 }] }, 20);
+
+  const cmd = command(world, { type: 'sale', allowNegative: true, lines: [{ variantId: variant.id, qtyDelta: -4 }] });
+  await apply((tx) => inventory.apply(tx, cmd));
+  await apply((tx) => inventory.apply(tx, cmd));
+  check('E16 replaying a batch command draws the batch once', show(await batchesOf(world, variant)) === show({ A: 6, B: 10 }), show(await batchesOf(world, variant)));
+
+  // Two concurrent sales of the same batch variant: serialized by the stock row, no deadlock, consistent.
+  const held = apply(async (tx) => { await inventory.apply(tx, command(world, { type: 'sale', allowNegative: true, lines: [{ variantId: variant.id, qtyDelta: -5 }] })); await sleep(400); });
+  await sleep(100);
+  const waiting = apply((tx) => inventory.apply(tx, command(world, { type: 'sale', allowNegative: true, lines: [{ variantId: variant.id, qtyDelta: -5 }] })));
+  const settled = await Promise.allSettled([held, waiting]);
+  const sums = (await prisma.inventoryBatch.aggregate({ where: { tenant_id: world.tenant.id, variant_id: variant.id }, _sum: { qty: true } }))._sum.qty;
+  check('E16 two concurrent sales of one batch variant both succeed (no deadlock)', settled.every((r) => r.status === 'fulfilled'), settled.map((r) => r.reason?.message).filter(Boolean).join('; '));
+  check('E16 ...and end consistent: batches drawn oldest first and adding up to on hand', show(await batchesOf(world, variant)) === show({ A: 0, B: 6 }) && (await stockOf(world, variant)).qty_on_hand.equals(sums), show(await batchesOf(world, variant)));
+
+  // Concurrent shortfalls both charge the unallocated row (one row, upserted by two commands in turn).
+  const short = createVariant(world, { tracking: 'batch' }).then(async (other) => {
+    await receiveLots(world, other, { batches: [{ batchNo: 'ONLY', qty: 5 }] }, 5);
+    const results = await Promise.allSettled([sellLots(world, other, 8), sellLots(world, other, 8)]);
+    const rows = await batchesOf(world, other);
+    return { results, rows, on_hand: (await stockOf(world, other)).qty_on_hand };
+  });
+  const { results, rows, on_hand } = await short;
+  check('E16 concurrent shortfalls both land on the unallocated row without conflict', results.every((r) => r.status === 'fulfilled') && show(rows) === show({ '(unallocated)': -11, ONLY: 0 }) && on_hand.equals(-11), show({ rows, on_hand: String(on_hand), errors: results.map((r) => r.reason?.message) }));
+
+  // Opposite variant orders over tracked variants do not deadlock either.
+  const [x, y] = await createVariants(world, 2, { tracking: 'batch' });
+  await Promise.all([x, y].map((v) => receiveLots(world, v, { batches: [{ batchNo: 'K', qty: 10 }] }, 10)));
+  const orderResults = await Promise.allSettled([
+    apply(async (tx) => { await inventory.apply(tx, command(world, { type: 'sale', allowNegative: true, lines: [{ variantId: x.id, qtyDelta: -1 }, { variantId: y.id, qtyDelta: -1 }] })); await sleep(200); }),
+    apply(async (tx) => { await inventory.apply(tx, command(world, { type: 'sale', allowNegative: true, lines: [{ variantId: y.id, qtyDelta: -1 }, { variantId: x.id, qtyDelta: -1 }] })); await sleep(200); }),
+  ]);
+  check('E16 opposite line orders over tracked variants do not deadlock', orderResults.every((r) => r.status === 'fulfilled'), orderResults.map((r) => r.reason?.message).filter(Boolean).join('; '));
+
+  const report = await inventory.reconcile(world.context);
+  check('E16 reconciliation is clean after all of it (unallocated aside)', report.tracking_mismatches.length === 0 && report.items.length === 0, show(report.tracking_mismatches));
+}
+
 async function main() {
   await verifySiteModel();
   await verifyConstantStatements();
@@ -639,6 +852,11 @@ async function main() {
   const sale = await verifySale();
   await verifyTransfers();
   await verifyReconciliation([cost, sale]);
+  await verifySerialTracking();
+  await verifyBatchTracking();
+  await verifyUnallocatedBatches();
+  await verifySerialReconciliation();
+  await verifyTrackingReplayAndConcurrency();
 
   process.stdout.write(failed ? `\n${failed} check(s) FAILED\n` : '\nAll inventory engine checks passed\n');
   if (failed) process.exitCode = 1;

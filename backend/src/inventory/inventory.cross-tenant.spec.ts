@@ -104,4 +104,22 @@ describe('inventory — cross-tenant isolation', () => {
     // The tenant id travels as a bound parameter, never interpolated.
     expect(captured[0].values).toContain(TENANT_A);
   });
+
+  it('binds the tenant predicate in every branch of the tracking reconciliation query', async () => {
+    const { repository, prisma } = setup();
+    const captured: any[] = [];
+    prisma.$queryRaw = async (query: any) => {
+      captured.push(query);
+      return [];
+    };
+
+    await repository.trackingReconciliation(contextFor(TENANT_A));
+
+    const sql: string = captured[0].strings.join('?');
+    // Three sub-selects (batch total, unallocated, serial count), each scoped to the tenant, plus the two lot lookups.
+    expect(sql.match(/"tenant_id" = \?::uuid/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(sql).toMatch(/b\."tenant_id" = s\."tenant_id"/);
+    expect(sql).toMatch(/q\."tenant_id" = s\."tenant_id"/);
+    expect(captured[0].values).toContain(TENANT_A);
+  });
 });

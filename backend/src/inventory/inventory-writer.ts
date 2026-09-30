@@ -1,8 +1,9 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, type TrackingMode } from '@prisma/client';
 import { quantity } from '../common/quantity';
 import { planCostMovement, type CostPlan } from './inventory-cost';
-import type { ApplyStockCommand, StockAfter, StockLine } from './inventory.types';
+import { applyTracking, assertTrackable, type TrackedLine } from './inventory-tracking';
+import type { ApplyStockCommand, StockAfter, StockLine, TrackingWarning } from './inventory.types';
 
 type Tx = Prisma.TransactionClient;
 
@@ -11,6 +12,7 @@ type LockedRow = {
   qty_on_hand: Prisma.Decimal;
   qty_reserved: Prisma.Decimal;
   avg_cost: Prisma.Decimal;
+  tracking: TrackingMode;
 };
 
 type PlannedLine = {
@@ -38,6 +40,10 @@ function metadataText(command: ApplyStockCommand, line: StockLine) {
  *   2. insert the ledger rows       (one multi-row INSERT, idempotency = unique key)
  *   3. update the stock rows        (one set-based UPDATE)
  *   4. cost commands only: cost ledger INSERT + variant cost UPDATE
+ *   5. tracked lines only (serial / batch variants): a lock-read and a bulk
+ *      write per kind, after the ledger rows exist (see inventory-tracking.ts).
+ *      The lock query already reports each variant's tracking mode, so an
+ *      untracked command issues exactly the statements above and no more.
  *
  * Lines of variants that are not `stocked` (service / non_stock) are skipped.
  * Must run inside the caller's transaction; a thrown error must roll it back.
@@ -66,6 +72,9 @@ export async function applyStock(tx: Tx, command: ApplyStockCommand): Promise<St
       };
     });
 
+  const tracked = trackedLines(planned);
+  assertTrackable(command, tracked);
+
   const shortage = command.allowNegative ? undefined : planned.find(isShort);
   if (shortage) {
     // A replay of an already-applied command must not fail on today's stock.
@@ -80,8 +89,8 @@ export async function applyStock(tx: Tx, command: ApplyStockCommand): Promise<St
   }
 
   const inserted = await insertMovements(tx, command, planned);
-  if (inserted < planned.length) {
-    if (inserted === 0) {
+  if (inserted.size < planned.length) {
+    if (inserted.size === 0) {
       const replay = await readReplay(tx, command, planned);
       if (replay) return replay;
     }
@@ -92,9 +101,18 @@ export async function applyStock(tx: Tx, command: ApplyStockCommand): Promise<St
 
   await updateStock(tx, command, planned);
   if (command.costType) await writeCosts(tx, command, planned);
+  // Only a command that inserted its ledger rows gets here, so a replay never re-applies lots.
+  const warnings = tracked.length ? await applyTracking(tx, command, tracked, inserted) : new Map<string, TrackingWarning[]>();
 
-  return planned.map(toStockAfter);
+  return planned.map((item) => toStockAfter(item, warnings.get(item.line.variantId)));
 }
+
+const trackedLines = (planned: PlannedLine[]): TrackedLine[] =>
+  planned.flatMap((item) =>
+    item.before.tracking === 'none'
+      ? []
+      : [{ variantId: item.line.variantId, tracking: item.before.tracking, delta: item.delta, lots: item.line.lots }],
+  );
 
 /** Read helper for callers that must price a removal before posting it (supplier returns). */
 export async function readAverageCosts(
@@ -138,15 +156,16 @@ const isShort = (item: PlannedLine) =>
 
 async function lockRows(tx: Tx, command: ApplyStockCommand, variantIds: string[]) {
   return tx.$queryRaw<LockedRow[]>`
-    SELECT s."variant_id", s."qty_on_hand", s."qty_reserved", s."avg_cost"
-    FROM "InventoryStock" s
-    JOIN "ProductVariant" v ON v."id" = s."variant_id" AND v."tenant_id" = s."tenant_id"
-    WHERE s."tenant_id" = ${command.tenantId}::uuid
-      AND s."warehouse_id" = ${command.warehouseId}::uuid
-      AND s."variant_id" = ANY(${variantIds}::uuid[])
+    SELECT "InventoryStock"."variant_id", "InventoryStock"."qty_on_hand", "InventoryStock"."qty_reserved",
+           "InventoryStock"."avg_cost", v."tracking"
+    FROM "InventoryStock"
+    JOIN "ProductVariant" v ON v."id" = "InventoryStock"."variant_id" AND v."tenant_id" = "InventoryStock"."tenant_id"
+    WHERE "InventoryStock"."tenant_id" = ${command.tenantId}::uuid
+      AND "InventoryStock"."warehouse_id" = ${command.warehouseId}::uuid
+      AND "InventoryStock"."variant_id" = ANY(${variantIds}::uuid[])
       AND v."item_type" = 'stocked'
-    ORDER BY s."variant_id"
-    FOR UPDATE OF s
+    ORDER BY "InventoryStock"."variant_id"
+    FOR UPDATE OF "InventoryStock"
   `;
 }
 
@@ -157,9 +176,11 @@ async function lockOrCreateRows(tx: Tx, command: ApplyStockCommand, variantIds: 
     // their rows (seeded with the variant's catalog cost) and reports which
     // stocked variants it created. Non-stocked variants do not appear at all.
     const missing = variantIds.filter((id) => !rows.has(id));
-    const stocked = await tx.$queryRaw<Array<{ variant_id: string; cost_price: Prisma.Decimal; inserted: boolean }>>`
+    const stocked = await tx.$queryRaw<
+      Array<{ variant_id: string; cost_price: Prisma.Decimal; tracking: TrackingMode; inserted: boolean }>
+    >`
       WITH stocked AS (
-        SELECT v."id", v."cost_price"
+        SELECT v."id", v."cost_price", v."tracking"
         FROM "ProductVariant" v
         WHERE v."tenant_id" = ${command.tenantId}::uuid
           AND v."id" = ANY(${missing}::uuid[])
@@ -172,13 +193,19 @@ async function lockOrCreateRows(tx: Tx, command: ApplyStockCommand, variantIds: 
         ON CONFLICT ("warehouse_id", "variant_id") DO NOTHING
         RETURNING "variant_id"
       )
-      SELECT s."id" AS "variant_id", s."cost_price",
+      SELECT s."id" AS "variant_id", s."cost_price", s."tracking",
              (s."id" IN (SELECT "variant_id" FROM created)) AS "inserted"
       FROM stocked s
     `;
     const zero = new Prisma.Decimal(0);
     for (const row of stocked.filter((candidate) => candidate.inserted)) {
-      rows.set(row.variant_id, { variant_id: row.variant_id, qty_on_hand: zero, qty_reserved: zero, avg_cost: row.cost_price });
+      rows.set(row.variant_id, {
+        variant_id: row.variant_id,
+        qty_on_hand: zero,
+        qty_reserved: zero,
+        avg_cost: row.cost_price,
+        tracking: row.tracking,
+      });
     }
     // Rows another transaction created a moment ago: lock them like any other row.
     const concurrent = stocked.filter((candidate) => !candidate.inserted).map((candidate) => candidate.variant_id);
@@ -189,8 +216,9 @@ async function lockOrCreateRows(tx: Tx, command: ApplyStockCommand, variantIds: 
   return rows;
 }
 
+/** Inserts the ledger rows; returns variant -> movement id for the rows actually inserted. */
 async function insertMovements(tx: Tx, command: ApplyStockCommand, planned: PlannedLine[]) {
-  const rows = await tx.$queryRaw<Array<{ variant_id: string }>>`
+  const rows = await tx.$queryRaw<Array<{ id: string; variant_id: string }>>`
     INSERT INTO "InventoryMovement" (
       "tenant_id", "warehouse_id", "variant_id", "movement_type",
       "on_hand_delta", "reserved_delta", "on_hand_after", "reserved_after",
@@ -220,9 +248,9 @@ async function insertMovements(tx: Tx, command: ApplyStockCommand, planned: Plan
         AND other."variant_id" <> ALL(${planned.map((p) => p.line.variantId)}::uuid[])
     )
     ON CONFLICT ("tenant_id", "idempotency_key", "variant_id") DO NOTHING
-    RETURNING "variant_id"
+    RETURNING "id", "variant_id"
   `;
-  return rows.length;
+  return new Map(rows.map((row) => [row.variant_id, row.id]));
 }
 
 async function updateStock(tx: Tx, command: ApplyStockCommand, planned: PlannedLine[]) {
@@ -355,8 +383,9 @@ async function readReplay(
   });
 }
 
-function toStockAfter(item: PlannedLine): StockAfter {
+function toStockAfter(item: PlannedLine, warnings?: TrackingWarning[]): StockAfter {
   return {
+    ...(warnings?.length ? { warnings } : {}),
     variantId: item.line.variantId,
     qtyBefore: item.before.qty_on_hand,
     qtyAfter: item.after,
