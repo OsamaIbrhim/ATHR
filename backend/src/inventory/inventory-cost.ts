@@ -24,12 +24,7 @@ export type CostPlan = {
   roundingAdjustment: Prisma.Decimal;
 };
 
-const INCOMING: InventoryCostMovementType[] = [
-  'opening_balance',
-  'purchase_receipt',
-  'customer_return',
-  'adjustment',
-];
+const INCOMING: InventoryCostMovementType[] = ['opening_balance', 'purchase_receipt', 'customer_return'];
 
 /**
  * The moving weighted-average rule of one warehouse stock row.
@@ -38,6 +33,9 @@ const INCOMING: InventoryCostMovementType[] = [
  *    becomes (on_hand * avg + value) / (on_hand + qty). While the warehouse is
  *    in deficit (on_hand < 0) the incoming unit cost simply becomes the
  *    average; if the result is still <= 0 the average is unchanged.
+ *  - adjustment: signed. A gain is incoming at the line's unit cost, by default
+ *    the current average (so the average does not move); a loss leaves at the
+ *    current average like a supplier return. One command may mix both.
  *  - supplier_return: goods leave at the current average (value is derived and,
  *    if the caller supplied one, must match); the average does not change.
  *  - purchase_reversal: the average is restored to the value it had before the
@@ -54,12 +52,14 @@ export function planCostMovement(
   let movementValue: Prisma.Decimal;
   let avgAfter = avgBefore;
 
-  if (INCOMING.includes(type)) {
-    if (delta.lte(0) || line.unitCost === undefined) {
+  const adjustmentLoss = type === 'adjustment' && delta.isNegative();
+  if (INCOMING.includes(type) || (type === 'adjustment' && !adjustmentLoss)) {
+    const unitCost = line.unitCost ?? (type === 'adjustment' ? avgBefore : undefined);
+    if (delta.lte(0) || unitCost === undefined) {
       throw new BadRequestException(`${type} needs a positive quantity and a unit cost`);
     }
     movementValue = round2(
-      line.value === undefined ? new Prisma.Decimal(line.unitCost).mul(delta) : new Prisma.Decimal(line.value),
+      line.value === undefined ? new Prisma.Decimal(unitCost).mul(delta) : new Prisma.Decimal(line.value),
     );
     if (movementValue.isNegative()) throw new BadRequestException('Incoming cost value cannot be negative');
     if (qtyAfter.gt(0)) {
@@ -69,8 +69,8 @@ export function planCostMovement(
           : qtyBefore.mul(avgBefore).plus(movementValue).div(qtyAfter),
       );
     }
-  } else if (type === 'supplier_return') {
-    if (delta.gte(0)) throw new BadRequestException('supplier_return must remove stock');
+  } else if (type === 'supplier_return' || adjustmentLoss) {
+    if (delta.gte(0)) throw new BadRequestException(`${type} must remove stock`);
     movementValue = round2(delta.mul(avgBefore));
     if (line.value !== undefined && !new Prisma.Decimal(line.value).equals(movementValue)) {
       throw new BadRequestException(
