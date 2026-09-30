@@ -38,6 +38,14 @@ export class DuplicateRegistry {
   private skus = new Map<string, string>()
   private barcodes = new Map<string, string>()
 
+  /** An independent copy, so a check that is later redone (another mapping) can start from the same state. */
+  clone(): DuplicateRegistry {
+    const copy = new DuplicateRegistry()
+    copy.skus = new Map(this.skus)
+    copy.barcodes = new Map(this.barcodes)
+    return copy
+  }
+
   /** Returns the issue for this row, or registers it and returns null. `where` labels the first occurrence ("الصف 12" or "الملف الأول، الصف 12"). */
   check(row: ImportRow, where: string): DuplicateIssue | null {
     const sku = effectiveSku(row)
