@@ -25,6 +25,14 @@ import {
 import { InventoryService } from '../inventory/inventory.service'
 import { MAX_MONEY, unitCost } from '../common/money'
 import {
+  addItemLots,
+  assertLotsMatchTracking,
+  emptyLots,
+  lotsFingerprint,
+  toStockLots,
+  type ItemLots,
+} from './purchasing-lots'
+import {
   assertQuantityPrecision,
   quantity,
   quantityNumber,
@@ -169,7 +177,7 @@ export class PurchasingService {
 
         const variants = await tx.productVariant.findMany({
           where: { id: { in: variantIds }, tenant_id: context.tenantId },
-          select: { id: true, sku: true, base_uom: { select: { precision: true } } },
+          select: { id: true, sku: true, tracking: true, base_uom: { select: { precision: true } } },
         })
         if (variants.length !== variantIds.length) {
           throw new NotFoundException(
@@ -181,6 +189,14 @@ export class PurchasingService {
           const variant = variantById.get(line.variant_id)!
           assertQuantityPrecision(line.qty, variantQuantityPrecision(variant), variant.sku)
         }
+        assertLotsMatchTracking(
+          prepared.lines.map((line) => ({
+            variantId: line.variant_id,
+            sku: variantById.get(line.variant_id)!.sku,
+            lots: line.lots,
+          })),
+          new Map(variants.map((variant) => [variant.id, variant.tracking])),
+        )
 
         const invoice = await tx.purchaseInvoice.create({
           data: {
@@ -254,12 +270,14 @@ export class PurchasingService {
                 `Created purchase line is missing for variant ${line.variant_id}`,
               )
             }
+            const lots = toStockLots(line.lots)
             return {
               variantId: line.variant_id,
               qtyDelta: line.qty,
               referenceLineId: itemId,
               unitCost: line.net_unit_cost,
               value: line.net_line_total,
+              ...(lots ? { lots } : {}),
               links: { purchaseInvoiceId: invoice.id, purchaseInvoiceItemId: itemId },
               metadata: {
                 net_line_total: line.net_line_total.toFixed(2),
@@ -347,6 +365,7 @@ export class PurchasingService {
     }
 
     const requested = new Map<string, Prisma.Decimal>()
+    const requestedLots = new Map<string, ItemLots>()
     for (const item of dto.items) {
       const next = (
         requested.get(item.purchase_invoice_item_id) ?? new Prisma.Decimal(0)
@@ -357,11 +376,19 @@ export class PurchasingService {
         )
       }
       requested.set(item.purchase_invoice_item_id, next)
+      const lots = requestedLots.get(item.purchase_invoice_item_id) ?? emptyLots()
+      try {
+        addItemLots(lots, item, quantity(item.qty))
+      } catch (error) {
+        throw new BadRequestException(error instanceof Error ? error.message : 'Invalid tracking data')
+      }
+      requestedLots.set(item.purchase_invoice_item_id, lots)
     }
     const canonicalItems = [...requested.entries()]
       .map(([purchase_invoice_item_id, qty]) => ({
         purchase_invoice_item_id,
         qty,
+        lots: requestedLots.get(purchase_invoice_item_id) ?? emptyLots(),
       }))
       .sort((left, right) =>
         left.purchase_invoice_item_id.localeCompare(
@@ -378,8 +405,9 @@ export class PurchasingService {
             ? occurredAt.toISOString()
             : null,
           items: canonicalItems.map((item) => ({
-            ...item,
+            purchase_invoice_item_id: item.purchase_invoice_item_id,
             qty: quantityNumber(item.qty),
+            ...lotsFingerprint(item.lots),
           })),
         }),
       )
@@ -500,7 +528,7 @@ export class PurchasingService {
         const [variants, returned, averageCosts] = await Promise.all([
           tx.productVariant.findMany({
             where: { tenant_id: context.tenantId, id: { in: variantIds } },
-            select: { id: true, sku: true, cost_price: true, base_uom: { select: { precision: true } } },
+            select: { id: true, sku: true, cost_price: true, tracking: true, base_uom: { select: { precision: true } } },
           }),
           tx.supplierReturnItem.groupBy({
             by: ['purchase_invoice_item_id'],
@@ -588,6 +616,7 @@ export class PurchasingService {
           return {
             purchaseItem,
             qty: request.qty,
+            lots: request.lots,
             creditUnitCost,
             creditTotal,
             inventoryUnitCost,
@@ -597,6 +626,15 @@ export class PurchasingService {
               .toDecimalPlaces(2),
           }
         })
+
+        assertLotsMatchTracking(
+          preparedItems.map((item) => ({
+            variantId: item.purchaseItem.variant_id,
+            sku: variantById.get(item.purchaseItem.variant_id)!.sku,
+            lots: item.lots,
+          })),
+          new Map(variants.map((variant) => [variant.id, variant.tracking])),
+        )
 
         const creditTotal = preparedItems
           .reduce(
@@ -678,11 +716,13 @@ export class PurchasingService {
             if (!returnItemId) {
               throw new ConflictException('Created supplier return line is missing')
             }
+            const lots = toStockLots(item.lots)
             return {
               variantId: item.purchaseItem.variant_id,
               qtyDelta: item.qty.negated(),
               referenceLineId: returnItemId,
               value: item.inventoryValueRemoved.negated(),
+              ...(lots ? { lots } : {}),
               links: {
                 purchaseInvoiceId: invoice.id,
                 purchaseInvoiceItemId: item.purchaseItem.id,
@@ -891,9 +931,17 @@ export class PurchasingService {
         }),
         tx.productVariant.findMany({
           where: { tenant_id: context.tenantId, id: { in: variantIds } },
-          select: { id: true, item_type: true },
+          select: { id: true, item_type: true, tracking: true },
         }),
       ])
+      // Undoing a receipt would have to pick the lots to take back; the supplier return does it properly.
+      if (variantRows.some((variant) => variant.tracking === 'serial' || variant.tracking === 'batch')) {
+        throw new ConflictException({
+          code: 'TRACKED_PURCHASE_REVERSAL_NOT_SUPPORTED',
+          message: 'A receipt of serial- or batch-tracked items cannot be reversed; return the goods to the supplier instead',
+          message_ar: 'لا يمكن عكس استلام يحتوي أصنافًا متتبعة؛ استخدم مرتجع المورد بدلًا منه.',
+        })
+      }
       const stocked = new Set(
         variantRows.filter((variant) => variant.item_type === 'stocked').map((variant) => variant.id),
       )

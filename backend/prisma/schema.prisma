@@ -157,6 +157,8 @@ model Warehouse {
   inventory                InventoryStock[]
   inventory_movements      InventoryMovement[]
   inventory_cost_movements InventoryCostMovement[]
+  inventory_batches        InventoryBatch[]
+  inventory_serials        InventorySerial[]
 
   @@unique([tenant_id, id])
   @@index([branch_id])
@@ -470,6 +472,15 @@ enum ItemType {
   bundle_kit_placeholder
 }
 
+// W2b: how a variant's stock is followed beyond its quantity. `serial` = every
+// unit has its own number; `batch` = units are grouped by batch number with an
+// optional expiry date. Changed only while no warehouse holds any of it.
+enum TrackingMode {
+  none
+  serial
+  batch
+}
+
 model ProductVariant {
   id                         String                    @id @default(uuid()) @db.Uuid
   product_id                 String                    @db.Uuid
@@ -489,6 +500,7 @@ model ProductVariant {
   // physical, inventory-tracked item, so the default preserves current
   // behavior with zero data migration needed for this column.
   item_type                  ItemType                  @default(stocked)
+  tracking                   TrackingMode              @default(none)
   // BR-TYP-101: a stocked Variant needs a Base stock UOM before inventory
   // tracking can be enabled; nullable because non_stock/service/bundle
   // variants have none, and existing stocked rows have none until assigned.
@@ -505,6 +517,8 @@ model ProductVariant {
   inventory                  InventoryStock[]
   inventory_movements        InventoryMovement[]
   inventory_cost_movements   InventoryCostMovement[]
+  inventory_batches          InventoryBatch[]
+  inventory_serials          InventorySerial[]
   sales_items                SalesInvoiceItem[]
   purchase_items             PurchaseInvoiceItem[]
   supplier_return_items      SupplierReturnItem[]
@@ -1181,6 +1195,7 @@ model InventoryMovement {
   creator           User?                 @relation("InventoryMovementCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
   metadata          Json?
   tenant_id         String                @db.Uuid
+  lot_movements     InventoryLotMovement[]
 
   @@unique([tenant_id, idempotency_key, variant_id])
   @@index([warehouse_id, variant_id, occurred_at])
@@ -1189,6 +1204,76 @@ model InventoryMovement {
   @@index([movement_type, occurred_at])
   @@index([recorded_at])
   @@index([created_by, occurred_at])
+}
+
+// W2b: stock of a batch-tracked variant in one warehouse, split by batch.
+// `batch_no = ''` is the single "unallocated" row of a (warehouse, variant): it
+// takes what was sold without a batch to draw on and is the only row allowed
+// to be negative (CHECK in the migration). SUM(qty) equals InventoryStock.qty_on_hand.
+model InventoryBatch {
+  id            String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id     String                 @db.Uuid
+  warehouse_id  String                 @db.Uuid
+  warehouse     Warehouse              @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  variant_id    String                 @db.Uuid
+  variant       ProductVariant         @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  batch_no      String                 @db.VarChar(100)
+  expiry_date   DateTime?              @db.Date
+  qty           Decimal                @default(0) @db.Decimal(14, 3)
+  created_at    DateTime               @default(now())
+  lot_movements InventoryLotMovement[]
+
+  @@unique([tenant_id, warehouse_id, variant_id, batch_no])
+  @@unique([tenant_id, id])
+  @@index([tenant_id, warehouse_id, variant_id, expiry_date], map: "InventoryBatch_fefo_idx")
+}
+
+enum SerialStatus {
+  in_stock
+  sold
+  in_transit
+  returned_to_supplier
+}
+
+// W2b: one row per serial number of a serial-tracked variant. `warehouse_id`
+// is where it is while `in_stock` and null otherwise.
+model InventorySerial {
+  id            String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id     String                 @db.Uuid
+  variant_id    String                 @db.Uuid
+  variant       ProductVariant         @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  serial        String                 @db.VarChar(191)
+  warehouse_id  String?                @db.Uuid
+  warehouse     Warehouse?             @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  status        SerialStatus           @default(in_stock)
+  created_at    DateTime               @default(now())
+  lot_movements InventoryLotMovement[]
+
+  @@unique([tenant_id, variant_id, serial])
+  @@unique([tenant_id, id])
+  @@index([tenant_id, warehouse_id, variant_id, status], map: "InventorySerial_stock_idx")
+}
+
+// W2b: append-only record of which batch / serial each stock movement moved
+// (exactly one of the two). It is how a sale line's batches and serials are
+// found again for a return, a warranty claim or a recall. The movement
+// reference is a plain FK: InventoryMovement is the hot ledger and gets no
+// extra (tenant_id, id) index for it.
+model InventoryLotMovement {
+  id          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id   String            @db.Uuid
+  movement_id String            @db.Uuid
+  movement    InventoryMovement @relation(fields: [movement_id], references: [id], onDelete: Restrict)
+  batch_id    String?           @db.Uuid
+  batch       InventoryBatch?   @relation(fields: [tenant_id, batch_id], references: [tenant_id, id], onDelete: Restrict)
+  serial_id   String?           @db.Uuid
+  serial      InventorySerial?  @relation(fields: [tenant_id, serial_id], references: [tenant_id, id], onDelete: Restrict)
+  qty_delta   Decimal           @db.Decimal(14, 3)
+  created_at  DateTime          @default(now())
+
+  @@index([tenant_id, movement_id])
+  @@index([tenant_id, batch_id])
+  @@index([tenant_id, serial_id])
 }
 
 enum InventoryCostMovementType {

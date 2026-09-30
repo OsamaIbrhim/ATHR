@@ -8,7 +8,7 @@ const quote = { net_price: 150, tax_amount: 21 };
 function variantRow(id: string, extra: Record<string, unknown> = {}) {
   return {
     id, product_id: `p-${id}`, sku: `SKU-${id}`, label: 'M · Blue', attributes: { size: 'M', color: 'Blue' },
-    base_uom_id: null, is_active: true, ...extra,
+    base_uom_id: null, is_active: true, tracking: 'none', ...extra,
   };
 }
 
@@ -70,6 +70,14 @@ describe('SyncService snapshot (first-time, paged)', () => {
     expect(result.stock).toEqual([{ branch_id: BRANCH, variant_id: 'v1', qty_on_hand: 1.25, qty_reserved: 0, last_sold_at: null }]);
     expect(prisma.productVariant.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { id: 'asc' }, take: SNAPSHOT_PAGE_SIZE + 1 }));
     expect(() => JSON.stringify(result)).not.toThrow();
+  });
+
+  it('tells the POS how each item is tracked (additive field, default none)', async () => {
+    const { service } = setup({ variants: [variantRow('v1'), variantRow('v2', { tracking: 'serial' }), variantRow('v3', { tracking: 'batch' })] });
+    const result: any = await service.pull(ctx, BRANCH);
+    expect(result.products.map((product: any) => [product.id, product.tracking])).toEqual([
+      ['v1', 'none'], ['v2', 'serial'], ['v3', 'batch'],
+    ]);
   });
 
   it('pages by variant id and resumes from snapshot_after with the same cursor', async () => {

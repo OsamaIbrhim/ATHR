@@ -5,7 +5,7 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { TaxCodeService } from '../tax/tax-code.service';
 import { TaxCodeRepository } from '../tax/tax-code.repository';
 import { aTaxCategory, aTaxCode } from '../identity/testing/fixture-builders';
-import { unlimited } from '../entitlements/testing';
+import { fullAccess, unlimited } from '../entitlements/testing';
 import { ProductTypesService } from '../catalog/product-types.service';
 
 // WP-007 Phase A: `ProductsService` now depends on `ProductsRepository`
@@ -16,7 +16,7 @@ import { ProductTypesService } from '../catalog/product-types.service';
 const ctx = contextFor(TENANT_A);
 
 function serviceOver(prisma: any) {
-  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any), new TaxCodeService(new TaxCodeRepository(prisma as any)), unlimited, new ProductTypesService(prisma as any));
+  return new ProductsService(new ProductsRepository(prisma as any), new BrandsRepository(prisma as any), new TaxCodeService(new TaxCodeRepository(prisma as any)), unlimited, new ProductTypesService(prisma as any), fullAccess);
 }
 
 function productReadPrisma(variants: any[], total = variants.length) {
@@ -125,6 +125,18 @@ describe('ProductsService pagination', () => {
     ).rejects.toThrow(/exactly one variant/);
   });
 
+  it('shows how each variant is tracked in the list and the search', async () => {
+    const variants = [
+      { id: 'v1', product_id: 'p1', cost_price: 100, tracking: 'serial' },
+      { id: 'v2', product_id: 'p1', cost_price: 100, tracking: 'none' },
+    ];
+    const service = serviceOver(productReadPrisma(variants));
+    const page = await service.list(ctx, '', 1, 20);
+    expect(page.items.map((item: any) => [item.id, item.tracking])).toEqual([['v1', 'serial'], ['v2', 'none']]);
+    const found = await service.search(ctx, 'x');
+    expect(found.map((item: any) => item.tracking)).toEqual(['serial', 'none']);
+  });
+
   it('hydrates the first page in one parallel relation wave', async () => {
     const variants = [{ id: 'v1', product_id: 'p1', cost_price: 100 }];
     const prisma = productReadPrisma(variants, 41);
@@ -171,7 +183,7 @@ describe('ProductsService pagination', () => {
     const prisma = {
       taxCode: { findMany: jest.fn().mockResolvedValue([aTaxCode()]) },
       productVariant: {
-        findFirst: jest.fn().mockResolvedValue({ id: 'v1' }),
+        findFirst: jest.fn().mockResolvedValue({ id: 'v1', tracking: 'none' }),
         update: jest.fn().mockResolvedValue({ id: 'v1' }),
       },
     };

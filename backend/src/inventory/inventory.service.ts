@@ -1,7 +1,8 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
-import { InventoryRepository } from './inventory.repository';
+import { InventoryRepository, type TrackingReconciliationRow } from './inventory.repository';
 import { applyStock, readAverageCosts } from './inventory-writer';
+import { readDrawnLots, readSerialRows } from './inventory-lot-sql';
 import type { ApplyStockCommand, StockAfter } from './inventory.types';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { quantityNumber } from '../common/quantity';
@@ -21,6 +22,25 @@ export class InventoryService {
   /** Applies one command atomically inside the caller's transaction (see inventory-writer.ts). */
   apply(tx: Prisma.TransactionClient, command: ApplyStockCommand): Promise<StockAfter[]> {
     return applyStock(tx, command);
+  }
+
+  /** The serials / batches a document's lines took out of stock (a return finds what its sale line sold). */
+  drawnLots(
+    db: Pick<Prisma.TransactionClient, '$queryRaw'>,
+    tenantId: string,
+    reference: { type: string; id: string },
+    lineIds: string[],
+  ) {
+    return readDrawnLots(db, tenantId, reference, lineIds);
+  }
+
+  /** The state of the named serials that exist (a return decides from it what to put back). */
+  serialStates(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    pairs: Array<{ variantId: string; serial: string }>,
+  ) {
+    return readSerialRows(tx, tenantId, pairs);
   }
 
   /** Current moving-average cost per variant in a warehouse (rows that do not exist yet are absent). */
@@ -65,9 +85,18 @@ export class InventoryService {
     return this.repository.listMovements(context, variantId, branchId, take);
   }
 
-  /** Stock vs SUM(ledger) per warehouse and variant. A maintenance check, never part of a hot path. */
+  /**
+   * Stock vs SUM(ledger) per warehouse and variant, plus the tracking
+   * invariants (batches add up to on hand; in-stock serials cover on hand).
+   * A maintenance check, never part of a hot path.
+   *
+   * `items` and `tracking_mismatches` are corruption. `needs_settlement` is
+   * not: units sold without a known serial, and the unallocated batch row,
+   * are accepted outcomes of the acceptance-first sale that staff settle later.
+   */
   async reconcile(context: TenantContext, branchId?: string) {
     const rows = await this.repository.reconciliationMismatches(context, branchId);
+    const tracking = splitTracking(await this.repository.trackingReconciliation(context, branchId));
 
     const items = rows.map((row) => {
       const stockOnHand = quantityNumber(row.stock_on_hand ?? 0);
@@ -89,11 +118,36 @@ export class InventoryService {
     });
 
     return {
-      is_consistent: items.length === 0,
-      mismatch_count: items.length,
+      is_consistent: items.length === 0 && tracking.mismatches.length === 0,
+      mismatch_count: items.length + tracking.mismatches.length,
       branch_id: branchId || null,
       checked_at: new Date().toISOString(),
       items,
+      tracking_mismatches: tracking.mismatches,
+      needs_settlement: tracking.settlement,
     };
   }
+}
+
+/** Sorts tracking rows into corruption and "staff still has to settle this". */
+function splitTracking(rows: TrackingReconciliationRow[]) {
+  const where = (row: TrackingReconciliationRow) => ({
+    warehouse_id: row.warehouse_id,
+    branch_id: row.branch_id,
+    variant_id: row.variant_id,
+  });
+  const mismatches: Array<ReturnType<typeof where> & { kind: string; on_hand: number; tracked_total: number; difference: number }> = [];
+  const settlement: Array<ReturnType<typeof where> & { kind: string; quantity: number }> = [];
+  for (const row of rows) {
+    const onHand = quantityNumber(row.stock_on_hand);
+    const tracked = quantityNumber(row.tracked_total);
+    if (row.kind === 'batch_unallocated') {
+      settlement.push({ ...where(row), kind: 'batch_unallocated', quantity: tracked });
+    } else if (row.kind === 'serial_count' && tracked > onHand) {
+      settlement.push({ ...where(row), kind: 'serial_uncaptured_sales', quantity: quantityNumber(tracked - onHand) });
+    } else if (onHand !== tracked) {
+      mismatches.push({ ...where(row), kind: row.kind, on_hand: onHand, tracked_total: tracked, difference: quantityNumber(tracked - onHand) });
+    }
+  }
+  return { mismatches, settlement };
 }

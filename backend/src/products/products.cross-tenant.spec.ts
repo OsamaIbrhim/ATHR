@@ -8,7 +8,7 @@ import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/
 import { aBrand, aProduct, aProductVariant, aTaxCategory, aTaxCode } from '../identity/testing/fixture-builders';
 import { TaxCodeService } from '../tax/tax-code.service';
 import { TaxCodeRepository } from '../tax/tax-code.repository';
-import { unlimited } from '../entitlements/testing';
+import { fullAccess, unlimited } from '../entitlements/testing';
 
 /** WP-007 Phase A §A.3.6 / WP-008 Phase A — cross-tenant isolation for the `products` module. */
 
@@ -67,7 +67,7 @@ function setup() {
   });
   const repository = new ProductsRepository(prisma);
   const brands = new BrandsRepository(prisma);
-  return { prisma, repository, brands, service: new ProductsService(repository, brands, new TaxCodeService(new TaxCodeRepository(prisma)), unlimited, new ProductTypesService(prisma)) };
+  return { prisma, repository, brands, service: new ProductsService(repository, brands, new TaxCodeService(new TaxCodeRepository(prisma)), unlimited, new ProductTypesService(prisma), fullAccess) };
 }
 
 describe('products — cross-tenant isolation', () => {

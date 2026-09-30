@@ -14,6 +14,17 @@ export type InventoryReconciliationRow = {
   last_movement_at: Date | null;
 };
 
+/** A tracked variant whose lots do not add up to its on-hand quantity (`kind` says which lots). */
+export type TrackingReconciliationRow = {
+  kind: 'batch_total' | 'batch_unallocated' | 'serial_count';
+  warehouse_id: string;
+  branch_id: string | null;
+  variant_id: string;
+  stock_on_hand: Prisma.Decimal;
+  /** SUM of the batches / count of in-stock serials; for `batch_unallocated` the unallocated quantity. */
+  tracked_total: Prisma.Decimal;
+};
+
 /**
  * Stock columns a reader may see. `avg_cost` is a cost: it stays out of the
  * position lookup, which only needs `inventory.position.view`.
@@ -139,6 +150,49 @@ export class InventoryRepository {
         )
         ${branchScope}
         ORDER BY 1, 3
+        LIMIT 1000
+      `,
+    );
+  }
+
+  /**
+   * The tracking invariants (not part of any hot path): batch variants keep
+   * SUM(batches) = on hand; serial variants keep in-stock serials >= on hand
+   * (the surplus is sold units nobody scanned). Also lists non-zero
+   * unallocated batch rows, which the staff still has to settle.
+   */
+  async trackingReconciliation(context: TenantScope, branchId?: string): Promise<TrackingReconciliationRow[]> {
+    const branchScope = branchId ? Prisma.sql`AND w."branch_id" = ${branchId}::uuid` : Prisma.empty;
+    return this.prisma.$queryRaw<TrackingReconciliationRow[]>(
+      Prisma.sql`
+        SELECT * FROM (
+          SELECT 'batch_total' AS "kind", s."warehouse_id", w."branch_id", s."variant_id",
+                 s."qty_on_hand" AS "stock_on_hand",
+                 COALESCE((SELECT SUM(b."qty") FROM "InventoryBatch" b
+                           WHERE b."tenant_id" = s."tenant_id" AND b."warehouse_id" = s."warehouse_id"
+                             AND b."variant_id" = s."variant_id"), 0) AS "tracked_total"
+          FROM "InventoryStock" s
+          JOIN "ProductVariant" v ON v."id" = s."variant_id" AND v."tenant_id" = s."tenant_id"
+          JOIN "Warehouse" w ON w."id" = s."warehouse_id"
+          WHERE s."tenant_id" = ${context.tenantId}::uuid AND v."tracking" = 'batch' ${branchScope}
+          UNION ALL
+          SELECT 'batch_unallocated', b."warehouse_id", w."branch_id", b."variant_id", s."qty_on_hand", b."qty"
+          FROM "InventoryBatch" b
+          JOIN "InventoryStock" s ON s."warehouse_id" = b."warehouse_id" AND s."variant_id" = b."variant_id"
+          JOIN "Warehouse" w ON w."id" = b."warehouse_id"
+          WHERE b."tenant_id" = ${context.tenantId}::uuid AND b."batch_no" = '' AND b."qty" <> 0 ${branchScope}
+          UNION ALL
+          SELECT 'serial_count', s."warehouse_id", w."branch_id", s."variant_id", s."qty_on_hand",
+                 COALESCE((SELECT COUNT(*) FROM "InventorySerial" q
+                           WHERE q."tenant_id" = s."tenant_id" AND q."warehouse_id" = s."warehouse_id"
+                             AND q."variant_id" = s."variant_id" AND q."status" = 'in_stock'), 0)
+          FROM "InventoryStock" s
+          JOIN "ProductVariant" v ON v."id" = s."variant_id" AND v."tenant_id" = s."tenant_id"
+          JOIN "Warehouse" w ON w."id" = s."warehouse_id"
+          WHERE s."tenant_id" = ${context.tenantId}::uuid AND v."tracking" = 'serial' ${branchScope}
+        ) t
+        WHERE "kind" = 'batch_unallocated' OR "stock_on_hand" <> "tracked_total"
+        ORDER BY "kind", "warehouse_id", "variant_id"
         LIMIT 1000
       `,
     );

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { ReceivePurchaseDto } from './dto/receive-purchase.dto'
 import { MAX_MONEY, unitCost } from '../common/money'
 import { MAX_QUANTITY, quantity, quantityNumber } from '../common/quantity'
+import { addItemLots, emptyLots, lotsFingerprint, type ItemLots } from './purchasing-lots'
 
 export type PreparedPurchaseLine = {
   variant_id: string
@@ -12,6 +13,8 @@ export type PreparedPurchaseLine = {
   allocated_discount: Prisma.Decimal
   net_line_total: Prisma.Decimal
   net_unit_cost: Prisma.Decimal
+  /** Serials / batches the line names (empty for an untracked variant). */
+  lots: ItemLots
 }
 
 export type PreparedPurchaseReceipt = {
@@ -104,14 +107,16 @@ export function preparePurchaseReceipt(
 ): PreparedPurchaseReceipt {
   const aggregated = new Map<
     string,
-    { qty: Prisma.Decimal; gross: Prisma.Decimal }
+    { qty: Prisma.Decimal; gross: Prisma.Decimal; lots: ItemLots }
   >()
 
   for (const item of dto.items) {
     const current = aggregated.get(item.variant_id) || {
       qty: decimal(0),
       gross: decimal(0),
+      lots: emptyLots(),
     }
+    addItemLots(current.lots, item, quantity(item.qty))
     const nextQty = current.qty.plus(quantity(item.qty))
     if (nextQty.gt(MAX_QUANTITY)) {
       throw new Error(
@@ -121,6 +126,7 @@ export function preparePurchaseReceipt(
     aggregated.set(item.variant_id, {
       qty: nextQty,
       gross: current.gross.plus(decimal(item.unit_cost).mul(quantity(item.qty))),
+      lots: current.lots,
     })
   }
 
@@ -129,6 +135,7 @@ export function preparePurchaseReceipt(
       variant_id,
       qty: value.qty,
       gross: value.gross.toDecimalPlaces(2),
+      lots: value.lots,
     }))
     .sort((left, right) => left.variant_id.localeCompare(right.variant_id))
 
@@ -214,6 +221,7 @@ export function preparePurchaseReceipt(
       allocated_discount: allocatedDiscount,
       net_line_total: netLineTotal,
       net_unit_cost: unitCost(netLineTotal.div(line.qty)),
+      lots: line.lots,
     }
   })
 
@@ -256,6 +264,8 @@ export function preparePurchaseReceipt(
       line_subtotal: line.line_subtotal.toFixed(2),
       allocated_discount: line.allocated_discount.toFixed(2),
       net_line_total: line.net_line_total.toFixed(2),
+      // Only when named: a receipt without tracking keeps its exact fingerprint.
+      ...lotsFingerprint(line.lots),
     })),
   }
   const commandFingerprint = createHash('sha256')

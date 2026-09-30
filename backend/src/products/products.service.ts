@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import type { BarcodeKind, Prisma } from '@prisma/client';
+import type { BarcodeKind, Prisma, TrackingMode } from '@prisma/client';
 import {
   BarcodeDto,
   CreateProductDto,
@@ -14,6 +14,7 @@ import { TaxCodeService } from '../tax/tax-code.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { LimitService } from '../entitlements/limit.service';
+import { EntitlementService, featureNotInPlanError } from '../entitlements/entitlement.service';
 import { quantityNumber } from '../common/quantity';
 import { ProductTypesService, typeAttributes } from '../catalog/product-types.service';
 import {
@@ -31,6 +32,7 @@ export class ProductsService {
     private readonly tax: TaxCodeService,
     private readonly limits: LimitService,
     private readonly types: ProductTypesService,
+    private readonly entitlements: EntitlementService,
   ) {}
 
   /**
@@ -324,13 +326,51 @@ export class ProductsService {
       }
     }
 
-    const updated = await this.repository.updateVariant(context, id, {
+    await this.assertTrackingRules(context, exists, dto);
+
+    const data = {
       sku: dto.sku ?? undefined,
       ...attributeData,
       item_type: dto.item_type,
       base_uom_id: dto.base_uom_id,
-    });
-    return updated;
+      tracking: dto.tracking,
+    };
+    // A tracking change waits for the stock rows (see the repository).
+    const trackingChanges = dto.tracking !== undefined && dto.tracking !== exists.tracking;
+    return trackingChanges
+      ? this.repository.updateVariantTracking(context, id, data)
+      : this.repository.updateVariant(context, id, data);
+  }
+
+  /**
+   * W2b: what the variant will be (after this update) must be trackable, and
+   * turning tracking ON needs the plan feature. Turning it off, or keeping
+   * an existing mode after a plan downgrade, never does (nothing is deleted).
+   */
+  private async assertTrackingRules(
+    context: TenantContext,
+    current: { tracking: TrackingMode; item_type: string; base_uom_id: string | null; base_uom?: { precision: number } | null },
+    dto: UpdateVariantDto,
+  ) {
+    const tracking = dto.tracking ?? current.tracking;
+    if (tracking === 'none') return;
+    const invalid = (message: string) => new AthrDomainError('REQUEST_FIELD_VALUE_INVALID', message);
+
+    if ((dto.item_type ?? current.item_type) !== 'stocked') {
+      throw invalid('Only stocked items can be tracked by serial number or batch.');
+    }
+    if (tracking === 'serial') {
+      const precision = dto.base_uom_id
+        ? await this.repository.uomPrecision(context, dto.base_uom_id)
+        : (current.base_uom?.precision ?? 0);
+      if (precision === null) throw new AthrDomainError('RESOURCE_NOT_FOUND', 'Unit of measure not found.');
+      if (precision !== 0) throw invalid('Serial-tracked items need a unit of measure that allows no decimals.');
+    }
+    if (dto.tracking !== undefined && dto.tracking !== current.tracking) {
+      const feature = tracking === 'serial' ? 'tracking.serial' : 'tracking.batch';
+      const access = await this.entitlements.resolve(context.tenantId);
+      if (!access.features.has(feature)) throw featureNotInPlanError(feature, access.planCode);
+    }
   }
 
   async addBarcode(context: TenantContext, variantId: string, dto: BarcodeDto) {

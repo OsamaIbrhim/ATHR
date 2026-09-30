@@ -6,6 +6,17 @@ import type {
 
 type Numeric = Prisma.Decimal | number | string;
 
+/** What a caller may say about the lots (serials / batches) a tracked line moves. */
+export type StockLots = {
+  /** Serial numbers of the units moved. */
+  serials?: string[];
+  /** Batches moved: outbound = draw these first, inbound = the batches received (`expiryDate` is YYYY-MM-DD). */
+  batches?: { batchNo: string; expiryDate?: string; qty: Numeric }[];
+};
+
+/** Accepted-with-a-caveat outcomes of tracked lines; the sale surfaces them as warning codes. */
+export type TrackingWarning = 'SERIAL_NOT_CAPTURED' | 'SERIAL_NOT_IN_STOCK' | 'BATCH_UNALLOCATED';
+
 /** Links a cost movement to the purchase documents it belongs to. */
 export type CostLinks = {
   purchaseInvoiceId?: string;
@@ -30,6 +41,13 @@ export type StockLine = {
   restoreCost?: Numeric;
   links?: CostLinks;
   metadata?: Record<string, unknown>;
+  /**
+   * Serials / batches of a tracked variant (ignored for untracked ones).
+   * Inbound lines must carry them. Outbound lines with `allowNegative` are
+   * accepted-first: whatever is missing or unknown is recorded with a warning
+   * instead of refusing; without it they are strict.
+   */
+  lots?: StockLots;
 };
 
 /**
@@ -60,4 +78,6 @@ export type StockAfter = {
   avgCostBefore: Prisma.Decimal;
   /** Moving average after the command (equals `avgCostBefore` when no cost moved). */
   avgCost: Prisma.Decimal;
+  /** Set only for tracked lines that were accepted with a caveat. */
+  warnings?: TrackingWarning[];
 };

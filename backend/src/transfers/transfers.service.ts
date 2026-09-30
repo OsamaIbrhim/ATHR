@@ -4,6 +4,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma, Transfer } from '@prisma/client';
 import { randomUUID } from 'crypto';
@@ -205,7 +206,7 @@ export class TransfersService {
             id: { in: items.map((item) => item.variant_id) },
             tenant_id: context.tenantId,
           },
-          select: { id: true, sku: true, item_type: true, base_uom: { select: { precision: true } } },
+          select: { id: true, sku: true, item_type: true, tracking: true, base_uom: { select: { precision: true } } },
         }),
       ]);
       if (branches !== 2) {
@@ -221,6 +222,15 @@ export class TransfersService {
         const variant = variantById.get(item.variant_id)!;
         if (variant.item_type !== 'stocked') {
           throw new BadRequestException(`Only stocked items can be transferred (${variant.sku})`);
+        }
+        // W2b-2 will move serials and batches with the goods; until then a transfer would lose them.
+        if (variant.tracking === 'serial' || variant.tracking === 'batch') {
+          throw new UnprocessableEntityException({
+            code: 'TRACKED_TRANSFER_NOT_SUPPORTED',
+            message: `Serial- and batch-tracked items cannot be transferred yet (${variant.sku})`,
+            message_ar: 'لا يمكن تحويل الأصناف المتتبعة بالسيريال أو بالدفعات حاليًا.',
+            variant_id: variant.id,
+          });
         }
         assertQuantityPrecision(item.qty, variantQuantityPrecision(variant), variant.sku);
       }

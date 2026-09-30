@@ -16,7 +16,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-import { BarcodeKind, ItemType } from '@prisma/client';
+import { BarcodeKind, ItemType, TrackingMode } from '@prisma/client';
 import { IsQuantity } from '../../common/quantity';
 
 export class BarcodeDto {
@@ -176,4 +176,13 @@ export class UpdateVariantDto {
   @IsOptional()
   @IsUUID()
   base_uom_id?: string;
+
+  /**
+   * W2b: serial / batch tracking. Changeable only while no warehouse holds any
+   * of the variant; turning it on needs the plan feature (tracking.serial /
+   * tracking.batch); serial needs a unit that allows no decimals.
+   */
+  @IsOptional()
+  @IsEnum(TrackingMode)
+  tracking?: TrackingMode;
 }

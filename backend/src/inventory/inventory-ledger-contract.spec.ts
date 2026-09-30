@@ -26,9 +26,9 @@ function nonInventorySources() {
 }
 
 describe('inventory single-writer contract', () => {
-  it('lets only InventoryService write stock and the two ledgers', () => {
+  it('lets only InventoryService write stock, the two ledgers and the batch / serial / lot tables', () => {
     const ledgerWrite =
-      /\b(?:inventoryStock|inventoryMovement|inventoryCostMovement)\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(|\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+"Inventory(?:Stock|Movement|CostMovement)"/i;
+      /\b(?:inventoryStock|inventoryMovement|inventoryCostMovement|inventoryBatch|inventorySerial|inventoryLotMovement)\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(|\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+"Inventory(?:Stock|Movement|CostMovement|Batch|Serial|LotMovement)"/i;
     const writers = nonInventorySources()
       .filter(({ source }) => ledgerWrite.test(source))
       .map(({ relative }) => relative);
@@ -36,6 +36,13 @@ describe('inventory single-writer contract', () => {
     // Every writer goes through `inventory.apply`; a new entry here means a
     // module writes stock behind the engine's back (no ledger row, no lock order).
     expect(writers).toEqual([]);
+  });
+
+  it('keeps the lot ledger append-only and the unallocated batch the only negative one', () => {
+    const migration = read('prisma/migrations/202610020001_tracking_serial_batch/migration.sql');
+    expect(migration).toContain('"InventoryLotMovement_append_only" BEFORE DELETE OR UPDATE');
+    expect(migration).toContain(`CHECK ("qty" >= 0 OR "batch_no" = '')`);
+    expect(migration).toContain('CHECK (("batch_id" IS NULL) <> ("serial_id" IS NULL))');
   });
 
   it('has no PL/pgSQL ledger function left to call', () => {

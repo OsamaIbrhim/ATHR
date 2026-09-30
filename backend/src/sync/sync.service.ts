@@ -366,6 +366,8 @@ export class SyncService {
       name_ar: variant.product.name_ar,
       label: variant.label,
       attributes: variant.attributes,
+      // W2b: additive field; a POS that predates it ignores it and sells the item untracked.
+      tracking: variant.tracking,
       uom_code: uom?.code ?? null,
       uom_name_ar: uom?.name_ar ?? null,
       uom_precision: uom?.precision ?? 0,
