@@ -38,6 +38,21 @@ export class LimitService {
     }
   }
 
+  /**
+   * What a bulk creation may still add: the plan limit, what is in use and the room
+   * left (null = unlimited). Like `assertCanCreate` it counts only what is in use.
+   */
+  async headroom(
+    tenantId: string,
+    key: LimitKey,
+    tx?: Prisma.TransactionClient,
+  ): Promise<{ limit: number | null; current: number; remaining: number | null }> {
+    const { limits } = await this.entitlements.resolve(tenantId);
+    const limit = limits[key] ?? null;
+    const current = await this.count(tenantId, key, tx);
+    return { limit, current, remaining: limit === null ? null : Math.max(0, limit - current) };
+  }
+
   /** Current usage of every limited resource, for the status endpoint. */
   async usage(tenantId: string): Promise<Record<LimitKey, number>> {
     const keys = LIMITS.map((limit) => limit.key);

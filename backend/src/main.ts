@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory, Reflector } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
@@ -20,7 +21,9 @@ async function bootstrap() {
   // Validate every security-critical setting before Nest constructs providers or
   // opens a database connection. Configuration errors must fail the deployment.
   const environment = validateRuntimeEnvironment();
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // A product import chunk carries up to 2000 rows as JSON; the 100 kb default would refuse it.
+  app.useBodyParser('json', { limit: '2mb' });
   // Keep BigInt handling inside the HTTP adapter. Sync cursors are explicitly
   // strings, while this protects future database counters from causing a 500.
   app.getHttpAdapter().getInstance().set('json replacer', apiJsonReplacer);

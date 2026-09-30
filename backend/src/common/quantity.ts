@@ -1,6 +1,6 @@
 import { applyDecorators, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { IsNumber, Max, Min } from 'class-validator';
+import { IsNumber, Max, Min, NotEquals } from 'class-validator';
 
 /**
  * Quantities are Decimal(14,3) everywhere (stock, ledgers, document lines).
@@ -69,5 +69,15 @@ export function IsNonNegativeQuantity() {
     IsNumber({ maxDecimalPlaces: QUANTITY_SCALE, allowNaN: false, allowInfinity: false }),
     Min(0),
     Max(MAX_QUANTITY),
+  );
+}
+
+/** DTO field: a signed, non-zero quantity change with at most 3 decimals (adjustments). */
+export function IsSignedQuantity() {
+  return applyDecorators(
+    IsNumber({ maxDecimalPlaces: QUANTITY_SCALE, allowNaN: false, allowInfinity: false }),
+    Min(-MAX_QUANTITY),
+    Max(MAX_QUANTITY),
+    NotEquals(0),
   );
 }

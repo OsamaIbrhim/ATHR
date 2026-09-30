@@ -81,6 +81,10 @@ function structuredHttpError(
     retry_after_ms: Number.isFinite(retryAfterMs)
       ? retryAfterMs
       : undefined,
+    data:
+      payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+        ? (payload.data as Record<string, unknown>)
+        : undefined,
   };
 }
 

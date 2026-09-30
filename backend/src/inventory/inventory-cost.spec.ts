@@ -73,6 +73,36 @@ describe('planCostMovement (warehouse moving weighted average)', () => {
     ).toThrow(BadRequestException);
   });
 
+  it('values an adjustment gain at the current average, so the average does not move', () => {
+    const plan = planCostMovement('adjustment', line(), D(4), D(6), D(90));
+
+    expect(plan.movementValue.toFixed(2)).toBe('360.00');
+    expect(plan.costAfter.toFixed(4)).toBe('90.0000');
+    expect(plan.quantityAfter.toString()).toBe('10');
+    expect(plan.valueAfter.toFixed(2)).toBe('900.00');
+  });
+
+  it('values an adjustment gain at an explicit cost when one is given', () => {
+    const plan = planCostMovement('adjustment', line({ unitCost: 100 }), D(10), D(10), D(90));
+    expect(plan.costAfter.toFixed(4)).toBe('95.0000');
+  });
+
+  it('removes an adjustment loss at the current average without moving it', () => {
+    const plan = planCostMovement('adjustment', line(), D(-3), D(10), D(90));
+
+    expect(plan.movementValue.toFixed(2)).toBe('-270.00');
+    expect(plan.unitCost.toFixed(4)).toBe('90.0000');
+    expect(plan.costAfter.toFixed(4)).toBe('90.0000');
+    expect(plan.quantityAfter.toString()).toBe('7');
+    expect(plan.roundingAdjustment.toFixed(2)).toBe('0.00');
+  });
+
+  it('keeps the average for an adjustment gain that does not clear a deficit', () => {
+    const plan = planCostMovement('adjustment', line(), D(2), D(-5), D(90));
+    expect(plan.quantityAfter.toString()).toBe('-3');
+    expect(plan.costAfter.toFixed(4)).toBe('90.0000');
+  });
+
   it('restores the earlier average when a receipt is reversed', () => {
     const plan = planCostMovement('purchase_reversal', line({ value: -900, restoreCost: 100 }), D(-10), D(10), D(90));
 

@@ -72,6 +72,12 @@ describe('LimitService', () => {
     expect(prisma.product.count).toHaveBeenCalledWith({ where: { tenant_id: TENANT_B, is_active: true } });
   });
 
+  it('headroom says how many more a bulk creation may add, without touching existing data', async () => {
+    expect(await setup({ products: 10 }, { product: 4 }).limits.headroom(TENANT_A, 'products')).toEqual({ limit: 10, current: 4, remaining: 6 });
+    expect(await setup({ products: 3 }, { product: 5 }).limits.headroom(TENANT_A, 'products')).toEqual({ limit: 3, current: 5, remaining: 0 });
+    expect(await setup({ products: null }, { product: 5 }).limits.headroom(TENANT_A, 'products')).toEqual({ limit: null, current: 5, remaining: null });
+  });
+
   it('usage reports every limited resource', async () => {
     const { limits } = setup({}, { branch: 1, posTerminal: 2, membership: 3, product: 4 });
     expect(await limits.usage(TENANT_A)).toEqual({ branches: 1, terminals: 2, users: 3, products: 4 });

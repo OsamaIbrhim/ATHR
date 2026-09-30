@@ -6,10 +6,15 @@ import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { resolveBranchScope } from '../auth/branch-access';
+import { LowStockService } from './low-stock.service';
+import { LowStockDto } from './dto/low-stock.dto';
 
 @Controller('inventory')
 export class InventoryController {
-  constructor(private svc: InventoryService) {}
+  constructor(
+    private svc: InventoryService,
+    private lowStock: LowStockService,
+  ) {}
 
   @RequirePermission('inventory.position.view')
   @Get('lookup')
@@ -19,6 +24,16 @@ export class InventoryController {
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     return this.svc.lookup(ctx, variant_id, resolveBranchScope(req.user));
+  }
+
+  @RequirePermission('inventory.position.view')
+  @Get('low-stock')
+  listLowStock(
+    @TenantCtx() ctx: TenantContext,
+    @Query() query: LowStockDto,
+    @Req() req: Request & { user: AuthenticatedUser },
+  ) {
+    return this.lowStock.list(ctx, query, req.user);
   }
 
   @RequirePermission('inventory.movement.view')
