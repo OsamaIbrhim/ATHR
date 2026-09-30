@@ -93,7 +93,13 @@ export function planSerials(input: {
   for (const line of input.lines) {
     const { serials, duplicates } = cleanSerials(line.lots);
     const wanted = line.delta.abs();
-    const exact = wanted.isInteger() && serials.length === wanted.toNumber() && !duplicates;
+    // Goods coming back from a customer may name fewer serials than units: the
+    // rest were sold without a serial on record (see the sales return).
+    const comesBack = input.movementType === 'return';
+    const exact =
+      wanted.isInteger() &&
+      (comesBack && line.delta.gt(0) ? serials.length <= wanted.toNumber() : serials.length === wanted.toNumber()) &&
+      !duplicates;
     const write = (serial: string, status: SerialStatus, delta: 1 | -1) =>
       writes.push({ variantId: line.variantId, movementId: line.movementId, serial, status, delta });
 

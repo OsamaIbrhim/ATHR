@@ -38,6 +38,17 @@ describe('planSerials', () => {
       }
     });
 
+    it('lets goods coming back from a customer name fewer serials than units, never more', () => {
+      const back = (serials?: string[]) => plan({ lines: [serialLine(3, serials)], movementType: 'return' });
+      expect(back(['A']).writes).toHaveLength(1);
+      expect(back().writes).toEqual([]);
+      expect(() => back(['A', 'B', 'C', 'D'])).toThrow(
+        expect.objectContaining({ response: expect.objectContaining({ code: 'TRACKING_SERIALS_REQUIRED' }) }),
+      );
+      // A receipt stays exact.
+      expect(() => plan({ lines: [serialLine(3, ['A'])], movementType: 'purchase_receipt' })).toThrow();
+    });
+
     it('registers each serial as in stock and logs +1 for it', () => {
       const { writes } = plan({ lines: [serialLine(2, [' A ', 'B'])] });
       expect(writes).toEqual([

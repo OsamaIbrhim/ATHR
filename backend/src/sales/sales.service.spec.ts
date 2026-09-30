@@ -90,6 +90,7 @@ function inventoryDouble(qtyAfter = 8, reserved = 0, avgCost = 100) {
   return {
     defaultWarehouseId: jest.fn().mockResolvedValue(warehouseId),
     drawnLots: jest.fn().mockResolvedValue([]),
+    serialStates: jest.fn().mockResolvedValue([]),
     apply: jest.fn().mockImplementation((_tx: unknown, command: any) =>
       Promise.resolve(
         command.lines.map((line: any) => ({
@@ -782,13 +783,26 @@ describe('SalesService tracked items', () => {
       original_invoice_id: 'sale-1',
       items: [{ sales_invoice_item_id: 'sale-item-1', qty, ...(serials ? { serials } : {}) }],
     });
-    const drawnSerial = (serial: string, status: string) => ({
-      line_id: 'sale-item-1', serial, serial_status: status, batch_no: null, expiry_date: null, batch_created_at: null, qty: new Prisma.Decimal(1),
+    // A serial the sale line took out; `latest` = nothing touched it since (not returned, not resold).
+    const drawnSerial = (serial: string, status = 'sold', latest = status === 'sold') => ({
+      line_id: 'sale-item-1', serial, serial_status: status, serial_latest: latest,
+      batch_no: null, expiry_date: null, batch_created_at: null, qty: new Prisma.Decimal(1),
     });
     const drawnBatch = (batchNo: string, qty: number) => ({
-      line_id: 'sale-item-1', serial: null, serial_status: null, batch_no: batchNo, expiry_date: null,
+      line_id: 'sale-item-1', serial: null, serial_status: null, serial_latest: null, batch_no: batchNo, expiry_date: null,
       batch_created_at: new Date('2026-01-01'), qty: new Prisma.Decimal(qty),
     });
+    const serialState = (serial: string, status: string, warehouse: string | null = warehouseId) => ({
+      variant_id: variantId, serial, status, warehouse_id: status === 'in_stock' ? warehouse : null,
+    });
+    // The sold line has qty 3 (setupReturn).
+    const serialReturn = (drawn: unknown[], states: unknown[] = []) => {
+      const setup = setupReturn(0, 'stocked', 'serial');
+      setup.inventory.drawnLots.mockResolvedValue(drawn);
+      setup.inventory.serialStates.mockResolvedValue(states);
+      return setup;
+    };
+    const suppliedLots = (setup: ReturnType<typeof setupReturn>) => setup.inventory.apply.mock.calls[0][1].lines[0].lots;
 
     it('does not look up lots for an untracked variant', async () => {
       const { service, inventory } = setupReturn();
@@ -798,36 +812,95 @@ describe('SalesService tracked items', () => {
     });
 
     it('puts back the serials that were sold on the line', async () => {
-      const { service, inventory } = setupReturn(0, 'stocked', 'serial');
-      inventory.drawnLots.mockResolvedValue([drawnSerial('S1', 'sold'), drawnSerial('S2', 'sold'), drawnSerial('S3', 'sold')]);
-      await service.createReturn(ctx, returnOf(2, ['S1', 'S3']), actor);
-      expect(inventory.drawnLots).toHaveBeenCalledWith(expect.anything(), ctx.tenantId, { type: 'SalesInvoice', id: 'sale-1' }, ['sale-item-1']);
-      expect(inventory.apply.mock.calls[0][1].lines[0].lots).toEqual({ serials: ['S1', 'S3'] });
+      const setup = serialReturn([drawnSerial('S1'), drawnSerial('S2'), drawnSerial('S3')]);
+      await setup.service.createReturn(ctx, returnOf(2, ['S1', 'S3']), actor);
+      expect(setup.inventory.drawnLots).toHaveBeenCalledWith(expect.anything(), ctx.tenantId, { type: 'SalesInvoice', id: 'sale-1' }, ['sale-item-1']);
+      expect(suppliedLots(setup)).toEqual({ serials: ['S1', 'S3'] });
     });
 
-    it('refuses a serial that was not sold on the line or is already back', async () => {
-      const { service, inventory } = setupReturn(0, 'stocked', 'serial');
-      inventory.drawnLots.mockResolvedValue([drawnSerial('S1', 'sold'), drawnSerial('S2', 'in_stock'), drawnSerial('S3', 'sold')]);
-      await expect(service.createReturn(ctx, returnOf(1, ['S2']), actor)).rejects.toMatchObject({
+    it('refuses a serial that is already back, and one that was resold since (its sale would be orphaned)', async () => {
+      const back = serialReturn([drawnSerial('S1'), drawnSerial('S2', 'in_stock'), drawnSerial('S3')]);
+      await expect(back.service.createReturn(ctx, returnOf(1, ['S2']), actor)).rejects.toMatchObject({
         response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['S2'] },
       });
-      await expect(service.createReturn(ctx, returnOf(1, ['OTHER']), actor)).rejects.toMatchObject({
-        response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE' },
+      // S1 shows 'sold' but a later invoice sold it again: this line no longer owns it.
+      const resold = serialReturn([drawnSerial('S1', 'sold', false), drawnSerial('S2'), drawnSerial('S3')]);
+      await expect(resold.service.createReturn(ctx, returnOf(1, ['S1']), actor)).rejects.toMatchObject({
+        response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['S1'] },
       });
-      expect(inventory.apply).not.toHaveBeenCalled();
+      expect(back.inventory.apply).not.toHaveBeenCalled();
+      expect(resold.inventory.apply).not.toHaveBeenCalled();
     });
 
-    it('takes back an unrecorded serial for a unit that was sold without one (POS without serial scanning)', async () => {
-      // Sold 3, only S1 was recorded: two units have no serial on record.
-      const { service, inventory } = setupReturn(0, 'stocked', 'serial');
-      inventory.drawnLots.mockResolvedValue([drawnSerial('S1', 'sold')]);
-      await service.createReturn(ctx, returnOf(2, ['NEW-1', 'NEW-2']), actor);
-      expect(inventory.apply.mock.calls[0][1].lines[0].lots).toEqual({ serials: ['NEW-1', 'NEW-2'] });
+    it('needs the serial of every unit whose serial is on record', async () => {
+      const setup = serialReturn([drawnSerial('S1'), drawnSerial('S2'), drawnSerial('S3')]);
+      await expect(setup.service.createReturn(ctx, returnOf(1), actor)).rejects.toMatchObject({
+        response: { code: 'TRACKING_SERIALS_REQUIRED' },
+      });
+      await expect(setup.service.createReturn(ctx, returnOf(2, ['S1']), actor)).rejects.toMatchObject({
+        response: { code: 'TRACKING_SERIALS_REQUIRED' },
+      });
+    });
 
-      const three = setupReturn(0, 'stocked', 'serial');
-      three.inventory.drawnLots.mockResolvedValue([drawnSerial('S1', 'sold')]);
-      await expect(three.service.createReturn(ctx, returnOf(3, ['N1', 'N2', 'N3']), actor)).rejects.toMatchObject({
-        response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['N3'] },
+    describe('units that were sold without a serial on record (a POS without serial scanning)', () => {
+      // Sold 3, only S1 was recorded: two units have no serial on record.
+      it('come back with their own new serials', async () => {
+        const setup = serialReturn([drawnSerial('S1')]);
+        await setup.service.createReturn(ctx, returnOf(2, ['NEW-1', 'NEW-2']), actor);
+        expect(suppliedLots(setup)).toEqual({ serials: ['NEW-1', 'NEW-2'] });
+      });
+
+      it('come back with no serial at all, up to that many units', async () => {
+        const setup = serialReturn([drawnSerial('S1')]);
+        await setup.service.createReturn(ctx, returnOf(2), actor);
+        expect(suppliedLots(setup)).toEqual({ serials: [] });
+
+        const tooMany = serialReturn([drawnSerial('S1')]);
+        await expect(tooMany.service.createReturn(ctx, returnOf(3), actor)).rejects.toMatchObject({
+          response: { code: 'TRACKING_SERIALS_REQUIRED' },
+        });
+      });
+
+      it('never exceed the units without a record', async () => {
+        const setup = serialReturn([drawnSerial('S1')]);
+        await expect(setup.service.createReturn(ctx, returnOf(3, ['N1', 'N2', 'N3']), actor)).rejects.toMatchObject({
+          response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['N3'] },
+        });
+      });
+
+      it('settle the count when the serial was never scanned out and is still in stock', async () => {
+        const setup = serialReturn([drawnSerial('S1')], [serialState('P2', 'in_stock')]);
+        await setup.service.createReturn(ctx, returnOf(1, ['P2']), actor);
+        // Nothing to put back: the serial is already in stock, only on hand moves.
+        expect(suppliedLots(setup)).toEqual({ serials: [] });
+        expect(setup.inventory.serialStates).toHaveBeenCalledWith(expect.anything(), ctx.tenantId, [{ variantId, serial: 'P2' }]);
+      });
+
+      it('never take a serial that is sold on another line, sent to a supplier or in transit', async () => {
+        for (const status of ['sold', 'returned_to_supplier', 'in_transit']) {
+          const setup = serialReturn([drawnSerial('S1')], [serialState('X', status)]);
+          await expect(setup.service.createReturn(ctx, returnOf(1, ['X']), actor)).rejects.toMatchObject({
+            response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['X'] },
+          });
+        }
+        const elsewhere = serialReturn([drawnSerial('S1')], [serialState('X', 'in_stock', 'another-warehouse')]);
+        await expect(elsewhere.service.createReturn(ctx, returnOf(1, ['X']), actor)).rejects.toMatchObject({
+          response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE' },
+        });
+      });
+
+      it('leave less to take back once earlier returns used the allowance', async () => {
+        // 3 sold, S1 recorded, 1 unrecorded unit already returned: one unrecorded unit left.
+        const { service, inventory } = setupReturn(1, 'stocked', 'serial');
+        inventory.drawnLots.mockResolvedValue([drawnSerial('S1')]);
+        inventory.serialStates.mockResolvedValue([]);
+        await service.createReturn(ctx, returnOf(1, ['NEW-A']), actor);
+        const again = setupReturn(2, 'stocked', 'serial');
+        again.inventory.drawnLots.mockResolvedValue([drawnSerial('S1')]);
+        again.inventory.serialStates.mockResolvedValue([]);
+        await expect(again.service.createReturn(ctx, returnOf(1, ['NEW-B']), actor)).rejects.toMatchObject({
+          response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE' },
+        });
       });
     });
 
@@ -838,6 +911,14 @@ describe('SalesService tracked items', () => {
       await service.createReturn(ctx, returnOf(2), actor);
       const { batches } = inventory.apply.mock.calls[0][1].lines[0].lots;
       expect(batches.map((batch: any) => [batch.batchNo, batch.qty.toString()])).toEqual([['A', '2']]);
+    });
+
+    it('sends batch units the line has no record of to the unallocated row', async () => {
+      const { service, inventory } = setupReturn(0, 'stocked', 'batch');
+      inventory.drawnLots.mockResolvedValue([drawnBatch('A', 1)]);
+      await service.createReturn(ctx, returnOf(2), actor);
+      const { batches } = inventory.apply.mock.calls[0][1].lines[0].lots;
+      expect(batches.map((batch: any) => [batch.batchNo, batch.qty.toString()])).toEqual([['A', '1'], ['', '1']]);
     });
   });
 });

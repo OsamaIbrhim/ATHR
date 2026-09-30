@@ -826,6 +826,7 @@ export class SalesService {
         if (sold.variant.item_type !== 'stocked' || (tracking !== 'serial' && tracking !== 'batch')) continue;
         trackedLines.push({
           saleItemId,
+          variantId: sold.variant_id,
           tracking,
           soldQty: sold.qty,
           returnedBefore: returnedBefore.get(saleItemId) ?? new Prisma.Decimal(0),
@@ -833,6 +834,10 @@ export class SalesService {
           serials: requestedSerials.get(saleItemId) ?? [],
         });
       }
+      const returnWarehouseId = await this.inventory.defaultWarehouseId(tx, context.tenantId, original.branch_id);
+      const namedSerials = trackedLines.flatMap((line) =>
+        line.tracking === 'serial' ? line.serials.map((serial) => ({ variantId: line.variantId, serial: serial.trim() })) : [],
+      );
       const returnLots = trackedLines.length
         ? planReturnLots(
             trackedLines,
@@ -842,6 +847,8 @@ export class SalesService {
               { type: 'SalesInvoice', id: original.id },
               trackedLines.map((line) => line.saleItemId),
             ),
+            namedSerials.length ? await this.inventory.serialStates(tx, context.tenantId, namedSerials) : [],
+            returnWarehouseId,
           )
         : new Map();
 
@@ -857,7 +864,7 @@ export class SalesService {
       }
       await this.inventory.apply(tx, {
         tenantId: context.tenantId,
-        warehouseId: await this.inventory.defaultWarehouseId(tx, context.tenantId, original.branch_id),
+        warehouseId: returnWarehouseId,
         occurredAt: returnRecord.created_at,
         actorId: actor.sub,
         type: 'return',

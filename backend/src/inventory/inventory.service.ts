@@ -2,7 +2,7 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { InventoryRepository, type TrackingReconciliationRow } from './inventory.repository';
 import { applyStock, readAverageCosts } from './inventory-writer';
-import { readDrawnLots } from './inventory-lot-sql';
+import { readDrawnLots, readSerialRows } from './inventory-lot-sql';
 import type { ApplyStockCommand, StockAfter } from './inventory.types';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { quantityNumber } from '../common/quantity';
@@ -32,6 +32,15 @@ export class InventoryService {
     lineIds: string[],
   ) {
     return readDrawnLots(db, tenantId, reference, lineIds);
+  }
+
+  /** The state of the named serials that exist (a return decides from it what to put back). */
+  serialStates(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    pairs: Array<{ variantId: string; serial: string }>,
+  ) {
+    return readSerialRows(tx, tenantId, pairs);
   }
 
   /** Current moving-average cost per variant in a warehouse (rows that do not exist yet are absent). */

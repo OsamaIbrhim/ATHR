@@ -17,6 +17,8 @@ export type DrawnLots = {
   line_id: string;
   serial: string | null;
   serial_status: SerialStatus | null;
+  /** Serials only: no later movement touched this serial, i.e. this draw is still its latest event. */
+  serial_latest: boolean | null;
   batch_no: string | null;
   expiry_date: Date | null;
   batch_created_at: Date | null;
@@ -27,6 +29,12 @@ export type DrawnLots = {
 export function readDrawnLots(tx: Pick<Tx, '$queryRaw'>, tenantId: string, reference: { type: string; id: string }, lineIds: string[]) {
   return tx.$queryRaw<DrawnLots[]>`
     SELECT m."reference_line_id" AS "line_id", s."serial", s."status" AS "serial_status",
+           CASE WHEN lm."serial_id" IS NULL THEN NULL ELSE NOT EXISTS (
+             SELECT 1 FROM "InventoryLotMovement" later
+             JOIN "InventoryMovement" later_m ON later_m."id" = later."movement_id"
+             WHERE later."tenant_id" = lm."tenant_id" AND later."serial_id" = lm."serial_id"
+               AND later_m."sequence" > m."sequence"
+           ) END AS "serial_latest",
            b."batch_no", b."expiry_date", b."created_at" AS "batch_created_at", -lm."qty_delta" AS "qty"
     FROM "InventoryLotMovement" lm
     JOIN "InventoryMovement" m ON m."id" = lm."movement_id"
@@ -53,7 +61,7 @@ export function readBatchRows(tx: Tx, tenantId: string, warehouseId: string, var
   `;
 }
 
-/** The rows of the named serials that already exist. */
+/** The rows of the named serials that already exist (locked). */
 export function readSerialRows(tx: Tx, tenantId: string, pairs: Array<{ variantId: string; serial: string }>) {
   return tx.$queryRaw<SerialRow[]>`
     SELECT s."variant_id", s."serial", s."status", s."warehouse_id"

@@ -1024,11 +1024,27 @@ async function verifyTrackedDocuments() {
   check('E18 a returned serial is back in stock', (await serialsOf(world, phone)).P1 === 'in_stock');
   const twice = await rejection(sales.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1, serials: ['P1'] }] }, actor));
   check('E18 the same unit cannot be returned twice', twice !== null);
-  // The 1.6.0 sale sold a unit with no serial on record: its return may name the unit's serial.
-  const alreadyThere = await rejection(sales.createReturn(world.context, { original_invoice_id: oldPosSale.id, items: [{ sales_invoice_item_id: oldPosSale.items[0].id, qty: 1, serials: ['P2'] }] }, actor));
-  check('E18 ...but a serial that is in stock cannot come back as a return', codeOf(alreadyThere) === 'TRACKING_SERIAL_ALREADY_IN_STOCK', alreadyThere?.message);
-  await sales.createReturn(world.context, { original_invoice_id: oldPosSale.id, items: [{ sales_invoice_item_id: oldPosSale.items[0].id, qty: 1, serials: ['UNSCANNED-1'] }] }, actor);
-  check('E18 a unit sold by a POS without serial scanning can be returned with its own serial', (await serialsOf(world, phone))['UNSCANNED-1'] === 'in_stock');
+  // A serial resold since (it came back through a purchase and was sold on another invoice) is no longer this line's to return.
+  await receive([{ variant_id: phone.id, qty: 1, unit_cost: 50, serials: ['RS1'] }]);
+  const resoldOnA = await sell(phone, 1, { serials: ['RS1'] });
+  await receive([{ variant_id: phone.id, qty: 1, unit_cost: 50, serials: ['RS1'] }]); // sold -> in stock again
+  const resoldOnB = await sell(phone, 1, { serials: ['RS1'] });
+  const orphaning = await rejection(sales.createReturn(world.context, { original_invoice_id: resoldOnA.id, items: [{ sales_invoice_item_id: resoldOnA.items[0].id, qty: 1, serials: ['RS1'] }] }, actor));
+  check('E18 a serial that was resold cannot be returned against its first sale', codeOf(orphaning) === 'RETURN_SERIAL_NOT_SOLD_ON_LINE' && (await serialsOf(world, phone)).RS1 === 'sold', orphaning?.message);
+  await sales.createReturn(world.context, { original_invoice_id: resoldOnB.id, items: [{ sales_invoice_item_id: resoldOnB.items[0].id, qty: 1, serials: ['RS1'] }] }, actor);
+  check('E18 ...but can against the sale that owns it', (await serialsOf(world, phone)).RS1 === 'in_stock');
+
+  // The 1.6.0 sale sold a unit with no serial on record; the unit may come back with its serial, or without one.
+  const oldLine = { original_invoice_id: oldPosSale.id, items: [{ sales_invoice_item_id: oldPosSale.items[0].id, qty: 1 }] };
+  const elsewhere = await rejection(sales.createReturn(world.context, { ...oldLine, items: [{ ...oldLine.items[0], serials: ['NOT-IN-STOCK'] }] }, actor));
+  check('E18 an unscanned unit cannot come back under a serial that is sold on another line', codeOf(elsewhere) === 'RETURN_SERIAL_NOT_SOLD_ON_LINE', elsewhere?.message);
+  const onHandBefore = (await stockOf(world, phone)).qty_on_hand;
+  await sales.createReturn(world.context, { ...oldLine, items: [{ ...oldLine.items[0], serials: ['P2'] }] }, actor);
+  check('E18 ...but under the serial the system still counts in stock: only the count is settled',
+    (await serialsOf(world, phone)).P2 === 'in_stock' && (await stockOf(world, phone)).qty_on_hand.equals(onHandBefore.plus(1)));
+  const secondUnscanned = await sell(phone);
+  await sales.createReturn(world.context, { original_invoice_id: secondUnscanned.id, items: [{ sales_invoice_item_id: secondUnscanned.items[0].id, qty: 1 }] }, actor);
+  check('E18 a unit sold without a serial can be returned without one (today\'s POS return screen)', (await stockOf(world, phone)).qty_on_hand.equals(onHandBefore.plus(1)));
 
   // Batch return goes back to the batches the sale line drew. A receipt first settles the deficit.
   await receive([{ variant_id: milk.id, qty: 5, unit_cost: 5, batch_no: 'M-LATE' }]);
