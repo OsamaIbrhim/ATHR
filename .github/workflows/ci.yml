@@ -152,6 +152,8 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
         working-directory: ${{ github.workspace }}
+      - run: npx prisma generate
+        working-directory: backend
       - run: npx prisma migrate deploy
         working-directory: backend
       - run: npm run prisma:seed
@@ -183,9 +185,12 @@ jobs:
         working-directory: pos-electron
     steps:
       - uses: actions/checkout@v4
+      # The POS runs on Electron's embedded Node (Electron 41 = Node 24.18), and
+      # better-sqlite3's bundled prebuild crashes on Node 22.12: test on the
+      # runtime the tills actually use.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.12.0
+          node-version: 24.18.0
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
