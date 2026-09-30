@@ -331,7 +331,8 @@ async function verifyConcurrency() {
     orderBy: { sequence: 'asc' },
   })).map((row) => Number(row.on_hand_after));
   check('E5 two concurrent commands on one variant serialize', stock.qty_on_hand.equals(8) && afters.join() === '9,8', `stock=${stock.qty_on_hand} afters=${afters}`);
-  check('E5 the second command waited for the first one\'s lock', second.waitedMs >= 300 && Date.now() - started >= 600, `waited ${second.waitedMs}ms`);
+  // The holder keeps the row 600ms; the waiter starts ~150ms in and may need up to ~150ms more to open its connection, so 150ms is far above the ~10ms an unblocked command takes.
+  check('E5 the second command waited for the first one\'s lock', second.waitedMs >= 150 && Date.now() - started >= 600, `waited ${second.waitedMs}ms`);
 
   // Opposite line orders over the same rows must not deadlock (rows lock in variant order).
   const ids = variants.map((variant) => variant.id);
