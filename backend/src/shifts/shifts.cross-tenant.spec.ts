@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { ShiftsRepository } from './shifts.repository';
@@ -57,14 +58,14 @@ function setup() {
   return { prisma, repository, service: new ShiftsService(prisma, repository) };
 }
 
-const actorFor = (branchId: string) =>
-  ({ sub: randomUUID(), role: 'owner', branch_id: branchId, capabilities: [] }) as any;
+const ownerFor = (branchId: string) =>
+  actorFor('tenant_owner', { sub: randomUUID(), tenantWide: true, branchId });
 
 describe('shifts — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s shifts', async () => {
     const { service } = setup();
-    expect((await service.list(contextFor(TENANT_A))).map((row) => row.id)).toEqual([SHIFT_A]);
-    expect((await service.list(contextFor(TENANT_B))).map((row) => row.id)).toEqual([SHIFT_B]);
+    expect((await service.list(contextFor(TENANT_A))).items.map((row) => row.id)).toEqual([SHIFT_A]);
+    expect((await service.list(contextFor(TENANT_B))).items.map((row) => row.id)).toEqual([SHIFT_B]);
   });
 
   it('does not resolve another tenant\'s open shift for a branch', async () => {
@@ -75,7 +76,7 @@ describe('shifts — cross-tenant isolation', () => {
   it('does not close another tenant\'s shift', async () => {
     const { service, prisma } = setup();
     await expect(
-      service.close(contextFor(TENANT_B), SHIFT_A, actorFor(BRANCH_A), 150),
+      service.close(contextFor(TENANT_B), SHIFT_A, ownerFor(BRANCH_A), 150),
     ).rejects.toThrow('Shift not found');
     expect(prisma.shift.rows.find((row: any) => row.id === SHIFT_A).status).toBe('open');
   });
@@ -86,7 +87,7 @@ describe('shifts — cross-tenant isolation', () => {
    */
   it('computes expected cash from the calling tenant\'s sales only', async () => {
     const { service, prisma } = setup();
-    await service.close(contextFor(TENANT_A), SHIFT_A, actorFor(BRANCH_A), 150);
+    await service.close(contextFor(TENANT_A), SHIFT_A, ownerFor(BRANCH_A), 150);
 
     const closed = prisma.shift.rows.find((row: any) => row.id === SHIFT_A);
     expect(Number(closed.expected_cash)).toBe(150);
@@ -96,14 +97,14 @@ describe('shifts — cross-tenant isolation', () => {
   it('refuses to open a shift against another tenant\'s branch', async () => {
     const { service } = setup();
     await expect(
-      service.open(contextFor(TENANT_A), BRANCH_B, actorFor(BRANCH_B), 0),
+      service.open(contextFor(TENANT_A), BRANCH_B, ownerFor(BRANCH_B), 0),
     ).rejects.toThrow('Active branch not found');
   });
 
   it('stamps a new shift with the calling tenant', async () => {
     const { service, prisma } = setup();
     prisma.shift.rows = [];
-    await service.open(contextFor(TENANT_B), BRANCH_B, actorFor(BRANCH_B), 0);
+    await service.open(contextFor(TENANT_B), BRANCH_B, ownerFor(BRANCH_B), 0);
     expect(prisma.shift.rows[0].tenant_id).toBe(TENANT_B);
   });
 });

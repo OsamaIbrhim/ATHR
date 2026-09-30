@@ -1,3 +1,4 @@
+import type { PageQuery } from '../common/pagination';
 import { Injectable } from '@nestjs/common';
 import { CreateCustomerDto, UpdateCustomerDto } from './dto/customer.dto';
 import { decimal } from '../common/money';
@@ -8,8 +9,8 @@ import type { TenantContext } from '../identity/tenant-context.type';
 export class CustomersService {
   constructor(private readonly repository: CustomersRepository) {}
 
-  findAll(context: TenantContext, q?: string, take = 50) {
-    return this.repository.list(context, { search: q, take });
+  findAll(context: TenantContext, q?: string, paging?: PageQuery) {
+    return this.repository.list(context, { search: q }, paging);
   }
 
   findOne(context: TenantContext, id: string) {

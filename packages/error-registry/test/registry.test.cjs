@@ -68,6 +68,7 @@ test('every code group is registered under ERROR_REGISTRY with matching metadata
     errorRegistry.AUTH_ERROR_CODES,
     errorRegistry.INTERNAL_ERROR_CODES,
     errorRegistry.IDENTITY_ERROR_CODES,
+    errorRegistry.ENTITLEMENT_ERROR_CODES,
   ]) {
     for (const definition of group) {
       assert.deepEqual(errorRegistry.ERROR_REGISTRY[definition.code], definition);
@@ -122,6 +123,18 @@ test('scoped identity codes match the WP-006 identity module reachable set exact
     'SUPPORT_ACCESS_GRANT_NOT_FOUND',
     'TENANT_CONTEXT_MISMATCH',
     'TENANT_CONTEXT_UNRESOLVABLE',
+  ]);
+});
+
+test('scoped entitlement codes match the subscription module reachable set exactly', () => {
+  const codes = errorRegistry.ENTITLEMENT_ERROR_CODES.map((definition) => definition.code).sort();
+  assert.deepEqual(codes, [
+    'ENTITLEMENT_FEATURE_NOT_IN_PLAN',
+    'ENTITLEMENT_LIMIT_REACHED',
+    'PLAN_IN_USE',
+    'SIGNUP_RATE_LIMITED',
+    'TENANT_READ_ONLY',
+    'TENANT_SUSPENDED',
   ]);
 });
 

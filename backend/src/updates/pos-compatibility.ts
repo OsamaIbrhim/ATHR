@@ -1,5 +1,8 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 
+/** The POS release this backend is deployed with; older builds must update. */
+const DEFAULT_MIN_POS_VERSION = '1.6.0';
+
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 
 function optional(name: string): string {
@@ -63,14 +66,13 @@ export type PosCompatibilityManifest = {
   minimum_pos_version: string;
   backend_version: string;
   deployment_sha: string | null;
-  require_protocol_headers: boolean;
   server_time: string;
 };
 
 export function readPosCompatibilityManifest(): PosCompatibilityManifest {
-  const minimum = positiveInteger('POS_PROTOCOL_MIN', 2);
-  const maximum = positiveInteger('POS_PROTOCOL_MAX', 2);
-  const minimumPosVersion = optional('POS_MIN_APP_VERSION') || '1.4.0';
+  const minimum = positiveInteger('POS_PROTOCOL_MIN', 3);
+  const maximum = positiveInteger('POS_PROTOCOL_MAX', 3);
+  const minimumPosVersion = optional('POS_MIN_APP_VERSION') || DEFAULT_MIN_POS_VERSION;
   if (minimum > maximum || !parseVersion(minimumPosVersion)) {
     throw new ServiceUnavailableException({
       code: 'POS_COMPATIBILITY_CONFIG_INVALID',
@@ -84,8 +86,6 @@ export function readPosCompatibilityManifest(): PosCompatibilityManifest {
       optional('POS_BACKEND_VERSION') || optional('npm_package_version') || '1.0.0',
     deployment_sha:
       optional('RAILWAY_GIT_COMMIT_SHA') || optional('GITHUB_SHA') || null,
-    require_protocol_headers:
-      optional('POS_REQUIRE_PROTOCOL_HEADERS').toLowerCase() === 'true',
     server_time: new Date().toISOString(),
   };
 }

@@ -1,5 +1,6 @@
 import { InvitationService } from './invitation.service';
 import { TenantContext } from './tenant-context.type';
+import { unlimited } from '../entitlements/testing';
 
 const context = { tenantId: 'tenant-1' } as unknown as TenantContext;
 
@@ -44,7 +45,7 @@ function fakeInvitationRepository(rows: Record<string, any> = {}) {
 
 function fakeMembershipRepository(existing: any = null) {
   return {
-    findByIdentity: jest.fn(async () => existing),
+    findByUser: jest.fn(async () => existing),
     save: jest.fn(async (_ctx: any, input: any) => ({ id: 'membership-1', status: input.status, role: input.role })),
   } as any;
 }
@@ -55,7 +56,7 @@ function fakeAccessScopeService() {
 
 describe('InvitationService.create', () => {
   it('rejects an invitation with no scope_type', async () => {
-    const service = new InvitationService(fakeInvitationRepository(), fakeMembershipRepository(), fakeAccessScopeService());
+    const service = new InvitationService(fakeInvitationRepository(), fakeMembershipRepository(), fakeAccessScopeService(), unlimited);
     const result = await service.create(context, {
       email: 'a@example.com',
       role: 'cashier',
@@ -67,7 +68,7 @@ describe('InvitationService.create', () => {
   });
 
   it('rejects a non-tenant-wide invitation with no scope_ref_id', async () => {
-    const service = new InvitationService(fakeInvitationRepository(), fakeMembershipRepository(), fakeAccessScopeService());
+    const service = new InvitationService(fakeInvitationRepository(), fakeMembershipRepository(), fakeAccessScopeService(), unlimited);
     const result = await service.create(context, {
       email: 'a@example.com',
       role: 'cashier',
@@ -79,7 +80,7 @@ describe('InvitationService.create', () => {
   });
 
   it('creates a pending invitation and returns a single-use raw token', async () => {
-    const service = new InvitationService(fakeInvitationRepository(), fakeMembershipRepository(), fakeAccessScopeService());
+    const service = new InvitationService(fakeInvitationRepository(), fakeMembershipRepository(), fakeAccessScopeService(), unlimited);
     const result = await service.create(context, {
       email: 'a@example.com',
       role: 'cashier',
@@ -97,7 +98,7 @@ describe('InvitationService.create', () => {
   it('BR-INVIT-102: re-inviting the same pending email revokes the old row instead of duplicating it', async () => {
     const rows: Record<string, any> = {};
     const repository = fakeInvitationRepository(rows);
-    const service = new InvitationService(repository, fakeMembershipRepository(), fakeAccessScopeService());
+    const service = new InvitationService(repository, fakeMembershipRepository(), fakeAccessScopeService(), unlimited);
 
     await service.create(context, { email: 'a@example.com', role: 'cashier', scopeType: 'tenant_wide', scopeRefId: null });
     await service.create(context, { email: 'a@example.com', role: 'seller', scopeType: 'tenant_wide', scopeRefId: null });
@@ -114,7 +115,7 @@ describe('InvitationService.accept', () => {
     const invitationRepository = fakeInvitationRepository(rows);
     const membershipRepository = fakeMembershipRepository();
     const accessScope = fakeAccessScopeService();
-    const service = new InvitationService(invitationRepository, membershipRepository, accessScope);
+    const service = new InvitationService(invitationRepository, membershipRepository, accessScope, unlimited);
     const created = await service.create(context, {
       email: 'a@example.com',
       role: 'cashier',
@@ -132,6 +133,21 @@ describe('InvitationService.accept', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.status).toBe('active');
     expect(accessScope.assign).toHaveBeenCalled();
+  });
+
+  it('checks the plan users limit before creating the Membership, and creates nothing when it is reached', async () => {
+    const limits = { assertCanCreate: jest.fn().mockRejectedValue(new Error('ENTITLEMENT_LIMIT_REACHED')) } as any;
+    const rows: Record<string, any> = {};
+    const invitationRepository = fakeInvitationRepository(rows);
+    const membershipRepository = fakeMembershipRepository();
+    const service = new InvitationService(invitationRepository, membershipRepository, fakeAccessScopeService(), limits);
+    const created = await service.create(context, { email: 'a@example.com', role: 'cashier', scopeType: 'tenant_wide', scopeRefId: null });
+    if (created.ok === false) throw new Error('setup failed');
+
+    await expect(service.accept({ token: created.value.token, acceptingIdentityId: 'identity-1' })).rejects.toThrow('ENTITLEMENT_LIMIT_REACHED');
+    expect(limits.assertCanCreate).toHaveBeenCalledWith('tenant-1', 'users');
+    expect(membershipRepository.save).not.toHaveBeenCalled();
+    expect(invitationRepository.markAccepted).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown token', async () => {
@@ -168,7 +184,7 @@ describe('InvitationService.accept', () => {
     const rows: Record<string, any> = {};
     const invitationRepository = fakeInvitationRepository(rows);
     const membershipRepository = fakeMembershipRepository({ id: 'existing', status: 'active' });
-    const service = new InvitationService(invitationRepository, membershipRepository, fakeAccessScopeService());
+    const service = new InvitationService(invitationRepository, membershipRepository, fakeAccessScopeService(), unlimited);
     const created = await service.create(context, {
       email: 'a@example.com',
       role: 'cashier',
@@ -186,7 +202,7 @@ describe('InvitationService.accept', () => {
 describe('InvitationService.expire / revoke — idempotent (BR-TERR-101 style)', () => {
   it('expire is a no-op on an already-accepted invitation, not an error', async () => {
     const rows = { 'inv-1': { id: 'inv-1', status: 'accepted' } };
-    const service = new InvitationService(fakeInvitationRepository(rows), fakeMembershipRepository(), fakeAccessScopeService());
+    const service = new InvitationService(fakeInvitationRepository(rows), fakeMembershipRepository(), fakeAccessScopeService(), unlimited);
     const result = await service.expire(context, 'inv-1');
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.status).toBe('accepted');
@@ -194,14 +210,14 @@ describe('InvitationService.expire / revoke — idempotent (BR-TERR-101 style)',
 
   it('revoke is a no-op on an already-revoked invitation, not an error', async () => {
     const rows = { 'inv-1': { id: 'inv-1', status: 'revoked' } };
-    const service = new InvitationService(fakeInvitationRepository(rows), fakeMembershipRepository(), fakeAccessScopeService());
+    const service = new InvitationService(fakeInvitationRepository(rows), fakeMembershipRepository(), fakeAccessScopeService(), unlimited);
     const result = await service.revoke(context, 'inv-1');
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.status).toBe('revoked');
   });
 
   it('returns INVITATION_NOT_FOUND for an unknown id', async () => {
-    const service = new InvitationService(fakeInvitationRepository({}), fakeMembershipRepository(), fakeAccessScopeService());
+    const service = new InvitationService(fakeInvitationRepository({}), fakeMembershipRepository(), fakeAccessScopeService(), unlimited);
     const result = await service.revoke(context, 'missing');
     expect(result.ok).toBe(false);
     if (result.ok === false) expect(result.failure.code).toBe('INVITATION_NOT_FOUND');

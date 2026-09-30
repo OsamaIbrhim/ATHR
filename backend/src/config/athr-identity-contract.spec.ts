@@ -10,10 +10,10 @@ function repositoryFile(relativePath: string) {
 
 describe('ATHR identity and deployment contract', () => {
   it('does not ship a hard-coded production API or the legacy API variable', () => {
-    const main = repositoryFile('pos-electron/electron/main.ts');
-    expect(main).not.toContain('boldsystem-production.up.railway.app');
-    expect(main).not.toContain('BOLD_API_URL');
-    expect(main).toContain('ATHR_API_URL');
+    const config = repositoryFile('pos-electron/electron/deployment-config.ts');
+    expect(config).not.toContain('boldsystem-production.up.railway.app');
+    expect(config).not.toContain('BOLD_API_URL');
+    expect(config).toContain('ATHR_API_URL');
   });
 
   it('publishes ATHR package and installer identities', () => {

@@ -13,6 +13,24 @@ GET /api/v1/pos-updates/latest
 
 The installed POS continues to verify the installer SHA-256 before it can run the file.
 
+## Release notes
+
+### 1.6.0 (POS protocol 3)
+
+Generic catalog and sync protocol 3.
+
+- **Protocol.** Only protocol 3 exists: `POS_PROTOCOL_MIN=3`, `POS_PROTOCOL_MAX=3` (the defaults). Every POS request must
+  carry `x-pos-protocol-version` and `x-pos-app-version`; `POS_MIN_APP_VERSION` defaults to the current POS version.
+- **Local data.** One local schema migration (v1); money is stored only as integer minor units. A database from a
+  pre-release dev build is refused, not upgraded: delete the local data folder.
+- **Sale lines** carry `variant_label_snapshot` (the backend no longer accepts `size_snapshot`/`color_snapshot`).
+- **Catalog sync.** The snapshot is paged and resumable (`snapshot_after`); the cursor and catalog format version are
+  stored only after the last page, so an interrupted snapshot never leaves a partial catalog behind a valid cursor.
+- **Scan.** Exact barcode (with pack size), then SKU, then scale label (weight or price), then text search.
+- **Quantities.** Decimal per unit precision (0 = pieces, 3 = kg); line money is rounded half up per line, like the server.
+- **Compatibility.** A completed sale rejected with `POS_UPDATE_REQUIRED` or `POS_PROTOCOL_UNSUPPORTED` stays
+  pending (sync is blocked with a message) instead of being quarantined, so raising the minimum version later is safe.
+
 ## One-time setup
 
 1. Merge and deploy the release-setup patch.

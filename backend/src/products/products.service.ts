@@ -1,19 +1,38 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
+import type { BarcodeKind, Prisma, TrackingMode } from '@prisma/client';
+import {
+  BarcodeDto,
+  CreateProductDto,
+  UpdateBarcodeDto,
+  UpdateProductDto,
+  UpdateVariantDto,
+  VariantInputDto,
+} from './dto/product.dto';
 import { ProductsRepository } from './products.repository';
 import { BrandsRepository } from '../brands/brands.repository';
 import { TaxCodeService } from '../tax/tax-code.service';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { LimitService } from '../entitlements/limit.service';
+import { EntitlementService, featureNotInPlanError } from '../entitlements/entitlement.service';
+import { quantityNumber } from '../common/quantity';
+import { ProductTypesService, typeAttributes } from '../catalog/product-types.service';
+import {
+  parseVariantAttributes,
+  variantLabel,
+  type AttributeDefinition,
+} from '../catalog/product-type-schema';
+import { readTenantSettings } from '../catalog/tenant-settings';
 
 @Injectable()
 export class ProductsService {
-  private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
-
   constructor(
     private readonly repository: ProductsRepository,
     private readonly brands: BrandsRepository,
     private readonly tax: TaxCodeService,
+    private readonly limits: LimitService,
+    private readonly types: ProductTypesService,
+    private readonly entitlements: EntitlementService,
   ) {}
 
   /**
@@ -61,7 +80,7 @@ export class ProductsService {
     // additional parallel database wave. Prisma's nested include strategy used
     // sequential relation queries and paid the remote DB round-trip repeatedly.
     const [total, baseVariants] = await Promise.all([
-      this.cachedCount(context, query, where),
+      this.repository.countVariants(context, where),
       this.repository.listVariants(context, where, page, pageSize),
     ]);
     const variants = await this.hydrateVariants(context, baseVariants, branchId);
@@ -93,12 +112,19 @@ export class ProductsService {
 
     const variantIds = variants.map((variant) => variant.id);
     const productIds = [...new Set(variants.map((variant) => variant.product_id))];
-    const [products, inventory] = await Promise.all([
+    const [products, inventory, barcodes] = await Promise.all([
       this.repository.findProductsByIds(context, productIds),
       this.repository.findStockForVariants(context, variantIds, branchId),
+      this.repository.findBarcodes(context, variantIds),
     ]);
 
     const productById = new Map(products.map((product) => [product.id, product]));
+    const barcodesByVariant = new Map<string, any[]>();
+    for (const barcode of barcodes) {
+      const rows = barcodesByVariant.get(barcode.variant_id) || [];
+      rows.push({ ...barcode, pack_qty: quantityNumber(barcode.pack_qty) });
+      barcodesByVariant.set(barcode.variant_id, rows);
+    }
     const inventoryByVariant = new Map<string, any[]>();
     for (const row of inventory) {
       const rows = inventoryByVariant.get(row.variant_id) || [];
@@ -110,38 +136,8 @@ export class ProductsService {
       ...variant,
       product: productById.get(variant.product_id),
       inventory: inventoryByVariant.get(variant.id) || [],
+      barcodes: barcodesByVariant.get(variant.id) || [],
     }));
-  }
-
-  /**
-   * Blueprint §125 "Cache Tests — keys contain Tenant": this cache was keyed
-   * on the search string alone, so with more than one tenant the first
-   * tenant's result count would be served to the second. The tenant id is now
-   * part of the key.
-   */
-  private cachedCount(context: TenantContext, query: string, where: any) {
-    const key = `${context.tenantId}:${query.toLocaleLowerCase('en-US')}`;
-    const now = Date.now();
-    const cached = this.countCache.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
-    const ttl = Math.min(30_000, Math.max(0, Number(process.env.LIST_COUNT_CACHE_MS || 5_000)));
-    let value: Promise<number>;
-    value = this.repository.countVariants(context, where).then((total) => {
-      if (this.countCache.get(key)?.value === value) {
-        this.countCache.set(key, { expiresAt: Date.now() + ttl, value: Promise.resolve(total) });
-      }
-      return total;
-    }).catch((error) => {
-      if (this.countCache.get(key)?.value === value) this.countCache.delete(key);
-      throw error;
-    });
-    this.countCache.set(key, { expiresAt: Number.POSITIVE_INFINITY, value });
-    if (this.countCache.size > 200) this.countCache.delete(this.countCache.keys().next().value!);
-    return value;
-  }
-
-  private invalidateCounts() {
-    this.countCache.clear();
   }
 
   async search(context: TenantContext, q: string, branchId?: string, includeCost = false) {
@@ -155,7 +151,7 @@ export class ProductsService {
       ...variant,
       stock_by_branch: variant.inventory,
       available_here: branchId
-        ? variant.inventory.find((item: any) => item.branch_id === branchId)?.qty_on_hand || 0
+        ? quantityNumber(variant.inventory.find((item: any) => item.branch_id === branchId)?.qty_on_hand ?? 0)
         : undefined,
     };
     if (includeCost) return result;
@@ -164,6 +160,7 @@ export class ProductsService {
   }
 
   async createProduct(context: TenantContext, dto: CreateProductDto) {
+    await this.limits.assertCanCreate(context.tenantId, 'products');
     // BR-CLS-103 / BR-PROD-100: a cross-tenant brand_id must never be
     // accepted -- fail loudly here rather than relying solely on the
     // composite FK to reject it at the DB layer.
@@ -178,35 +175,144 @@ export class ProductsService {
     // exists the create is rejected: a product with no tax category would be
     // unsellable anyway, and failing at creation names the cause.
     const taxCategoryId = await this.resolveTaxCategoryId(context, dto.tax_category_id);
-    const product = await this.repository.saveProduct(context, {
-      name_en: dto.name_en,
-      name_ar: dto.name_ar,
-      brand: dto.brand,
-      brand_id: dto.brand_id,
-      category_id: dto.category_id,
-      tax_category_id: taxCategoryId,
-      has_variants: !!(dto.size || dto.color || dto.style),
-      variants: {
-        create: [{
-          sku: dto.sku,
-          barcode_ean13: dto.barcode_ean13 || null,
-          barcode_internal: dto.barcode_internal || dto.sku,
-          size: dto.size || null,
-          color: dto.color || null,
-          style: dto.style || null,
-          cost_price: dto.cost_price,
-          item_type: dto.item_type,
-          base_uom_id: dto.base_uom_id,
-        }],
+    // No type = a simple product: exactly one variant, no attributes.
+    const type = dto.product_type_id ? await this.activeType(context, dto.product_type_id) : null;
+    const definitions = type ? typeAttributes(type) : [];
+    if (!type && dto.variants.length > 1) {
+      throw new AthrDomainError('REQUEST_FIELD_VALUE_INVALID', 'A product without a product type has exactly one variant.');
+    }
+    const variants = await Promise.all(dto.variants.map((variant) => this.variantRow(context, definitions, variant)));
+    this.assertDistinctLabels(definitions, variants.map((row) => row.variant.label));
+
+    const product = await this.repository.createProduct(
+      context,
+      {
+        name_en: dto.name_en,
+        name_ar: dto.name_ar,
+        brand: dto.brand,
+        brand_id: dto.brand_id,
+        category_id: dto.category_id,
+        product_type_id: type?.id,
+        tax_category_id: taxCategoryId,
+        has_variants: !!type,
       },
-    });
-    this.invalidateCounts();
+      variants.map(({ variant, barcodes }) => ({ ...variant, barcodes })),
+    );
     return product;
   }
 
+  /** An active product type of this tenant. */
+  private async activeType(context: TenantContext, id: string) {
+    const type = await this.types.get(context, id);
+    if (!type.is_active) {
+      throw new AthrDomainError('REQUEST_FIELD_VALUE_INVALID', 'This product type is archived.');
+    }
+    return type;
+  }
+
+  /** Validates one variant input and builds its rows (attributes, label, barcodes). */
+  private async variantRow(
+    context: TenantContext,
+    definitions: readonly AttributeDefinition[],
+    input: VariantInputDto,
+  ) {
+    const attributes = parseVariantAttributes(definitions, input.attributes);
+    const barcodes = await Promise.all((input.barcodes ?? []).map((barcode) => this.barcodeRow(context, barcode)));
+    if (new Set(barcodes.map((barcode) => barcode.code)).size !== barcodes.length) {
+      throw new AthrDomainError('CATALOG_BARCODE_CONFLICT', 'The same barcode is listed twice.');
+    }
+    return {
+      variant: {
+        sku: input.sku,
+        cost_price: input.cost_price,
+        item_type: input.item_type,
+        base_uom_id: input.base_uom_id,
+        attributes: attributes as Prisma.InputJsonValue,
+        label: variantLabel(definitions, attributes),
+      },
+      barcodes,
+    };
+  }
+
+  private assertDistinctLabels(definitions: readonly AttributeDefinition[], labels: string[]) {
+    if (definitions.some((d) => d.axis) && new Set(labels).size !== labels.length) {
+      throw new AthrDomainError('REQUEST_FIELD_VALUE_INVALID', 'Two variants have the same attribute combination.');
+    }
+  }
+
+  /**
+   * A barcode row. A scale item code must look like the tenant's scale labels
+   * (prefix + item digits) or a scanned label could never match it.
+   */
+  private async barcodeRow(context: TenantContext, input: BarcodeDto) {
+    const kind: BarcodeKind = input.kind ?? 'standard';
+    if (kind === 'scale_plu') await this.assertScalePlu(context, input.code, input.pack_qty);
+    return { code: input.code, kind, pack_qty: input.pack_qty ?? 1 };
+  }
+
+  private async assertScalePlu(context: TenantContext, code: string, packQty?: number) {
+    const { scale_barcode: scale } = readTenantSettings(await this.repository.tenantSettings(context));
+    const expectedLength = 2 + scale.item_digits;
+    if (
+      !scale.enabled ||
+      !/^\d+$/.test(code) ||
+      code.length !== expectedLength ||
+      !scale.prefixes.includes(code.slice(0, 2)) ||
+      (packQty !== undefined && packQty !== 1)
+    ) {
+      throw new AthrDomainError(
+        'REQUEST_FIELD_VALUE_INVALID',
+        `A scale item code needs scale barcodes enabled and is ${expectedLength} digits starting with a scale prefix.`,
+      );
+    }
+  }
+
+  async getProduct(context: TenantContext, id: string) {
+    const product = await this.repository.findProduct(context, id);
+    if (!product) throw new NotFoundException('Product not found');
+    return product;
+  }
+
+  async updateProduct(context: TenantContext, id: string, dto: UpdateProductDto) {
+    if (dto.brand_id) await this.brands.assertInTenant(context, dto.brand_id);
+    const taxCategoryId = dto.tax_category_id
+      ? await this.resolveTaxCategoryId(context, dto.tax_category_id)
+      : undefined;
+    const product = await this.repository.updateProduct(context, id, {
+      name_en: dto.name_en,
+      name_ar: dto.name_ar,
+      brand_id: dto.brand_id,
+      category_id: dto.category_id,
+      tax_category_id: taxCategoryId,
+    });
+    return product;
+  }
+
+  /** Adds a variant (a new attribute combination) to a product that has a type. */
+  async addVariant(context: TenantContext, productId: string, dto: VariantInputDto) {
+    const product = await this.getProduct(context, productId);
+    if (!product.product_type) {
+      throw new AthrDomainError('REQUEST_FIELD_VALUE_INVALID', 'A product without a product type has exactly one variant.');
+    }
+    const definitions = typeAttributes(product.product_type);
+    const { variant, barcodes } = await this.variantRow(context, definitions, dto);
+    if (product.variants.some((existing) => existing.label === variant.label)) {
+      throw new AthrDomainError('REQUEST_FIELD_VALUE_INVALID', 'This product already has a variant with this attribute combination.');
+    }
+    const created = await this.repository.addVariant(context, productId, variant, barcodes);
+    return created;
+  }
+
   async updateVariant(context: TenantContext, id: string, dto: UpdateVariantDto) {
-    const exists = await this.repository.findVariantById(context, id);
+    const exists = await this.repository.findVariantWithType(context, id);
     if (!exists) throw new NotFoundException('Variant not found');
+
+    let attributeData: { attributes: Prisma.InputJsonValue; label: string } | undefined;
+    if (dto.attributes) {
+      const definitions = typeAttributes({ attributes: exists.product?.product_type?.attributes ?? [] });
+      const attributes = parseVariantAttributes(definitions, dto.attributes);
+      attributeData = { attributes: attributes as Prisma.InputJsonValue, label: variantLabel(definitions, attributes) };
+    }
 
     // BR-TYP-103: a Variant with transaction history cannot flip item_type
     // by direct edit — a new Variant or a documented migration path is
@@ -220,23 +326,73 @@ export class ProductsService {
       }
     }
 
-    return this.repository.updateVariant(context, id, {
+    await this.assertTrackingRules(context, exists, dto);
+
+    const data = {
       sku: dto.sku ?? undefined,
-      barcode_ean13: dto.barcode_ean13,
-      barcode_internal: dto.barcode_internal,
-      size: dto.size,
-      color: dto.color,
-      style: dto.style,
+      ...attributeData,
       item_type: dto.item_type,
       base_uom_id: dto.base_uom_id,
-    });
+      tracking: dto.tracking,
+    };
+    // A tracking change waits for the stock rows (see the repository).
+    const trackingChanges = dto.tracking !== undefined && dto.tracking !== exists.tracking;
+    return trackingChanges
+      ? this.repository.updateVariantTracking(context, id, data)
+      : this.repository.updateVariant(context, id, data);
+  }
+
+  /**
+   * W2b: what the variant will be (after this update) must be trackable, and
+   * turning tracking ON needs the plan feature. Turning it off, or keeping
+   * an existing mode after a plan downgrade, never does (nothing is deleted).
+   */
+  private async assertTrackingRules(
+    context: TenantContext,
+    current: { tracking: TrackingMode; item_type: string; base_uom_id: string | null; base_uom?: { precision: number } | null },
+    dto: UpdateVariantDto,
+  ) {
+    const tracking = dto.tracking ?? current.tracking;
+    if (tracking === 'none') return;
+    const invalid = (message: string) => new AthrDomainError('REQUEST_FIELD_VALUE_INVALID', message);
+
+    if ((dto.item_type ?? current.item_type) !== 'stocked') {
+      throw invalid('Only stocked items can be tracked by serial number or batch.');
+    }
+    if (tracking === 'serial') {
+      const precision = dto.base_uom_id
+        ? await this.repository.uomPrecision(context, dto.base_uom_id)
+        : (current.base_uom?.precision ?? 0);
+      if (precision === null) throw new AthrDomainError('RESOURCE_NOT_FOUND', 'Unit of measure not found.');
+      if (precision !== 0) throw invalid('Serial-tracked items need a unit of measure that allows no decimals.');
+    }
+    if (dto.tracking !== undefined && dto.tracking !== current.tracking) {
+      const feature = tracking === 'serial' ? 'tracking.serial' : 'tracking.batch';
+      const access = await this.entitlements.resolve(context.tenantId);
+      if (!access.features.has(feature)) throw featureNotInPlanError(feature, access.planCode);
+    }
+  }
+
+  async addBarcode(context: TenantContext, variantId: string, dto: BarcodeDto) {
+    return this.repository.addBarcode(context, variantId, await this.barcodeRow(context, dto));
+  }
+
+  async updateBarcode(context: TenantContext, id: string, dto: UpdateBarcodeDto) {
+    const barcode = await this.repository.findBarcodeById(context, id);
+    if (!barcode) throw new NotFoundException('Barcode not found');
+    const kind = dto.kind ?? barcode.kind;
+    if (kind === 'scale_plu') await this.assertScalePlu(context, barcode.code, dto.pack_qty);
+    return this.repository.updateBarcode(context, id, { pack_qty: dto.pack_qty, kind: dto.kind });
+  }
+
+  removeBarcode(context: TenantContext, id: string) {
+    return this.repository.removeBarcode(context, id);
   }
 
   async removeVariant(context: TenantContext, id: string) {
     const exists = await this.repository.findVariantById(context, id);
     if (!exists) throw new NotFoundException('Variant not found');
     const removed = await this.repository.updateVariant(context, id, { is_active: false });
-    this.invalidateCounts();
     return removed;
   }
 }

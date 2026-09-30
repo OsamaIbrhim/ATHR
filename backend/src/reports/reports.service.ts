@@ -1,293 +1,258 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
-import {
-  decimal,
-  lineMoney,
-  money,
-  moneyNumber,
-  sumMoney,
-} from '../common/money';
+import { money, moneyNumber } from '../common/money';
 import { businessDateRange } from '../common/business-time';
+import { quantityNumber } from '../common/quantity';
 import type { TenantContext } from '../identity/tenant-context.type';
 
+/** A report window is required and bounded: an open range would scan the whole ledger. */
+export const MAX_REPORT_SPAN_DAYS = 366;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const DEFAULT_TOP = 20;
+const DEFAULT_PROFIT_ROWS = 200;
+const MAX_ROWS = 1000;
+const DEFAULT_PAGE_SIZE = 100;
+
+/** `?limit=` style inputs arrive as strings; anything unusable falls back to the default. */
+function clampInt(value: number | string | undefined, fallback: number, max: number) {
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.min(parsed, max) : fallback;
+}
+
+/**
+ * Reports are GROUP BY queries in Postgres — the app never loads ledger rows.
+ * Money is summed per line exactly as the app rounds it (`round(unit * qty, 2)`,
+ * half away from zero = `lineMoney`), so figures match the invoices to the cent.
+ */
 @Injectable()
 export class ReportsService {
   constructor(private prisma: PrismaService) {}
 
   private dateRange(from: string, to: string) {
-    return businessDateRange(from, to);
+    const range = businessDateRange(from, to);
+    if (range.lt.getTime() - range.gte.getTime() > MAX_REPORT_SPAN_DAYS * DAY_MS) {
+      throw new BadRequestException(`Report range cannot exceed ${MAX_REPORT_SPAN_DAYS} days`);
+    }
+    return range;
+  }
+
+  /** The completed sale lines and completed return lines of the window, sold as + and returned as -. */
+  private movementLines(
+    context: TenantContext,
+    range: { gte: Date; lt: Date },
+    branchId?: string,
+  ) {
+    const saleBranch = branchId ? Prisma.sql`AND i."branch_id" = ${branchId}::uuid` : Prisma.empty;
+    const returnBranch = branchId ? Prisma.sql`AND r."branch_id" = ${branchId}::uuid` : Prisma.empty;
+    return Prisma.sql`
+      SELECT it."variant_id", it."qty",
+             round(it."unit_price" * it."qty", 2) AS revenue,
+             round(it."unit_cost" * it."qty", 2) AS cost,
+             round((it."unit_price" - it."unit_cost") * it."qty", 2) AS margin
+      FROM "SalesInvoice" i
+      JOIN "SalesInvoiceItem" it ON it."tenant_id" = i."tenant_id" AND it."sales_invoice_id" = i."id"
+      WHERE i."tenant_id" = ${context.tenantId}::uuid AND i."status" = 'completed'
+        AND i."occurred_at" >= ${range.gte} AND i."occurred_at" < ${range.lt} ${saleBranch}
+      UNION ALL
+      SELECT ri."variant_id", -ri."qty",
+             -round(ri."unit_price" * ri."qty", 2),
+             -round(ri."unit_cost" * ri."qty", 2),
+             -round((ri."unit_price" - ri."unit_cost") * ri."qty", 2)
+      FROM "Return" r
+      JOIN "ReturnItem" ri ON ri."tenant_id" = r."tenant_id" AND ri."return_id" = r."id"
+      WHERE r."tenant_id" = ${context.tenantId}::uuid AND r."status" = 'completed'
+        AND r."created_at" >= ${range.gte} AND r."created_at" < ${range.lt} ${returnBranch}`;
   }
 
   async sales(context: TenantContext, from: string, to: string, branch_id?: string) {
-    const where: any = {
-      tenant_id: context.tenantId,
-      status: 'completed',
-      occurred_at: this.dateRange(from, to),
-    };
-    if (branch_id) where.branch_id = branch_id;
-    const invoices = await this.prisma.salesInvoice.findMany({
-      where,
-      include: { items: true },
-    });
-    const returnWhere: any = {
-      tenant_id: context.tenantId,
-      status: 'completed',
-      created_at: this.dateRange(from, to),
-    };
-    if (branch_id) returnWhere.branch_id = branch_id;
-    const returns = await this.prisma.return.findMany({
-      where: returnWhere,
-      include: { items: true },
-    });
+    const range = this.dateRange(from, to);
+    const saleBranch = branch_id ? Prisma.sql`AND i."branch_id" = ${branch_id}::uuid` : Prisma.empty;
+    const returnBranch = branch_id ? Prisma.sql`AND r."branch_id" = ${branch_id}::uuid` : Prisma.empty;
 
-    const grossSales = sumMoney(invoices.map((invoice) => invoice.total));
-    const netRevenueBeforeRefunds = sumMoney(
-      invoices.map((invoice) => invoice.subtotal),
-    );
-    const taxCollected = sumMoney(
-      invoices.map((invoice) => invoice.tax_amount),
-    );
-    const soldCost = sumMoney(
-      invoices
-        .flatMap((invoice) => invoice.items)
-        .map((item) => lineMoney(item.unit_cost, item.qty)),
-    );
-    const refundTotal = sumMoney(
-      returns.map((record) => record.refund_total),
-    );
-    const refundSubtotal = sumMoney(
-      returns.map((record) => record.refund_subtotal),
-    );
-    const refundTax = sumMoney(
-      returns.map((record) => record.refund_tax),
-    );
-    const returnedCost = sumMoney(
-      returns
-        .flatMap((record) => record.items)
-        .map((item) => lineMoney(item.unit_cost, item.qty)),
-    );
+    const [[sold], [returned], [lines]] = await Promise.all([
+      this.prisma.$queryRaw<Array<{
+        count: number;
+        gross: Prisma.Decimal;
+        subtotal: Prisma.Decimal;
+        tax: Prisma.Decimal;
+      }>>`
+        SELECT count(*)::int AS count,
+               coalesce(sum(i."total"), 0) AS gross,
+               coalesce(sum(i."subtotal"), 0) AS subtotal,
+               coalesce(sum(i."tax_amount"), 0) AS tax
+        FROM "SalesInvoice" i
+        WHERE i."tenant_id" = ${context.tenantId}::uuid AND i."status" = 'completed'
+          AND i."occurred_at" >= ${range.gte} AND i."occurred_at" < ${range.lt} ${saleBranch}`,
+      this.prisma.$queryRaw<Array<{
+        count: number;
+        total: Prisma.Decimal;
+        subtotal: Prisma.Decimal;
+        tax: Prisma.Decimal;
+      }>>`
+        SELECT count(*)::int AS count,
+               coalesce(sum(r."refund_total"), 0) AS total,
+               coalesce(sum(r."refund_subtotal"), 0) AS subtotal,
+               coalesce(sum(r."refund_tax"), 0) AS tax
+        FROM "Return" r
+        WHERE r."tenant_id" = ${context.tenantId}::uuid AND r."status" = 'completed'
+          AND r."created_at" >= ${range.gte} AND r."created_at" < ${range.lt} ${returnBranch}`,
+      // Cost of goods sold net of returned goods: returned lines are already negative.
+      this.prisma.$queryRaw<Array<{ cost: Prisma.Decimal }>>`
+        SELECT coalesce(sum(l."cost"), 0) AS cost
+        FROM (${this.movementLines(context, range, branch_id)}) l`,
+    ]);
 
-    const totalSales = money(grossSales.minus(refundTotal));
-    const totalCost = money(soldCost.minus(returnedCost));
-    const netRevenue = money(
-      netRevenueBeforeRefunds.minus(refundSubtotal),
-    );
-    const totalTax = money(taxCollected.minus(refundTax));
-    const profit = money(netRevenue.minus(totalCost));
+    const totalSales = money(sold.gross.minus(returned.total));
+    const totalCost = money(lines.cost);
+    const netRevenue = money(sold.subtotal.minus(returned.subtotal));
+    const totalTax = money(sold.tax.minus(returned.tax));
     return {
-      count: invoices.length,
-      return_count: returns.length,
-      gross_sales: moneyNumber(grossSales),
-      refunds: moneyNumber(refundTotal),
+      count: sold.count,
+      return_count: returned.count,
+      gross_sales: moneyNumber(sold.gross),
+      refunds: moneyNumber(returned.total),
       total_sales: moneyNumber(totalSales),
       net_revenue: moneyNumber(netRevenue),
       total_tax: moneyNumber(totalTax),
       total_cost: moneyNumber(totalCost),
-      profit: moneyNumber(profit),
-      invoices,
-      returns,
+      profit: moneyNumber(netRevenue.minus(totalCost)),
     };
   }
 
-  async bestSellers(context: TenantContext, branch_id?: string, limit = 20) {
-    const items = await this.prisma.salesInvoiceItem.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        invoice: {
-          tenant_id: context.tenantId,
-          status: 'completed',
-          ...(branch_id ? { branch_id } : {}),
-        },
-      },
-      include: { variant: { include: { product: true } } },
-    });
-    const returnedItems = await this.prisma.returnItem.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        return_record: {
-          tenant_id: context.tenantId,
-          status: 'completed',
-          ...(branch_id ? { branch_id } : {}),
-        },
-      },
-      include: { variant: { include: { product: true } } },
-    });
-    const map = new Map<
-      string,
-      { qty: number; name: string; profit: Prisma.Decimal }
-    >();
-    for (const item of items) {
-      const key = item.variant_id;
-      const previous = map.get(key) || {
-        qty: 0,
-        name: item.variant?.product?.name_en || key,
-        profit: new Prisma.Decimal(0),
-      };
-      const profit = lineMoney(
-        decimal(item.unit_price).minus(item.unit_cost),
-        item.qty,
-      );
-      map.set(key, {
-        qty: previous.qty + item.qty,
-        name: previous.name,
-        profit: previous.profit.plus(profit),
-      });
-    }
-    for (const item of returnedItems) {
-      const key = item.variant_id;
-      const previous = map.get(key) || {
-        qty: 0,
-        name: item.variant?.product?.name_en || key,
-        profit: new Prisma.Decimal(0),
-      };
-      const profit = lineMoney(
-        decimal(item.unit_price).minus(item.unit_cost),
-        item.qty,
-      );
-      map.set(key, {
-        qty: previous.qty - item.qty,
-        name: previous.name,
-        profit: previous.profit.minus(profit),
-      });
-    }
-    return [...map.entries()]
-      .map(([variant_id, value]) => ({
-        variant_id,
-        ...value,
-        profit: moneyNumber(value.profit),
-      }))
-      .filter((item) => item.qty > 0)
-      .sort((a, b) => b.qty - a.qty)
-      .slice(0, limit);
+  /** Net quantity sold (sales minus returns) over the window, best first. */
+  async bestSellers(
+    context: TenantContext,
+    from: string,
+    to: string,
+    branch_id?: string,
+    limit?: number | string,
+  ) {
+    const range = this.dateRange(from, to);
+    const rows = await this.prisma.$queryRaw<Array<{
+      variant_id: string;
+      qty: Prisma.Decimal;
+      profit: Prisma.Decimal;
+    }>>`
+      SELECT l."variant_id", sum(l."qty") AS qty, sum(l."margin") AS profit
+      FROM (${this.movementLines(context, range, branch_id)}) l
+      GROUP BY l."variant_id"
+      HAVING sum(l."qty") > 0
+      ORDER BY sum(l."qty") DESC, l."variant_id"
+      LIMIT ${clampInt(limit, DEFAULT_TOP, MAX_ROWS)}`;
+    const names = await this.variantNames(context, rows.map((row) => row.variant_id));
+    return rows.map((row) => ({
+      variant_id: row.variant_id,
+      name: names.get(row.variant_id)?.product ?? row.variant_id,
+      qty: quantityNumber(row.qty),
+      profit: moneyNumber(row.profit),
+    }));
   }
 
-  async profitByItem(context: TenantContext, from: string, to: string, branch_id?: string) {
-    const invoices = await this.prisma.salesInvoice.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        status: 'completed',
-        occurred_at: this.dateRange(from, to),
-        ...(branch_id ? { branch_id } : {}),
-      },
-      include: {
-        items: { include: { variant: { include: { product: true } } } },
-      },
-    });
-    const returnedItems = await this.prisma.returnItem.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        return_record: {
-          tenant_id: context.tenantId,
-          status: 'completed',
-          created_at: this.dateRange(from, to),
-          ...(branch_id ? { branch_id } : {}),
-        },
-      },
-      include: { variant: { include: { product: true } } },
-    });
-    const map = new Map<
-      string,
-      {
-        variant_id: string;
-        name: string;
-        qty: number;
-        revenue: Prisma.Decimal;
-        cost: Prisma.Decimal;
-        profit: Prisma.Decimal;
-      }
-    >();
-    for (const invoice of invoices) {
-      for (const item of invoice.items) {
-        const key = item.variant_id;
-        const name =
-          item.variant?.product?.name_en +
-          ' ' +
-          [item.variant?.size, item.variant?.color].filter(Boolean).join('/');
-        const revenue = lineMoney(item.unit_price, item.qty);
-        const cost = lineMoney(item.unit_cost, item.qty);
-        const previous = map.get(key) || {
-          variant_id: key,
-          name,
-          qty: 0,
-          revenue: new Prisma.Decimal(0),
-          cost: new Prisma.Decimal(0),
-          profit: new Prisma.Decimal(0),
-        };
-        map.set(key, {
-          variant_id: key,
-          name,
-          qty: previous.qty + item.qty,
-          revenue: previous.revenue.plus(revenue),
-          cost: previous.cost.plus(cost),
-          profit: previous.profit.plus(revenue).minus(cost),
-        });
-      }
-    }
-    for (const item of returnedItems) {
-      const key = item.variant_id;
-      const name =
-        item.variant?.product?.name_en +
-        ' ' +
-        [item.variant?.size, item.variant?.color].filter(Boolean).join('/');
-      const revenue = lineMoney(item.unit_price, item.qty);
-      const cost = lineMoney(item.unit_cost, item.qty);
-      const previous = map.get(key) || {
-        variant_id: key,
-        name,
-        qty: 0,
-        revenue: new Prisma.Decimal(0),
-        cost: new Prisma.Decimal(0),
-        profit: new Prisma.Decimal(0),
-      };
-      map.set(key, {
-        variant_id: key,
-        name,
-        qty: previous.qty - item.qty,
-        revenue: previous.revenue.minus(revenue),
-        cost: previous.cost.minus(cost),
-        profit: previous.profit.minus(revenue).plus(cost),
-      });
-    }
-    return Array.from(map.values())
-      .sort((a, b) => b.profit.comparedTo(a.profit))
-      .map((item) => ({
-        ...item,
-        revenue: moneyNumber(item.revenue),
-        cost: moneyNumber(item.cost),
-        profit: moneyNumber(item.profit),
-      }));
+  async profitByItem(
+    context: TenantContext,
+    from: string,
+    to: string,
+    branch_id?: string,
+    limit?: number | string,
+  ) {
+    const range = this.dateRange(from, to);
+    const rows = await this.prisma.$queryRaw<Array<{
+      variant_id: string;
+      qty: Prisma.Decimal;
+      revenue: Prisma.Decimal;
+      cost: Prisma.Decimal;
+    }>>`
+      SELECT l."variant_id", sum(l."qty") AS qty, sum(l."revenue") AS revenue, sum(l."cost") AS cost
+      FROM (${this.movementLines(context, range, branch_id)}) l
+      GROUP BY l."variant_id"
+      ORDER BY sum(l."revenue" - l."cost") DESC, l."variant_id"
+      LIMIT ${clampInt(limit, DEFAULT_PROFIT_ROWS, MAX_ROWS)}`;
+    const names = await this.variantNames(context, rows.map((row) => row.variant_id));
+    return rows.map((row) => ({
+      variant_id: row.variant_id,
+      name: names.get(row.variant_id)?.label ?? row.variant_id,
+      qty: quantityNumber(row.qty),
+      revenue: moneyNumber(row.revenue),
+      cost: moneyNumber(row.cost),
+      profit: moneyNumber(row.revenue.minus(row.cost)),
+    }));
   }
 
-  async inventoryValuation(context: TenantContext, branch_id?: string) {
-    const stock = await this.prisma.inventoryStock.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        qty_on_hand: { gt: 0 },
-        ...(branch_id ? { branch_id } : {}),
-      },
-      include: {
-        variant: { include: { product: true } },
-        branch: true,
-      },
-    });
-    const preciseRows = stock.map((record) => ({
-      branch: record.branch.name_ar,
+  /** Names for the (few) variants a report ends up showing. */
+  private async variantNames(context: TenantContext, variantIds: string[]) {
+    const variants = variantIds.length
+      ? await this.prisma.productVariant.findMany({
+          where: { tenant_id: context.tenantId, id: { in: variantIds } },
+          select: { id: true, label: true, product: { select: { name_en: true } } },
+        })
+      : [];
+    return new Map(
+      variants.map((variant) => [
+        variant.id,
+        {
+          product: variant.product.name_en || variant.id,
+          label: [variant.product.name_en, variant.label].filter(Boolean).join(' '),
+        },
+      ]),
+    );
+  }
+
+  /**
+   * Stock on hand valued at each warehouse's moving-average cost. The totals
+   * cover every stocked row; `rows` is one page of them.
+   */
+  async inventoryValuation(
+    context: TenantContext,
+    branch_id?: string,
+    page?: number | string,
+    pageSize?: number | string,
+  ) {
+    const size = clampInt(pageSize, DEFAULT_PAGE_SIZE, MAX_ROWS);
+    const current = clampInt(page, 1, Number.MAX_SAFE_INTEGER);
+    const where: Prisma.InventoryStockWhereInput = {
+      tenant_id: context.tenantId,
+      qty_on_hand: { gt: 0 },
+      ...(branch_id ? { warehouse: { branch_id } } : {}),
+    };
+    const branchJoin = branch_id
+      ? Prisma.sql`JOIN "Warehouse" w ON w."tenant_id" = s."tenant_id" AND w."id" = s."warehouse_id" AND w."branch_id" = ${branch_id}::uuid`
+      : Prisma.empty;
+    const [[totals], stock] = await Promise.all([
+      this.prisma.$queryRaw<Array<{ total: number; qty: Prisma.Decimal; value: Prisma.Decimal }>>`
+        SELECT count(*)::int AS total, coalesce(sum(s."qty_on_hand"), 0) AS qty,
+               coalesce(sum(round(s."avg_cost" * s."qty_on_hand", 2)), 0) AS value
+        FROM "InventoryStock" s ${branchJoin}
+        WHERE s."tenant_id" = ${context.tenantId}::uuid AND s."qty_on_hand" > 0`,
+      this.prisma.inventoryStock.findMany({
+        where,
+        include: {
+          variant: { include: { product: true } },
+          warehouse: { include: { branch: true } },
+        },
+        orderBy: [{ warehouse_id: 'asc' }, { variant_id: 'asc' }],
+        skip: (current - 1) * size,
+        take: size,
+      }),
+    ]);
+    const rows = stock.map((record) => ({
+      branch: record.warehouse.branch?.name_ar ?? record.warehouse.name,
       sku: record.variant.sku,
       product: record.variant.product.name_en,
-      size: record.variant.size,
-      color: record.variant.color,
-      qty: record.qty_on_hand,
-      cost_price: money(record.variant.cost_price),
-      value: lineMoney(record.variant.cost_price, record.qty_on_hand),
+      label: record.variant.label,
+      qty: quantityNumber(record.qty_on_hand),
+      cost_price: moneyNumber(record.avg_cost),
+      value: moneyNumber(money(record.avg_cost.mul(record.qty_on_hand))),
     }));
-    const totalValue = sumMoney(preciseRows.map((row) => row.value));
-    const rows = preciseRows.map((row) => ({
-      ...row,
-      cost_price: moneyNumber(row.cost_price),
-      value: moneyNumber(row.value),
-    }));
-    const total_qty = rows.reduce((sum, row) => sum + row.qty, 0);
-    return { total_qty, total_value: moneyNumber(totalValue), rows };
+    return {
+      total_qty: quantityNumber(totals.qty),
+      total_value: moneyNumber(totals.value),
+      rows,
+      total: totals.total,
+      page: current,
+      page_size: size,
+      total_pages: Math.max(1, Math.ceil(totals.total / size)),
+    };
   }
 }

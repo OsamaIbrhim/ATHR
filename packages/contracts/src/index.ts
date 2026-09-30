@@ -1,5 +1,5 @@
 export const API_CONTRACT_VERSION = 1 as const;
-export const POS_PROTOCOL_VERSION = 2 as const;
+export const POS_PROTOCOL_VERSION = 3 as const;
 
 export type ApiContractVersion = typeof API_CONTRACT_VERSION;
 export type PosProtocolVersion = typeof POS_PROTOCOL_VERSION;

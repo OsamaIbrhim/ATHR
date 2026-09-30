@@ -1,22 +1,26 @@
+import { actorFor } from '../auth/testing/actors';
 import { SellersService } from './sellers.service';
 import { SellersRepository } from './sellers.repository';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { Prisma } from '@prisma/client';
 
 // WP-007 Phase A: the service delegates to a tenant-scoped repository and
-// takes a TenantContext. Commission settings moved off the shared `id = 1`
-// singleton to a per-tenant row, so the double exposes `findFirst` rather
-// than `upsert`. Assertions are otherwise unchanged.
+// takes a TenantContext. Commission settings are one row per tenant (keyed
+// by tenant_id), read through `upsert`. Assertions are otherwise unchanged.
 const ctx = contextFor(TENANT_A);
 
 describe('SellersService', () => {
   it('subtracts in-period returns from pre-tax seller sales', async () => {
     const prisma = {
-      user: {
-        findMany: jest.fn().mockResolvedValue([
-          { id: 'seller-1', name: 'Seller', branch_id: 'branch-1', is_active: true, branch: null, seller_commission_override: null },
-        ])
+      membership: {
+        findMany: jest.fn().mockResolvedValue([{
+          user: { id: 'seller-1', name: 'Seller', is_active: true, seller_commission_override: null },
+          access_scope_assignments: [
+            { scope_type: 'location', scope_ref_id: 'branch-1', effective_from: new Date('2020-01-01'), effective_to: null },
+          ],
+        }])
       },
+      branch: { findMany: jest.fn().mockResolvedValue([]) },
       salesInvoice: {
         findMany: jest.fn().mockResolvedValue([
           { seller_id: 'seller-1', subtotal: 1000 },
@@ -29,8 +33,7 @@ describe('SellersService', () => {
         ])
       },
       sellerCommissionSettings: {
-        findFirst: jest.fn().mockResolvedValue({
-          id: 1,
+        upsert: jest.fn().mockResolvedValue({
           tenant_id: ctx.tenantId,
           default_rate: 2,
           default_target: 1000,
@@ -68,8 +71,7 @@ describe('SellersService', () => {
         create,
       },
       sellerCommissionSettings: {
-        findFirst: jest.fn().mockResolvedValue({
-          id: 1,
+        upsert: jest.fn().mockResolvedValue({
           tenant_id: ctx.tenantId,
           default_rate: new Prisma.Decimal(3),
           default_target: new Prisma.Decimal(1000),
@@ -109,7 +111,7 @@ describe('SellersService', () => {
       ctx,
       '2026-06-01',
       '2026-06-30',
-      { sub: 'owner-1', role: 'owner', branch_id: null } as any,
+      actorFor('tenant_owner', { sub: 'owner-1', tenantWide: true }),
     );
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({

@@ -1,11 +1,12 @@
+import { BRAND_INITIAL, POS_APP_NAME } from '../../electron/brand'
 import React, { ReactNode, useEffect } from 'react'
 
 export function ScreenLoader({ message }: { message: string }) {
   return (
     <main className="auth-shell">
       <section className="auth-card compact">
-        <div className="brand-mark">B</div>
-        <h1>ATHR POS</h1>
+        <div className="brand-mark">{BRAND_INITIAL}</div>
+        <h1>{POS_APP_NAME}</h1>
         <div className="spinner" />
         <p className="muted">{message}</p>
       </section>

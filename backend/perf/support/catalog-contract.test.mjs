@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { requireCatalogV2ProductMap } from './catalog-contract.mjs'
+import { requireCatalogProductMap } from './catalog-contract.mjs'
 
 const sellableProduct = {
   id: '11111111-1111-4111-8111-111111111111',
-  catalog_version: 2,
+  catalog_version: 3,
   sku: 'ATHR-SMOKE-1',
   name_ar: 'منتج اختبار',
   selling_price: 100,
@@ -12,7 +12,7 @@ const sellableProduct = {
 }
 
 test('catalog fixture IDs come from the API snapshot, not a broader database query', () => {
-  const products = requireCatalogV2ProductMap({
+  const products = requireCatalogProductMap({
     products: [sellableProduct],
   })
 
@@ -29,7 +29,7 @@ test('catalog fixtures accept the same language fallback as the POS runtime', ()
     name_ar: null,
     name_en: 'Test product',
   }
-  const products = requireCatalogV2ProductMap({ products: [englishOnly] })
+  const products = requireCatalogProductMap({ products: [englishOnly] })
   assert.equal(products.get(englishOnly.id), englishOnly)
 })
 
@@ -44,15 +44,15 @@ test('catalog fixtures reject malformed version 2 products before mutations run'
     { ...sellableProduct, selling_price: -1 },
     { ...sellableProduct, unit_tax: -1 },
   ]) {
-    assert.throws(() => requireCatalogV2ProductMap({ products: [product] }))
+    assert.throws(() => requireCatalogProductMap({ products: [product] }))
   }
 })
 
 test('catalog fixtures reject missing, empty, and duplicate product collections', () => {
-  assert.throws(() => requireCatalogV2ProductMap(null))
-  assert.throws(() => requireCatalogV2ProductMap({ products: [] }))
+  assert.throws(() => requireCatalogProductMap(null))
+  assert.throws(() => requireCatalogProductMap({ products: [] }))
   assert.throws(() =>
-    requireCatalogV2ProductMap({
+    requireCatalogProductMap({
       products: [sellableProduct, { ...sellableProduct }],
     }),
   )

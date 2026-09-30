@@ -1,62 +1,66 @@
 import type { AdminUser } from './api'
 
 export const NAV_ITEMS = [
-  { href: '/', label: 'لوحة التحكم', capability: 'dashboard.read' },
-  { href: '/sales', label: 'فواتير المبيعات', capability: 'sales.read' },
-  { href: '/products', label: 'المنتجات', capability: 'products.read' },
-  { href: '/inventory', label: 'المخزون', capability: 'inventory.read' },
-  { href: '/customers', label: 'العملاء', capability: 'customers.read' },
-  { href: '/purchasing', label: 'المشتريات', capability: 'purchasing.read' },
-  { href: '/suppliers', label: 'الموردون', capability: 'suppliers.manage' },
-  { href: '/pricing', label: 'التسعير', capability: 'pricing.manage' },
-  { href: '/offers', label: 'العروض', capability: 'offers.manage' },
-  { href: '/transfers', label: 'التحويلات', capability: 'transfers.manage' },
-  { href: '/shifts', label: 'الورديات', capability: 'shifts.manage' },
-  { href: '/terminals', label: 'أجهزة نقاط البيع', capability: 'terminals.read' },
-  { href: '/reports', label: 'التقارير', capability: 'reports.read' },
-  { href: '/seller-reports', label: 'تقارير البائعين', capability: 'seller_reports.read' },
-  { href: '/branches', label: 'الفروع', capability: 'branches.manage' },
-  { href: '/users', label: 'المستخدمون والصلاحيات', capability: 'users.manage' },
-  { href: '/settings', label: 'الإعدادات', capability: 'settings.manage' },
+  { href: '/', label: 'لوحة التحكم', permission: 'reports.sales.view' },
+  { href: '/sales', label: 'فواتير المبيعات', permission: 'sales.sale.view' },
+  { href: '/products', label: 'المنتجات', permission: 'catalog.product.view' },
+  { href: '/product-types', label: 'أنواع المنتجات', permission: 'catalog.product.view' },
+  { href: '/inventory', label: 'المخزون', permission: 'inventory.position.view' },
+  { href: '/customers', label: 'العملاء', permission: 'customer.profile.view' },
+  { href: '/purchasing', label: 'المشتريات', permission: 'purchasing.purchase-order.view' },
+  { href: '/suppliers', label: 'الموردون', permission: 'supplier.view' },
+  { href: '/pricing', label: 'التسعير', permission: 'pricing.price-book.view' },
+  { href: '/offers', label: 'العروض', permission: 'promotion.view' },
+  { href: '/transfers', label: 'التحويلات', permission: 'transfer.view' },
+  { href: '/shifts', label: 'الورديات', permission: 'shift.view' },
+  { href: '/terminals', label: 'أجهزة نقاط البيع', permission: 'terminal.view' },
+  { href: '/reports', label: 'التقارير', permission: 'reports.sales.view' },
+  { href: '/seller-reports', label: 'تقارير البائعين', permission: 'sellers.report.view' },
+  { href: '/branches', label: 'الفروع', permission: 'location.create' },
+  { href: '/users', label: 'المستخدمون والصلاحيات', permission: 'tenant.membership.view' },
+  { href: '/settings', label: 'الإعدادات', permission: 'tenant.settings.manage' },
 ] as const
 
-export type Capability = typeof NAV_ITEMS[number]['capability']
-  | 'products.manage'
-  | 'customers.manage'
-  | 'purchasing.manage'
-  | 'terminals.manage'
-  | 'users.manage'
-  | 'seller_reports.read'
-  | 'seller_settings.manage'
-  | 'seller_periods.close'
+/** Keys of the backend permission catalog (identity/permission-catalog.ts) the admin checks. */
+export type Permission = typeof NAV_ITEMS[number]['permission']
+  | 'catalog.product.update'
+  | 'catalog.product.create'
+  | 'catalog.product.archive'
+  | 'catalog.product-type.manage'
+  | 'catalog.variant.create'
+  | 'catalog.variant.update'
+  | 'catalog.uom.view'
+  | 'customer.profile.update'
+  | 'purchasing.goods-receipt.post'
+  | 'terminal.provision'
 
-export function hasCapability(
-  user: Pick<AdminUser, 'capabilities'> | null | undefined,
-  capability: Capability,
+export function hasPermission(
+  user: Pick<AdminUser, 'permissions'> | null | undefined,
+  permission: Permission,
 ) {
-  return user?.capabilities?.includes(capability) === true
+  return user?.permissions?.includes(permission) === true
 }
 
-export function requiredCapability(pathname: string): Capability | null {
+export function requiredPermission(pathname: string): Permission | null {
   const route = NAV_ITEMS
     .filter(({ href }) => href === '/'
       ? pathname === '/'
       : pathname === href || pathname.startsWith(`${href}/`))
     .sort((left, right) => right.href.length - left.href.length)[0]
-  return route?.capability || null
+  return route?.permission || null
 }
 
 export function canAccessPath(
-  user: Pick<AdminUser, 'capabilities'> | null | undefined,
+  user: Pick<AdminUser, 'permissions'> | null | undefined,
   pathname: string,
 ) {
   if (pathname === '/login') return true
-  const capability = requiredCapability(pathname)
-  return capability === null || hasCapability(user, capability)
+  const permission = requiredPermission(pathname)
+  return permission === null || hasPermission(user, permission)
 }
 
 export function firstAccessiblePath(
-  user: Pick<AdminUser, 'capabilities'> | null | undefined,
+  user: Pick<AdminUser, 'permissions'> | null | undefined,
 ) {
-  return NAV_ITEMS.find(({ capability }) => hasCapability(user, capability))?.href || '/login'
+  return NAV_ITEMS.find(({ permission }) => hasPermission(user, permission))?.href || '/login'
 }

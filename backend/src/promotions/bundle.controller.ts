@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
-import { RequireCapabilities } from '../auth/roles.guard';
+import { RequireFeature } from '../entitlements/entitlement.decorators';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -11,8 +11,8 @@ import { CreateBundleDto, ListBundlesDto, SupersedeBundleDto, UpdateBundleDraftD
 type AuthedRequest = Request & { user: AuthenticatedUser };
 
 /** WP-008 Phase D (BR-BND-1xx, Permission Matrix §16 `catalog.bundle.manage`). */
+@RequireFeature('promotions')
 @Controller('bundles')
-@RequireCapabilities('products.read')
 export class BundleController {
   constructor(private readonly bundles: BundleService) {}
 

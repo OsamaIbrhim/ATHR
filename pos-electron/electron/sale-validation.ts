@@ -1,3 +1,5 @@
+import { isValidQuantity } from './quantity'
+
 export const PAYMENT_METHODS = [
   'cash',
   'card',
@@ -97,14 +99,11 @@ export function validateLocalSaleInput(
       sku: String(item?.sku || '').trim(),
       name_ar: String(item?.name_ar || '').trim(),
       name_en: String(item?.name_en || '').trim(),
-      size: item?.size ? String(item.size).trim() : undefined,
-      color: item?.color ? String(item.color).trim() : undefined,
+      label: item?.label ? String(item.label).trim() : undefined,
     }
     if (
       !UUID.test(normalized.variant_id) ||
-      !Number.isInteger(normalized.qty) ||
-      normalized.qty < 1 ||
-      normalized.qty > 1_000 ||
+      !isValidQuantity(normalized.qty) ||
       !Number.isFinite(normalized.unit_price) ||
       normalized.unit_price <= 0 ||
       !Number.isFinite(normalized.unit_tax) ||
@@ -136,5 +135,21 @@ export function validateLocalSaleInput(
     language: sale?.language === 'en' ? 'en' as const : 'ar' as const,
     localTotal: Number(sale?.local_total),
     items,
+  }
+}
+
+type ValidatedSaleItem = ReturnType<typeof validateLocalSaleInput>['items'][number]
+
+/** One sale line as the backend's CreateSaleItemDto expects it (label snapshot). */
+export function saleItemCommand(item: ValidatedSaleItem) {
+  return {
+    variant_id: item.variant_id,
+    qty: item.qty,
+    unit_price: item.unit_price,
+    unit_tax: item.unit_tax,
+    sku_snapshot: item.sku,
+    name_ar_snapshot: item.name_ar,
+    name_en_snapshot: item.name_en || undefined,
+    variant_label_snapshot: item.label || undefined,
   }
 }

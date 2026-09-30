@@ -89,7 +89,7 @@ describe('fixture builders', () => {
     it('does not pre-hydrate relations', () => {
       expect(aProductVariant()).not.toHaveProperty('product');
       expect(anInventoryStock()).not.toHaveProperty('variant');
-      expect(anInventoryStock()).not.toHaveProperty('branch');
+      expect(anInventoryStock()).not.toHaveProperty('warehouse');
       expect(aSalesInvoice()).not.toHaveProperty('items');
     });
   });

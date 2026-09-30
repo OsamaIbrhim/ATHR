@@ -1,3 +1,4 @@
+import { BRAND_INITIAL, POS_APP_NAME } from '../../electron/brand'
 import React, {
   useEffect,
   useState,
@@ -24,6 +25,13 @@ import {
   toCents,
 } from '../utils'
 import { OPERATIONS_PAGE_SIZE, pageWindow } from '../operations'
+import {
+  addQuantity,
+  isValidQuantity,
+  milliToQuantity,
+  subtractQuantity,
+  sumQuantities,
+} from '../../electron/quantity'
 
 type OperationsTab = 'sales' | 'returns'
 
@@ -328,9 +336,9 @@ export function SalesScreen({
     <div className="app-shell">
       <header className="app-header">
         <div className="header-brand">
-          <div className="brand-mark small">B</div>
+          <div className="brand-mark small">{BRAND_INITIAL}</div>
           <div>
-            <b>ATHR POS</b>
+            <b>{POS_APP_NAME}</b>
             <span>{device.terminal_code}</span>
           </div>
         </div>
@@ -884,19 +892,17 @@ function OperationsPagination({
 }
 
 function itemName(item: InvoiceItem) {
-  return (
+  const name =
     item.variant?.product?.name_ar ||
     item.variant?.product?.name_en ||
     item.variant?.sku ||
     item.variant_id
-  )
+  const label = String(item.variant_label_snapshot || item.variant?.label || '').trim()
+  return label ? `${name} — ${label}` : name
 }
 
 function returnedQty(item: InvoiceItem) {
-  return (item.return_items || []).reduce(
-    (sum, record) => sum + Number(record.qty || 0),
-    0,
-  )
+  return sumQuantities((item.return_items || []).map((record) => Number(record.qty || 0)))
 }
 
 function InvoiceModal({
@@ -943,7 +949,7 @@ function InvoiceModal({
   }
 
   const hasReturnableItems = !!invoice?.items?.some(
-    (item) => item.qty - returnedQty(item) > 0,
+    (item) => subtractQuantity(item.qty, returnedQty(item)) > 0,
   )
 
   return (
@@ -1006,7 +1012,7 @@ function InvoiceModal({
                 const returned = returnedQty(item)
                 const remaining = Math.max(
                   0,
-                  item.qty - returned,
+                  subtractQuantity(item.qty, returned),
                 )
                 const grossUnit = fromCents(
                   toCents(item.unit_price) +
@@ -1165,8 +1171,7 @@ function ReturnModal({
     const invalidItem = selectedItems.find((item) => {
       const qty = Number(quantities[item.id])
       return (
-        !Number.isInteger(qty) ||
-        qty < 1 ||
+        !isValidQuantity(qty) ||
         qty > Number(item.returnable_qty || 0)
       )
     })
@@ -1289,9 +1294,10 @@ function ReturnModal({
                               ...current,
                               [item.id]: Math.max(
                                 0,
-                                Number(
-                                  current[item.id] || 0,
-                                ) - 1,
+                                subtractQuantity(
+                                  Number(current[item.id] || 0),
+                                  1,
+                                ),
                               ),
                             }))
                           }
@@ -1302,7 +1308,7 @@ function ReturnModal({
                         <input
                           type="number"
                           min="0"
-                          step="1"
+                          step="any"
                           max={maximum}
                           disabled={busy || maximum === 0}
                           value={quantities[item.id] || 0}
@@ -1314,10 +1320,10 @@ function ReturnModal({
                               maximum,
                               Math.max(
                                 0,
-                                Math.floor(
-                                  Number.isFinite(raw)
-                                    ? raw
-                                    : 0,
+                                milliToQuantity(
+                                  Math.floor(
+                                    (Number.isFinite(raw) ? raw : 0) * 1000,
+                                  ),
                                 ),
                               ),
                             )
@@ -1337,9 +1343,10 @@ function ReturnModal({
                               ...current,
                               [item.id]: Math.min(
                                 maximum,
-                                Number(
-                                  current[item.id] || 0,
-                                ) + 1,
+                                addQuantity(
+                                  Number(current[item.id] || 0),
+                                  1,
+                                ),
                               ),
                             }))
                           }
@@ -1375,7 +1382,7 @@ function ReturnModal({
             }
             rows={3}
             maxLength={500}
-            placeholder="مثال: المقاس غير مناسب"
+            placeholder="مثال: الصنف غير مناسب"
           />
 
           <div className="refund-total">

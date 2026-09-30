@@ -4,87 +4,131 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { TenantScope } from '../identity/tenant-context.type';
 
 export type InventoryReconciliationRow = {
-  branch_id: string;
+  warehouse_id: string;
+  branch_id: string | null;
   variant_id: string;
-  stock_on_hand: number | null;
-  stock_reserved: number | null;
-  ledger_on_hand: bigint | number | null;
-  ledger_reserved: bigint | number | null;
+  stock_on_hand: Prisma.Decimal | null;
+  stock_reserved: Prisma.Decimal | null;
+  ledger_on_hand: Prisma.Decimal | null;
+  ledger_reserved: Prisma.Decimal | null;
   last_movement_at: Date | null;
 };
 
-/** WP-007 Phase A §A.3.2 — tenant-scoped repository for the `inventory` module. */
+/** A tracked variant whose lots do not add up to its on-hand quantity (`kind` says which lots). */
+export type TrackingReconciliationRow = {
+  kind: 'batch_total' | 'batch_unallocated' | 'serial_count';
+  warehouse_id: string;
+  branch_id: string | null;
+  variant_id: string;
+  stock_on_hand: Prisma.Decimal;
+  /** SUM of the batches / count of in-stock serials; for `batch_unallocated` the unallocated quantity. */
+  tracked_total: Prisma.Decimal;
+};
+
+/**
+ * Stock columns a reader may see. `avg_cost` is a cost: it stays out of the
+ * position lookup, which only needs `inventory.position.view`.
+ */
+export const STOCK_QUANTITY_COLUMNS = {
+  warehouse_id: true,
+  variant_id: true,
+  tenant_id: true,
+  qty_on_hand: true,
+  qty_reserved: true,
+  last_sold_at: true,
+} as const;
+
+/** Stock is keyed by warehouse; admin/POS consumers still read the owning branch off each row. */
+function withBranch<T extends { warehouse: { branch_id: string | null; branch: unknown } }>(row: T) {
+  return { ...row, branch_id: row.warehouse.branch_id, branch: row.warehouse.branch };
+}
+
+/** WP-007 Phase A §A.3.2 — tenant-scoped repository for the `inventory` module (reads only). */
 @Injectable()
 export class InventoryRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async findStock(context: TenantScope, variantId: string, branchId?: string) {
-    return this.prisma.inventoryStock.findMany({
+    const rows = await this.prisma.inventoryStock.findMany({
       where: {
         tenant_id: context.tenantId,
         variant_id: variantId,
         qty_on_hand: { gt: 0 },
-        ...(branchId ? { branch_id: branchId } : {}),
+        ...(branchId ? { warehouse: { branch_id: branchId } } : {}),
       },
-      include: { branch: true },
+      select: { ...STOCK_QUANTITY_COLUMNS, warehouse: { include: { branch: true } } },
     });
+    return rows.map(withBranch);
   }
 
   async listMovements(context: TenantScope, variantId: string, branchId?: string, take = 100) {
-    return this.prisma.inventoryMovement.findMany({
+    const rows = await this.prisma.inventoryMovement.findMany({
       where: {
         tenant_id: context.tenantId,
         variant_id: variantId,
-        ...(branchId ? { branch_id: branchId } : {}),
+        ...(branchId ? { warehouse: { branch_id: branchId } } : {}),
       },
       include: {
-        branch: { select: { id: true, code: true, name_ar: true, name_en: true } },
+        warehouse: {
+          include: { branch: { select: { id: true, code: true, name_ar: true, name_en: true } } },
+        },
         variant: {
           select: {
             id: true,
             sku: true,
-            size: true,
-            color: true,
+            label: true,
             product: { select: { name_ar: true, name_en: true } },
           },
         },
-        creator: { select: { id: true, name: true, role: true } },
+        creator: { select: { id: true, name: true } },
       },
       orderBy: [{ occurred_at: 'desc' }, { recorded_at: 'desc' }, { id: 'desc' }],
       take: Math.min(500, Math.max(1, take)),
     });
+    return rows.map(withBranch);
+  }
+
+  /** The warehouse sales, returns, receipts and the POS sync use for a branch. */
+  findDefaultWarehouseId(
+    db: Pick<Prisma.TransactionClient, 'warehouse'>,
+    tenantId: string,
+    branchId: string,
+  ) {
+    return db.warehouse
+      .findFirst({
+        where: { tenant_id: tenantId, branch_id: branchId, is_default: true },
+        select: { id: true },
+      })
+      .then((warehouse) => warehouse?.id ?? null);
   }
 
   /**
-   * Blueprint §120 "Raw SQL guarded". This reconciliation aggregates the
-   * whole `InventoryMovement` ledger against `InventoryStock`; without a
-   * tenant predicate on *both* sides of the FULL OUTER JOIN it would compare
-   * one tenant's stock against every tenant's movements and report the
-   * difference as a data-integrity mismatch. The predicate is bound as a
-   * parameter, not interpolated.
+   * Compares every stock row with the sum of its ledger (not part of any hot
+   * path). Blueprint §120 "Raw SQL guarded": the tenant predicate is bound on
+   * both sides of the join so one tenant's stock is never compared with
+   * another tenant's movements.
    */
   async reconciliationMismatches(
     context: TenantScope,
     branchId?: string,
   ): Promise<InventoryReconciliationRow[]> {
-    const branchScope = branchId
-      ? Prisma.sql`AND COALESCE(stock."branch_id", ledger."branch_id") = ${branchId}::uuid`
-      : Prisma.empty;
+    const branchScope = branchId ? Prisma.sql`AND w."branch_id" = ${branchId}::uuid` : Prisma.empty;
     return this.prisma.$queryRaw<InventoryReconciliationRow[]>(
       Prisma.sql`
         WITH ledger AS (
           SELECT
-            movement."branch_id",
+            movement."warehouse_id",
             movement."variant_id",
             SUM(movement."on_hand_delta") AS "ledger_on_hand",
             SUM(movement."reserved_delta") AS "ledger_reserved",
             MAX(movement."recorded_at") AS "last_movement_at"
           FROM "InventoryMovement" movement
           WHERE movement."tenant_id" = ${context.tenantId}::uuid
-          GROUP BY movement."branch_id", movement."variant_id"
+          GROUP BY movement."warehouse_id", movement."variant_id"
         )
         SELECT
-          COALESCE(stock."branch_id", ledger."branch_id") AS "branch_id",
+          COALESCE(stock."warehouse_id", ledger."warehouse_id") AS "warehouse_id",
+          w."branch_id",
           COALESCE(stock."variant_id", ledger."variant_id") AS "variant_id",
           stock."qty_on_hand" AS "stock_on_hand",
           stock."qty_reserved" AS "stock_reserved",
@@ -96,16 +140,59 @@ export class InventoryRepository {
           WHERE "tenant_id" = ${context.tenantId}::uuid
         ) stock
         FULL OUTER JOIN ledger
-          ON ledger."branch_id" = stock."branch_id"
+          ON ledger."warehouse_id" = stock."warehouse_id"
          AND ledger."variant_id" = stock."variant_id"
+        JOIN "Warehouse" w
+          ON w."id" = COALESCE(stock."warehouse_id", ledger."warehouse_id")
         WHERE (
           COALESCE(stock."qty_on_hand", 0) <> COALESCE(ledger."ledger_on_hand", 0)
           OR COALESCE(stock."qty_reserved", 0) <> COALESCE(ledger."ledger_reserved", 0)
         )
         ${branchScope}
-        ORDER BY
-          COALESCE(stock."branch_id", ledger."branch_id"),
-          COALESCE(stock."variant_id", ledger."variant_id")
+        ORDER BY 1, 3
+        LIMIT 1000
+      `,
+    );
+  }
+
+  /**
+   * The tracking invariants (not part of any hot path): batch variants keep
+   * SUM(batches) = on hand; serial variants keep in-stock serials >= on hand
+   * (the surplus is sold units nobody scanned). Also lists non-zero
+   * unallocated batch rows, which the staff still has to settle.
+   */
+  async trackingReconciliation(context: TenantScope, branchId?: string): Promise<TrackingReconciliationRow[]> {
+    const branchScope = branchId ? Prisma.sql`AND w."branch_id" = ${branchId}::uuid` : Prisma.empty;
+    return this.prisma.$queryRaw<TrackingReconciliationRow[]>(
+      Prisma.sql`
+        SELECT * FROM (
+          SELECT 'batch_total' AS "kind", s."warehouse_id", w."branch_id", s."variant_id",
+                 s."qty_on_hand" AS "stock_on_hand",
+                 COALESCE((SELECT SUM(b."qty") FROM "InventoryBatch" b
+                           WHERE b."tenant_id" = s."tenant_id" AND b."warehouse_id" = s."warehouse_id"
+                             AND b."variant_id" = s."variant_id"), 0) AS "tracked_total"
+          FROM "InventoryStock" s
+          JOIN "ProductVariant" v ON v."id" = s."variant_id" AND v."tenant_id" = s."tenant_id"
+          JOIN "Warehouse" w ON w."id" = s."warehouse_id"
+          WHERE s."tenant_id" = ${context.tenantId}::uuid AND v."tracking" = 'batch' ${branchScope}
+          UNION ALL
+          SELECT 'batch_unallocated', b."warehouse_id", w."branch_id", b."variant_id", s."qty_on_hand", b."qty"
+          FROM "InventoryBatch" b
+          JOIN "InventoryStock" s ON s."warehouse_id" = b."warehouse_id" AND s."variant_id" = b."variant_id"
+          JOIN "Warehouse" w ON w."id" = b."warehouse_id"
+          WHERE b."tenant_id" = ${context.tenantId}::uuid AND b."batch_no" = '' AND b."qty" <> 0 ${branchScope}
+          UNION ALL
+          SELECT 'serial_count', s."warehouse_id", w."branch_id", s."variant_id", s."qty_on_hand",
+                 COALESCE((SELECT COUNT(*) FROM "InventorySerial" q
+                           WHERE q."tenant_id" = s."tenant_id" AND q."warehouse_id" = s."warehouse_id"
+                             AND q."variant_id" = s."variant_id" AND q."status" = 'in_stock'), 0)
+          FROM "InventoryStock" s
+          JOIN "ProductVariant" v ON v."id" = s."variant_id" AND v."tenant_id" = s."tenant_id"
+          JOIN "Warehouse" w ON w."id" = s."warehouse_id"
+          WHERE s."tenant_id" = ${context.tenantId}::uuid AND v."tracking" = 'serial' ${branchScope}
+        ) t
+        WHERE "kind" = 'batch_unallocated' OR "stock_on_hand" <> "tracked_total"
+        ORDER BY "kind", "warehouse_id", "variant_id"
         LIMIT 1000
       `,
     );

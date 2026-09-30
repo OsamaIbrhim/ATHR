@@ -1,13 +1,30 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min, ValidateNested } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
+import { IsQuantity } from '../../common/quantity';
 
 export class CreateReturnItemDto {
   @IsUUID()
   sales_invoice_item_id: string;
 
-  @IsInt()
-  @Min(1)
+  @IsQuantity()
   qty: number;
+
+  /** Serial-tracked items: the serial of each returned unit (each must have been sold on this line). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(1000)
+  @IsString({ each: true })
+  @MaxLength(191, { each: true })
+  serials?: string[];
 }
 
 export class CreateReturnDto {

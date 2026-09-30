@@ -7,7 +7,6 @@ import { AcceptInvitationDto } from './dto/accept-invitation.dto';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { InvitationService } from './invitation.service';
 import { MembershipRepository } from './membership.repository';
-import { PermissionPolicyService } from './permission-policy.service';
 import { RequestWithIdentity, resolveContextOrThrow } from './resolve-tenant-context.util';
 import { TenantContextResolver } from './tenant-context.resolver';
 import { unwrapOrThrow } from './unwrap-result.util';
@@ -19,7 +18,6 @@ export class InvitationController {
   constructor(
     private readonly invitations: InvitationService,
     private readonly membershipRepository: MembershipRepository,
-    private readonly permissionPolicy: PermissionPolicyService,
     private readonly tenantContext: TenantContextResolver,
   ) {}
 
@@ -52,7 +50,7 @@ export class InvitationController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'membership.invite');
+    await assertIdentityPermission(context, this.membershipRepository, 'membership.invite');
     const result = await this.invitations.create(context, {
       email: dto.email,
       role: dto.role,
@@ -91,7 +89,7 @@ export class InvitationController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'membership.invite');
+    await assertIdentityPermission(context, this.membershipRepository, 'membership.invite');
     return unwrapOrThrow(await this.invitations.expire(context, invitationId));
   }
 
@@ -105,7 +103,7 @@ export class InvitationController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'membership.invite');
+    await assertIdentityPermission(context, this.membershipRepository, 'membership.invite');
     return unwrapOrThrow(await this.invitations.revoke(context, invitationId));
   }
 }

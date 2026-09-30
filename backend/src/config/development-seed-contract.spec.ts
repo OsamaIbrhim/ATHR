@@ -20,8 +20,9 @@ describe('development and CI seed contract', () => {
   // can do anything. This is exactly what admin-e2e-smoke caught.
   it('gives every seeded identity a Membership in a real Tenant', () => {
     expect(seed).toContain('Initial ATHR Demo Tenant');
-    expect(seed).toContain('prisma.membership.create');
-    expect(seed).toContain('tenantId: tenant_id');
+    expect(seed).toContain('memberships: {');
+    expect(seed).toContain('tenant_id,');
+    expect(seed).toContain('access_scope_assignments');
     // Membership has a Restrict FK to User, so it must be cleared first.
     expect(seed).toContain('prisma.membership.deleteMany()');
   });
@@ -32,7 +33,7 @@ describe('development and CI seed contract', () => {
       'prisma.supplier.create({ data: { tenant_id,',
       'prisma.category.create({ data: { tenant_id,',
       'prisma.customer.create({ data: { tenant_id,',
-      'prisma.inventoryStock.create({ data: { tenant_id,',
+      'prisma.warehouse.create({\n      data: { tenant_id, branch_id: branch.id',
     ]) {
       expect(seed).toContain(create);
     }
@@ -40,6 +41,13 @@ describe('development and CI seed contract', () => {
     // covers tenant_id, so Prisma derives it from the parent create — an
     // explicit tenant_id on the nested item is redundant (and rejected).
     expect(seed).toContain('items: { create: items }');
+  });
+
+  it('writes opening stock through the single inventory writer and reconciles it', () => {
+    expect(seed).toContain('inventory.apply(tx');
+    expect(seed).not.toMatch(/inventoryStock\.create/);
+    expect(seed).not.toContain('inventoryMovement');
+    expect(validator).toContain('does not reconcile with its ledger');
   });
 
   it('bootstraps the production owner with a Membership too', () => {
@@ -53,13 +61,13 @@ describe('development and CI seed contract', () => {
 
   it('creates every operational role deterministically', () => {
     for (const role of [
-      'owner',
-      'branch_manager',
+      'tenant_owner',
+      'location_manager',
       'cashier',
       'warehouse_manager',
       'seller',
     ]) {
-      expect(seed).toContain(`role: '${role}'`);
+      expect(seed).toContain(`'${role}'`);
       expect(validator).toContain(`'${role}'`);
     }
 

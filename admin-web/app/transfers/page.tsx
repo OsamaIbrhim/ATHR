@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { apiGet, apiPost, getStoredUser } from '@/lib/api'
+import { apiGet, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 
 type DraftLine = { variant_id: string; qty: string }
 const newLine = (): DraftLine => ({ variant_id: '', qty: '1' })
@@ -14,7 +15,7 @@ const statusLabel: Record<string,string> = {
 }
 
 export default function Transfers() {
-  const user = getStoredUser()
+  const user = useSessionUser()
   const [rows,setRows] = useState<any[]>([])
   const [branches,setBranches] = useState<any[]>([])
   const [products,setProducts] = useState<any[]>([])
@@ -30,11 +31,11 @@ export default function Transfers() {
     setError('')
     try {
       const [transferRows,branchRows,productRows] = await Promise.all([
-        apiGet('/transfers'),
+        apiGet('/transfers?page=1&page_size=100'),
         apiGet('/branches'),
         apiGet('/products?page=1&page_size=200'),
       ])
-      setRows(transferRows||[])
+      setRows(transferRows.items||[])
       setBranches(branchRows||[])
       setProducts(productRows.items||[])
     } catch(loadError:any) { setError(loadError.message) }
@@ -73,7 +74,7 @@ export default function Transfers() {
         <label>من فرع<select className="select mt-1" value={from} onChange={event=>{setFrom(event.target.value);if(event.target.value===to)setTo('')}}><option value="">اختر فرع المصدر</option>{branches.map(row=><option key={row.id} value={row.id}>{row.name_ar}</option>)}</select></label>
         <label>إلى فرع<select className="select mt-1" value={to} onChange={event=>setTo(event.target.value)}><option value="">اختر فرع الوجهة</option>{branches.filter(row=>row.id!==from).map(row=><option key={row.id} value={row.id}>{row.name_ar}</option>)}</select></label>
       </div>
-      <div className="space-y-2">{lines.map((line,index)=><div key={index} className="grid grid-cols-[1fr_120px_auto] gap-2"><select className="select" value={line.variant_id} onChange={event=>setLines(current=>current.map((row,rowIndex)=>rowIndex===index?{...row,variant_id:event.target.value}:row))}><option value="">اختر المنتج</option>{products.map(row=><option key={row.id} value={row.id}>{row.sku} – {row.product?.name_ar||row.product?.name_en}</option>)}</select><input className="input" type="number" min="1" step="1" value={line.qty} onChange={event=>setLines(current=>current.map((row,rowIndex)=>rowIndex===index?{...row,qty:event.target.value}:row))}/><button className="btn-secondary" disabled={lines.length===1} onClick={()=>setLines(current=>current.filter((_,rowIndex)=>rowIndex!==index))}>حذف</button></div>)}</div>
+      <div className="space-y-2">{lines.map((line,index)=><div key={index} className="grid grid-cols-[1fr_120px_auto] gap-2"><select className="select" value={line.variant_id} onChange={event=>setLines(current=>current.map((row,rowIndex)=>rowIndex===index?{...row,variant_id:event.target.value}:row))}><option value="">اختر المنتج</option>{products.map(row=><option key={row.id} value={row.id}>{row.sku} – {row.product?.name_ar||row.product?.name_en} {row.label||''}</option>)}</select><input className="input" type="number" min="1" step="1" value={line.qty} onChange={event=>setLines(current=>current.map((row,rowIndex)=>rowIndex===index?{...row,qty:event.target.value}:row))}/><button className="btn-secondary" disabled={lines.length===1} onClick={()=>setLines(current=>current.filter((_,rowIndex)=>rowIndex!==index))}>حذف</button></div>)}</div>
       <div className="flex justify-between"><button className="btn" onClick={()=>setLines(current=>[...current,newLine()])}>+ إضافة صنف</button><button className="btn-accent" disabled={saving||!valid} onClick={create}>{saving?'جارٍ الإنشاء…':'إنشاء التحويل'}</button></div>
     </div>
 

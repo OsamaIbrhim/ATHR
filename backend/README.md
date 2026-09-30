@@ -56,9 +56,9 @@ DATABASE_URL=postgresql://...
 DIRECT_URL=postgresql://...
 JWT_SECRET=<unique random value of at least 32 characters>
 CORS_ORIGINS=https://bold-system.vercel.app
-POS_PROTOCOL_MIN=2
-POS_PROTOCOL_MAX=2
-POS_MIN_APP_VERSION=1.4.0
+POS_PROTOCOL_MIN=3
+POS_PROTOCOL_MAX=3
+POS_MIN_APP_VERSION=1.6.0
 ```
 
 Price-signing and offline-ticket secrets are intentionally absent from sales
@@ -90,17 +90,18 @@ before merging. In Railway, enable **Wait for CI** for the connected GitHub
 branch. Railway must keep `npm run prisma:migrate:deploy` as its pre-deploy
 command; never put seeding or `prisma migrate resolve` in deployment commands.
 
-The CI migration gate performs all of the following before a release can
+The CI `backend` job performs all of the following before a release can
 reach Railway:
 
 - rejects edits or deletions of migrations already present in the target
-  branch;
+  branch (`prisma/migrations/000000000000_baseline` is the collapsed history;
+  adding a new baseline is the only explicit re-baseline);
 - rejects a Prisma schema change without a new forward-only migration;
-- applies the complete migration chain twice to an empty PostgreSQL schema;
-- builds the previous release, seeds representative data, and upgrades it
-  with the proposed migrations;
-- applies the upgrade twice, checks migration status, and detects Prisma
-  schema drift.
+- applies the migrations to an empty PostgreSQL database and detects Prisma
+  schema drift (`prisma migrate diff`);
+- seeds the development data and runs `npm run test:db`, the real-PostgreSQL
+  verifiers (tenant constraints, price books, tax codes, promotions, sync
+  snapshot, raw-SQL tenant scoping, nested creates).
 
 Run the immutable-history check locally against the exact target commit:
 
@@ -111,23 +112,7 @@ npm run prisma:migrations:policy -- --base origin/master
 New database changes must be added in a new timestamped migration. A failed
 production migration must stop the release and be investigated; do not edit
 an applied migration and do not use `migrate resolve --applied` to bypass the
-gate. `prisma/migration-repairs.json` records the one historic transfer
-incident as an exact old/new checksum pair. It cannot authorize later edits
-to that migration.
-
-### Recovering the failed transfer-state migration
-
-Migration `202607230002_transfer_state_machine` originally re-added the
-existing `TransferItem_qty_positive` constraint. PostgreSQL committed its
-earlier DDL before that duplicate constraint failed, so do not mark the failed
-migration as applied and do not manually drop the committed columns.
-
-After deploying the corrected migration file, run:
-
-```
-npx prisma migrate resolve --rolled-back 202607230002_transfer_state_machine
-npm run prisma:migrate:deploy
-```
+gate.
 
 Run `npm run prisma:seed` only against an isolated development or test
 database. It intentionally resets accounting, purchase, inventory-ledger, and

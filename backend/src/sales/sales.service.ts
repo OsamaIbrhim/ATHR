@@ -18,8 +18,7 @@ import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { createHash, randomUUID } from 'crypto';
-import { assertBranchAccess } from '../auth/branch-access';
-import { ListSalesDto } from './dto/list-sales.dto';
+import { assertBranchAccess, canAccessAllBranches, hasBranchAccess, toScopeSet } from '../auth/branch-access';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { ListReturnsDto } from './dto/list-returns.dto';
 import {
@@ -36,90 +35,33 @@ import {
   moneyString,
   sameMoney,
   sumMoney,
+  unitCost,
 } from '../common/money';
+import {
+  assertQuantityPrecision,
+  quantity,
+  quantityNumber,
+  variantQuantityPrecision,
+} from '../common/quantity';
+import { InventoryService } from '../inventory/inventory.service';
+import type { StockLots } from '../inventory/inventory.types';
+import { addLots, lotsFingerprint, lotsOfItem, stockLots, type SaleLots } from './sale-lots';
+import { loadReturnLots } from './sale-return-lots';
+
+/** A sale line after merging duplicate variants; the quantity is exact (Decimal(14,3)). */
+type SaleLine = Omit<CreateSaleItemDto, 'qty' | 'serials' | 'batch_no'> & { qty: Prisma.Decimal; lots: SaleLots };
 
 @Injectable()
 export class SalesService {
   private readonly logger = new Logger(SalesService.name);
-  private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
 
   constructor(
     private prisma: PrismaService,
     private pricing: PricingService,
     private costVisibility: CostVisibilityService,
     private taxSnapshots: SalesTaxSnapshotService,
+    private inventory: InventoryService,
   ) {}
-
-  async listSales(context: TenantContext, dto: ListSalesDto, branchId?: string) {
-    const q = dto.q.trim();
-    const where: Prisma.SalesInvoiceWhereInput = {
-      tenant_id: context.tenantId,
-      ...(branchId ? { branch_id: branchId } : {}),
-      ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
-      ...(dto.status ? { status: dto.status } : {}),
-      ...(dto.has_warnings === 'true' ? { warning_codes: { isEmpty: false } } : {}),
-      ...(dto.from || dto.to ? { occurred_at: { ...(dto.from ? { gte: new Date(dto.from) } : {}), ...(dto.to ? { lte: this.endOfDay(dto.to) } : {}) } } : {}),
-      ...(q ? { OR: [
-        { invoice_number: { contains: q, mode: 'insensitive' } },
-        { customer: { phone: { contains: q } } },
-        { customer: { name: { contains: q, mode: 'insensitive' } } },
-      ] } : {}),
-    };
-    // The tenant is part of the cache key: keyed on the filters alone,
-    // one tenant's result count would be served to another (Blueprint §125).
-    const countKey = JSON.stringify({
-      tenantId: context.tenantId,
-      branchId,
-      q,
-      payment: dto.payment_method,
-      status: dto.status,
-      hasWarnings: dto.has_warnings,
-      from: dto.from,
-      to: dto.to,
-    });
-    const [total, items] = await Promise.all([
-      this.cachedSalesCount(countKey, where),
-      this.prisma.salesInvoice.findMany({
-        where,
-        select: {
-          id: true, invoice_number: true, branch_id: true,
-          branch: { select: { code: true, name_ar: true, name_en: true } },
-          customer: { select: { id: true, name: true, phone: true } },
-          cashier_id: true,
-          terminal: { select: { id: true, terminal_code: true, name: true } },
-          status: true, subtotal: true, discount_amount: true, tax_amount: true, total: true,
-          payment_method: true, language: true, sync_id: true,
-          event_version: true, warning_codes: true,
-          cashier_name_snapshot: true, seller_name_snapshot: true,
-          shift_id: true, offline_session_id: true, terminal_sequence: true,
-          occurred_at: true, received_at: true, created_at: true,
-          _count: { select: { items: true, original_returns: true } },
-        },
-        orderBy: [{ occurred_at: 'desc' }, { id: 'desc' }],
-        skip: (dto.page - 1) * dto.page_size,
-        take: dto.page_size,
-      }),
-    ]);
-    return { items, page: dto.page, page_size: dto.page_size, total, total_pages: Math.max(1, Math.ceil(total / dto.page_size)), server_time: new Date().toISOString() };
-  }
-
-  private cachedSalesCount(key: string, where: Prisma.SalesInvoiceWhereInput) {
-    const now = Date.now();
-    const cached = this.countCache.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
-    const ttl = Math.min(30_000, Math.max(0, Number(process.env.LIST_COUNT_CACHE_MS || 5_000)));
-    let value: Promise<number>;
-    value = this.prisma.salesInvoice.count({ where }).then((total) => {
-      if (this.countCache.get(key)?.value === value) this.countCache.set(key, { expiresAt: Date.now() + ttl, value: Promise.resolve(total) });
-      return total;
-    }).catch((error) => {
-      if (this.countCache.get(key)?.value === value) this.countCache.delete(key);
-      throw error;
-    });
-    this.countCache.set(key, { expiresAt: Number.POSITIVE_INFINITY, value });
-    if (this.countCache.size > 500) this.countCache.delete(this.countCache.keys().next().value!);
-    return value;
-  }
 
   async getInvoice(context: TenantContext, id: string, actor: AuthenticatedUser) {
     const invoice = await this.prisma.salesInvoice.findFirst({
@@ -127,16 +69,16 @@ export class SalesService {
       include: {
         items: { include: { variant: { include: { product: true } }, return_items: { where: { return_record: { status: 'completed' } } } } },
         branch: true, customer: true,
-        cashier: { select: { id: true, name: true, role: true } },
-        seller: { select: { id: true, name: true, role: true } },
-        receiver: { select: { id: true, name: true, role: true } },
+        cashier: { select: { id: true, name: true } },
+        seller: { select: { id: true, name: true } },
+        receiver: { select: { id: true, name: true } },
         shift: true,
         terminal: { select: { id: true, terminal_code: true, name: true } },
         original_returns: { include: { items: true }, orderBy: { created_at: 'desc' } },
       },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    assertBranchAccess(actor, invoice.branch_id, ['owner']);
+    assertBranchAccess(actor, invoice.branch_id);
     // BR-CST-101 / Matrix §17 §51: this row discloses exact cost four ways —
     // `items[].unit_cost` (cost at the moment of sale), the joined
     // `items[].variant.cost_price` (cost today), and the same sale-line cost
@@ -165,12 +107,6 @@ export class SalesService {
     };
   }
 
-  private endOfDay(value: string) {
-    const date = new Date(value);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) date.setUTCHours(23, 59, 59, 999);
-    return date;
-  }
-
   private saleCommandFingerprint(
     dto: CreateSaleDto,
     terminalId: string,
@@ -197,14 +133,15 @@ export class SalesService {
       items: normalized.lines
         .map((item) => ({
           variant_id: item.variant_id,
-          qty: item.qty,
+          qty: quantityNumber(item.qty),
           unit_price: canonicalMoney(item.unit_price),
           unit_tax: canonicalMoney(item.unit_tax),
           sku_snapshot: item.sku_snapshot.trim(),
           name_ar_snapshot: item.name_ar_snapshot.trim(),
           name_en_snapshot: item.name_en_snapshot?.trim() || null,
-          size_snapshot: item.size_snapshot?.trim() || null,
-          color_snapshot: item.color_snapshot?.trim() || null,
+          variant_label_snapshot: item.variant_label_snapshot?.trim() || null,
+          // Only when named: a POS without tracking keeps its exact fingerprint.
+          ...lotsFingerprint(item.lots),
         }))
         .sort((left, right) => left.variant_id.localeCompare(right.variant_id)),
     };
@@ -214,10 +151,11 @@ export class SalesService {
   }
 
   private normalizeLines(items: CreateSaleItemDto[]) {
-    const lines = new Map<string, CreateSaleItemDto>();
-    for (const item of items) {
+    const lines = new Map<string, SaleLine>();
+    for (const { serials, batch_no, ...item } of items) {
       const existing = lines.get(item.variant_id);
-      if (!existing) lines.set(item.variant_id, { ...item });
+      const lots = lotsOfItem({ serials, batch_no }, quantity(item.qty));
+      if (!existing) lines.set(item.variant_id, { ...item, qty: quantity(item.qty), lots });
       else {
         if (
           !sameMoney(existing.unit_price, item.unit_price) ||
@@ -225,8 +163,7 @@ export class SalesService {
           existing.sku_snapshot.trim() !== item.sku_snapshot.trim() ||
           existing.name_ar_snapshot.trim() !== item.name_ar_snapshot.trim() ||
           (existing.name_en_snapshot?.trim() || '') !== (item.name_en_snapshot?.trim() || '') ||
-          (existing.size_snapshot?.trim() || '') !== (item.size_snapshot?.trim() || '') ||
-          (existing.color_snapshot?.trim() || '') !== (item.color_snapshot?.trim() || '')
+          (existing.variant_label_snapshot?.trim() || '') !== (item.variant_label_snapshot?.trim() || '')
         ) {
           throw new UnprocessableEntityException({
             code: 'CONFLICTING_ITEM_SNAPSHOTS',
@@ -234,7 +171,8 @@ export class SalesService {
             message: 'The same variant has conflicting historical snapshots',
           });
         }
-        existing.qty += item.qty;
+        existing.qty = existing.qty.plus(quantity(item.qty));
+        addLots(existing.lots, lots);
       }
     }
     return { lines: [...lines.values()] };
@@ -328,24 +266,47 @@ export class SalesService {
     );
 
     const result = await this.runSaleTransaction(dto, terminal, async (tx) => {
-      const [lockedTerminal] = await tx.$queryRaw<Array<{
-        id: string;
+      // One statement locks the terminal row, advances its sale sequence and
+      // reads the branch code. Advancing up front is safe: it is monotonic
+      // (a replay or an older sequence changes nothing) and a failed sale
+      // rolls the whole transaction back. The CTE reads the row after the lock
+      // is granted, so `previous_sequence` is what the last committed sale left.
+      const [claimed] = await tx.$queryRaw<Array<{
         branch_id: string;
-        last_sale_sequence: bigint;
+        branch_code: string | null;
+        previous_sequence: bigint;
       }>>`
-        SELECT "id", "branch_id", "last_sale_sequence"
-        FROM "PosTerminal"
-        WHERE "id" = ${terminal.id}::uuid
-        FOR UPDATE
+        WITH locked AS (
+          SELECT "id", "last_sale_sequence" FROM "PosTerminal"
+          WHERE "id" = ${terminal.id}::uuid AND "tenant_id" = ${context.tenantId}::uuid
+          FOR UPDATE
+        )
+        UPDATE "PosTerminal" t
+        SET "last_sale_sequence" = GREATEST(t."last_sale_sequence", ${terminalSequence}), "updated_at" = now()
+        FROM locked
+        WHERE t."id" = locked."id"
+        RETURNING t."branch_id",
+          (SELECT b."code" FROM "Branch" b WHERE b."id" = t."branch_id" AND b."tenant_id" = t."tenant_id") AS "branch_code",
+          locked."last_sale_sequence" AS "previous_sequence"
       `;
-      if (!lockedTerminal || lockedTerminal.branch_id !== dto.branch_id) {
+      if (!claimed || claimed.branch_id !== dto.branch_id) {
         throw new ForbiddenException('The terminal is not assigned to the sale branch');
       }
 
-      const existing = await tx.salesInvoice.findFirst({
-        where: { tenant_id: context.tenantId, sync_id: dto.sync_id },
+      // The replay (same sync_id) and the terminal-sequence owner (same
+      // terminal + sequence, different sync_id) are found by one query.
+      const matches = await tx.salesInvoice.findMany({
+        where: {
+          tenant_id: context.tenantId,
+          OR: [
+            { sync_id: dto.sync_id },
+            { terminal_id: terminal.id, terminal_sequence: terminalSequence },
+          ],
+        },
         include: { items: true },
       });
+      const existing = matches.find((invoice) => invoice.sync_id === dto.sync_id);
+      const sequenceOwner = matches.find((invoice) => invoice.sync_id !== dto.sync_id);
       if (existing) {
         if (
           existing.branch_id !== dto.branch_id ||
@@ -364,43 +325,28 @@ export class SalesService {
       }
 
       const warningCodes = new Set<string>();
-      const [branch, shift, originCashier, seller, sequenceOwner] = await Promise.all([
-        tx.branch.findFirst({ where: { id: dto.branch_id, tenant_id: context.tenantId } }),
+      const [shift, staff] = await Promise.all([
         tx.shift.findFirst({ where: { id: dto.shift_id, tenant_id: context.tenantId } }),
-        // Identities are scoped through Membership — `User` has no tenant_id.
-        tx.user.findFirst({
-          where: {
-            id: dto.origin_cashier_id,
-            memberships: { some: { tenantId: context.tenantId } },
-          },
-          select: { id: true, branch_id: true, name: true },
-        }),
-        tx.user.findFirst({
-          where: {
-            id: dto.seller_id,
-            memberships: { some: { tenantId: context.tenantId } },
-          },
-          select: { id: true, branch_id: true, role: true, name: true },
-        }),
-        tx.salesInvoice.findFirst({
+        // Staff are resolved through their Membership — `User` has no tenant data.
+        tx.membership.findMany({
           where: {
             tenant_id: context.tenantId,
-            terminal_id: terminal.id,
-            terminal_sequence: terminalSequence,
+            user_id: { in: [dto.origin_cashier_id, dto.seller_id] },
           },
-          select: { id: true, sync_id: true },
+          select: { user_id: true, role: true, access_scope_assignments: true },
         }),
       ]);
-      if (!branch) throw new NotFoundException('Branch not found');
-      const linkedCashier =
-        originCashier?.branch_id === dto.branch_id ? originCashier : null;
+      if (claimed.branch_code === null) throw new NotFoundException('Branch not found');
+      const originCashier = staff.find((m) => m.user_id === dto.origin_cashier_id);
+      const seller = staff.find((m) => m.user_id === dto.seller_id);
+      const worksInBranch = (m: typeof originCashier) =>
+        !!m && hasBranchAccess({ scope_set: toScopeSet(m.access_scope_assignments) }, dto.branch_id);
+      const linkedCashier = originCashier && worksInBranch(originCashier) ? { id: originCashier.user_id } : null;
       if (!linkedCashier) {
         warningCodes.add('CASHIER_REFERENCE_MISSING');
       }
       const linkedSeller =
-        seller?.branch_id === dto.branch_id && seller.role === 'seller'
-          ? seller
-          : null;
+        seller && seller.role === 'seller' && worksInBranch(seller) ? { id: seller.user_id } : null;
       if (!linkedSeller) {
         warningCodes.add('SELLER_REFERENCE_MISSING');
       }
@@ -422,9 +368,9 @@ export class SalesService {
         });
       }
 
-      if (terminalSequence > lockedTerminal.last_sale_sequence + 1n) {
+      if (terminalSequence > claimed.previous_sequence + 1n) {
         warningCodes.add('SEQUENCE_GAP');
-      } else if (terminalSequence <= lockedTerminal.last_sale_sequence) {
+      } else if (terminalSequence <= claimed.previous_sequence) {
         warningCodes.add('OUT_OF_ORDER_SEQUENCE');
       }
 
@@ -435,7 +381,7 @@ export class SalesService {
           tenant_id: context.tenantId,
           product: { tenant_id: context.tenantId },
         },
-        include: { product: true },
+        include: { product: true, base_uom: { select: { precision: true } } },
       });
       if (variants.length !== variantIds.length) {
         const found = new Set(variants.map((variant) => variant.id));
@@ -445,6 +391,10 @@ export class SalesService {
       const variantsById = new Map<string, any>(
         variants.map((variant: any) => [variant.id, variant]),
       );
+      for (const line of normalized.lines) {
+        const variant = variantsById.get(line.variant_id)!;
+        assertQuantityPrecision(line.qty, variantQuantityPrecision(variant), line.sku_snapshot);
+      }
       // WP-008 Phase B: `calculateMany` now prices per (variant, qty) pair
       // (BR-PSL-104 quantity breaks) -- `normalized.lines` already merges
       // duplicate variant_ids into one line with a summed qty
@@ -453,13 +403,12 @@ export class SalesService {
         context,
         normalized.lines.map((line) => ({
           variant: variantsById.get(line.variant_id)!,
-          qty: line.qty,
+          qty: line.qty.toNumber(),
         })),
         tx,
       );
 
       const saleItems = normalized.lines.map((line) => {
-        const variant = variantsById.get(line.variant_id)!;
         const quote = currentQuotes.get(line.variant_id)!;
         const unitPrice = money(line.unit_price);
         const unitTax = money(line.unit_tax);
@@ -473,13 +422,12 @@ export class SalesService {
           variant_id: line.variant_id,
           qty: line.qty,
           unit_price: unitPrice,
-          unit_cost: money(variant.cost_price),
           tax: unitTax,
           sku_snapshot: line.sku_snapshot.trim(),
           name_ar_snapshot: line.name_ar_snapshot.trim(),
           name_en_snapshot: line.name_en_snapshot?.trim() || null,
-          size_snapshot: line.size_snapshot?.trim() || null,
-          color_snapshot: line.color_snapshot?.trim() || null,
+          variant_label_snapshot: line.variant_label_snapshot?.trim() || null,
+          lots: stockLots(line.lots),
         };
       });
 
@@ -503,57 +451,68 @@ export class SalesService {
         });
       }
 
-      const stockAfter = new Map<string, number>();
-      for (const item of saleItems) {
-        const stock = await tx.inventoryStock.upsert({
-          where: {
-            branch_id_variant_id: {
-              branch_id: dto.branch_id,
-              variant_id: item.variant_id,
+      // Acceptance-first: the sale is recorded even when it drives stock below
+      // zero (NEGATIVE_STOCK). Only `stocked` variants move stock; the writer
+      // ignores service/non_stock lines, so they are not even sent.
+      const invoiceId = randomUUID();
+      const itemIds = new Map(saleItems.map((item) => [item.variant_id, randomUUID()]));
+      const warehouseId = await this.inventory.defaultWarehouseId(tx, context.tenantId, dto.branch_id);
+      const stockAfter = new Map(
+        (
+          await this.inventory.apply(tx, {
+            tenantId: context.tenantId,
+            warehouseId,
+            occurredAt,
+            actorId: linkedCashier?.id,
+            type: 'sale',
+            reference: { type: 'SalesInvoice', id: invoiceId },
+            idempotencyKey: `sale:${dto.sync_id}`,
+            allowNegative: true,
+            metadata: {
+              sync_id: dto.sync_id,
+              terminal_id: terminal.id,
+              terminal_sequence: dto.terminal_sequence,
             },
-          },
-          update: {
-            qty_on_hand: { decrement: item.qty },
-            last_sold_at: receivedAt,
-          },
-          create: {
-            tenant_id: context.tenantId,
-            branch_id: dto.branch_id,
-            variant_id: item.variant_id,
-            qty_on_hand: -item.qty,
-            last_sold_at: receivedAt,
-          },
-        });
-        stockAfter.set(item.variant_id, stock.qty_on_hand);
-        if (stock.qty_on_hand - stock.qty_reserved < 0) {
-          warningCodes.add('NEGATIVE_STOCK');
-        }
+            lines: saleItems
+              .filter((item) => variantsById.get(item.variant_id).item_type === 'stocked')
+              .map((item) => ({
+                variantId: item.variant_id,
+                qtyDelta: item.qty.negated(),
+                referenceLineId: itemIds.get(item.variant_id),
+                ...(item.lots ? { lots: item.lots } : {}),
+              })),
+          })
+        ).map((stock) => [stock.variantId, stock]),
+      );
+      for (const stock of stockAfter.values()) {
+        if (stock.qtyAfter.minus(stock.reserved).isNegative()) warningCodes.add('NEGATIVE_STOCK');
+        // Missing / unknown serials and unallocated batches: accepted, never refused.
+        for (const code of stock.warnings ?? []) warningCodes.add(code);
       }
+      // Cost of goods at the moment of sale: the warehouse average; catalog cost for items without stock.
+      const costOf = (variantId: string) =>
+        unitCost(stockAfter.get(variantId)?.avgCost ?? variantsById.get(variantId).cost_price);
 
+      // Find-or-create the customer and book this sale on it in one statement.
+      // The (tenant_id, phone) unique key makes concurrent first sales safe.
       let customerId: string | undefined;
       if (dto.customer_phone) {
-        // `Customer.phone` is still globally unique until Phase B, so an
-        // upsert keyed on phone alone would attach another tenant's customer
-        // to this sale. Resolve within the tenant first, then create.
-        const existingCustomer = await tx.customer.findFirst({
-          where: { phone: dto.customer_phone, tenant_id: context.tenantId },
-          select: { id: true },
-        });
-        const customer = existingCustomer ?? (await tx.customer.create({
-          data: {
-            tenant_id: context.tenantId,
-            phone: dto.customer_phone,
-            whatsapp: dto.customer_phone,
-          },
-          select: { id: true },
-        }));
+        const [customer] = await tx.$queryRaw<Array<{ id: string }>>`
+          INSERT INTO "Customer" ("id", "tenant_id", "phone", "whatsapp", "total_invoices", "total_spent")
+          VALUES (${randomUUID()}::uuid, ${context.tenantId}::uuid, ${dto.customer_phone}, ${dto.customer_phone}, 1, ${total})
+          ON CONFLICT ("tenant_id", "phone") DO UPDATE SET
+            "total_invoices" = "Customer"."total_invoices" + 1,
+            "total_spent" = "Customer"."total_spent" + EXCLUDED."total_spent"
+          RETURNING "id"
+        `;
         customerId = customer.id;
       }
 
       const invoiceNumber =
-        `B-${branch.code}-${receivedAt.getTime()}-${randomUUID().slice(0, 8)}`;
+        `B-${claimed.branch_code}-${receivedAt.getTime()}-${randomUUID().slice(0, 8)}`;
       const invoice = await tx.salesInvoice.create({
         data: {
+          id: invoiceId,
           tenant_id: context.tenantId,
           invoice_number: invoiceNumber,
           event_version: dto.event_version,
@@ -578,27 +537,24 @@ export class SalesService {
           payment_method: dto.payment_method,
           language: dto.language || 'ar',
           sync_id: dto.sync_id,
-          items: {
-            create: saleItems.map((item) => ({
-              variant_id: item.variant_id,
-              qty: item.qty,
-              unit_price: item.unit_price,
-              unit_cost: item.unit_cost,
-              unit_tax: item.tax,
-              sku_snapshot: item.sku_snapshot,
-              name_ar_snapshot: item.name_ar_snapshot,
-              name_en_snapshot: item.name_en_snapshot,
-              size_snapshot: item.size_snapshot,
-              color_snapshot: item.color_snapshot,
-            })),
-          },
         },
-        include: { items: true },
       });
-
-      const invoiceItemByVariant = new Map(
-        invoice.items.map((item) => [item.variant_id, item]),
-      );
+      const items = await tx.salesInvoiceItem.createManyAndReturn({
+        data: saleItems.map((item) => ({
+          id: itemIds.get(item.variant_id),
+          tenant_id: context.tenantId,
+          sales_invoice_id: invoice.id,
+          variant_id: item.variant_id,
+          qty: item.qty,
+          unit_price: item.unit_price,
+          unit_cost: costOf(item.variant_id),
+          unit_tax: item.tax,
+          sku_snapshot: item.sku_snapshot,
+          name_ar_snapshot: item.name_ar_snapshot,
+          name_en_snapshot: item.name_en_snapshot,
+          variant_label_snapshot: item.variant_label_snapshot,
+        })),
+      });
 
       // WP-008 Phase C (BR-TAX-202): stamp the resolved code/rate/base/amount/
       // mode/version onto the document, inside the same transaction that
@@ -629,9 +585,8 @@ export class SalesService {
         invoice.id,
         saleItems.map((item) => {
           const quote = currentQuotes.get(item.variant_id)!;
-          const invoiceItem = invoiceItemByVariant.get(item.variant_id)!;
           return {
-            salesInvoiceItemId: invoiceItem.id,
+            salesInvoiceItemId: itemIds.get(item.variant_id)!,
             tax: {
               ...quote.tax,
               base_amount: lineMoney(quote.tax.base_amount, item.qty),
@@ -640,43 +595,6 @@ export class SalesService {
           };
         }),
       );
-
-      for (const item of saleItems) {
-        const invoiceItem = invoiceItemByVariant.get(item.variant_id);
-        if (!invoiceItem) {
-          throw new NotFoundException(
-            `Created sale line is missing for variant ${item.variant_id}`,
-          );
-        }
-        await tx.$queryRaw`
-          SELECT "record_inventory_movement"(
-            ${dto.branch_id}::uuid,
-            ${item.variant_id}::uuid,
-            'sale'::"InventoryMovementType",
-            ${-item.qty}::integer,
-            0::integer,
-            'SalesInvoice'::text,
-            ${invoice.id}::text,
-            ${invoiceItem.id}::text,
-            ${`sale:${dto.sync_id}:${item.variant_id}`}::text,
-            ${occurredAt}::timestamp,
-            ${linkedCashier?.id || null}::uuid,
-            ${JSON.stringify({
-              sync_id: dto.sync_id,
-              terminal_id: terminal.id,
-              terminal_sequence: dto.terminal_sequence,
-              qty_on_hand_after: stockAfter.get(item.variant_id),
-            })}::jsonb
-          )
-        `;
-      }
-
-      if (terminalSequence > lockedTerminal.last_sale_sequence) {
-        await tx.posTerminal.update({
-          where: { id: terminal.id },
-          data: { last_sale_sequence: terminalSequence },
-        });
-      }
 
       await tx.auditLog.create({
         data: {
@@ -743,18 +661,8 @@ export class SalesService {
         });
       }
 
-      if (customerId) {
-        await tx.customer.update({
-          where: { id: customerId },
-          data: {
-            total_invoices: { increment: 1 },
-            total_spent: { increment: total },
-          },
-        });
-      }
-      return invoice;
+      return { ...invoice, items };
     });
-    this.countCache.clear();
     // Unconditional, unlike `getInvoice`: this response goes to a POS terminal
     // authenticated by device token, so there is no membership to resolve a
     // permission against and no actor the gate could answer for. The till has
@@ -765,26 +673,36 @@ export class SalesService {
   }
 
   async createReturn(context: TenantContext, dto: CreateReturnDto, actor: AuthenticatedUser) {
-    const requested = new Map<string, number>();
+    const requested = new Map<string, Prisma.Decimal>();
+    const requestedSerials = new Map<string, string[]>();
     for (const item of dto.items) {
       requested.set(
         item.sales_invoice_item_id,
-        (requested.get(item.sales_invoice_item_id) || 0) + item.qty,
+        (requested.get(item.sales_invoice_item_id) ?? new Prisma.Decimal(0)).plus(quantity(item.qty)),
       );
+      if (item.serials?.length) {
+        requestedSerials.set(item.sales_invoice_item_id, [...(requestedSerials.get(item.sales_invoice_item_id) ?? []), ...item.serials]);
+      }
     }
+    const saleItemIds = [...requested.keys()].sort();
 
     const result = await this.prisma.$transaction(async (tx) => {
       const original = await tx.salesInvoice.findFirst({
         where: { tenant_id: context.tenantId, id: dto.original_invoice_id },
-        include: { items: true },
+        include: {
+          items: {
+            include: { variant: { select: { item_type: true, tracking: true, base_uom: { select: { precision: true } } } } },
+          },
+        },
       });
       if (!original) throw new NotFoundException('Original invoice not found');
-      if (actor.role !== 'owner' && actor.branch_id !== original.branch_id) {
+      if (!hasBranchAccess(actor, original.branch_id)) {
         throw new ForbiddenException('You cannot return a sale from another branch');
       }
 
       let shiftId: string | null = null;
-      if (actor.role !== 'owner') {
+      // A tenant-wide actor (owner) may return without a till shift.
+      if (!canAccessAllBranches(actor)) {
         const currentShift = await tx.shift.findFirst({
           where: {
             tenant_id: context.tenantId, branch_id: original.branch_id, status: 'open' },
@@ -802,42 +720,51 @@ export class SalesService {
         throw new BadRequestException('Return window expired (14 days)');
       }
 
+      const soldById = new Map(original.items.map((item) => [item.id, item]));
+      for (const saleItemId of saleItemIds) {
+        if (!soldById.has(saleItemId)) {
+          throw new BadRequestException(
+            `Item ${saleItemId} does not belong to the original invoice`,
+          );
+        }
+      }
+      // Two statements for every line: lock the sold lines, then read what was already returned.
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "SalesInvoiceItem"
+        WHERE "tenant_id" = ${context.tenantId}::uuid AND "id" = ANY(${saleItemIds}::uuid[])
+        ORDER BY "id"
+        FOR UPDATE
+      `;
+      const returnedRows = await tx.returnItem.groupBy({
+        by: ['sales_invoice_item_id'],
+        where: {
+          tenant_id: context.tenantId,
+          sales_invoice_item_id: { in: saleItemIds },
+          return_record: { status: 'completed' },
+        },
+        _sum: { qty: true },
+      });
+      const returnedBefore = new Map(
+        returnedRows.map((row) => [row.sales_invoice_item_id, row._sum.qty ?? new Prisma.Decimal(0)]),
+      );
+
       const returnItems: {
         sales_invoice_item_id: string;
         variant_id: string;
-        qty: number;
+        qty: Prisma.Decimal;
         unit_price: Prisma.Decimal;
         unit_cost: Prisma.Decimal;
         unit_tax: Prisma.Decimal;
       }[] = [];
 
       for (const [saleItemId, qty] of requested) {
-        const soldItem = original.items.find((item) => item.id === saleItemId);
-        if (!soldItem) {
-          throw new BadRequestException(
-            `Item ${saleItemId} does not belong to the original invoice`,
-          );
-        }
-
-        await tx.$queryRaw`
-          SELECT "id"
-          FROM "SalesInvoiceItem"
-          WHERE "id" = ${saleItemId}::uuid
-          FOR UPDATE
-        `;
-
-        const alreadyReturned = await tx.returnItem.aggregate({
-          where: {
-            tenant_id: context.tenantId,
-            sales_invoice_item_id: saleItemId,
-            return_record: { status: 'completed' },
-          },
-          _sum: { qty: true },
-        });
-        const remaining = soldItem.qty - (alreadyReturned._sum.qty || 0);
-        if (qty > remaining) {
+        const soldItem = soldById.get(saleItemId)!;
+        assertQuantityPrecision(qty, variantQuantityPrecision(soldItem.variant), saleItemId);
+        const remaining = soldItem.qty.minus(returnedBefore.get(saleItemId) ?? 0);
+        if (qty.gt(remaining)) {
           throw new ConflictException(
-            `Only ${remaining} unit(s) remain returnable for item ${saleItemId}`,
+            `Only ${quantityNumber(remaining)} unit(s) remain returnable for item ${saleItemId}`,
           );
         }
 
@@ -855,7 +782,7 @@ export class SalesService {
           variant_id: soldItem.variant_id,
           qty,
           unit_price: money(soldItem.unit_price),
-          unit_cost: money(soldItem.unit_cost),
+          unit_cost: unitCost(soldItem.unit_cost),
           unit_tax: unitTax,
         });
       }
@@ -867,14 +794,10 @@ export class SalesService {
         returnItems.map((item) => lineMoney(item.unit_tax, item.qty)),
       );
       const refundTotal = money(refundSubtotal.plus(refundTax));
-      const totalReturnedQty = returnItems.reduce(
-        (sum, item) => sum + item.qty,
-        0,
-      );
-      const originalQty = original.items.reduce(
-        (sum, item) => sum + item.qty,
-        0,
-      );
+      const sumQty = (values: Prisma.Decimal[]) =>
+        values.reduce((sum, value) => sum.plus(value), new Prisma.Decimal(0));
+      const totalReturnedQty = sumQty(returnItems.map((item) => item.qty));
+      const originalQty = sumQty(original.items.map((item) => item.qty));
 
       const returnRecord = await tx.return.create({
         data: {
@@ -884,7 +807,7 @@ export class SalesService {
           shift_id: shiftId,
           return_invoice_number: `R-${Date.now()}-${randomUUID().slice(0, 8)}`,
           reason: dto.reason,
-          is_partial: totalReturnedQty < originalQty,
+          is_partial: totalReturnedQty.lt(originalQty),
           created_by: actor.sub,
           refund_subtotal: refundSubtotal,
           refund_tax: refundTax,
@@ -895,35 +818,69 @@ export class SalesService {
         include: { items: true },
       });
 
-      for (const item of returnItems) {
-        await tx.inventoryStock.upsert({
-          where: {
-            branch_id_variant_id: {
-              branch_id: original.branch_id,
-              variant_id: item.variant_id,
-            },
-          },
-          update: { qty_on_hand: { increment: item.qty } },
-          create: {
-            tenant_id: context.tenantId,
-            branch_id: original.branch_id,
-            variant_id: item.variant_id,
-            qty_on_hand: item.qty,
-          },
-        });
-        await tx.productVariant.update({
-          where: { id: item.variant_id },
-          data: { return_count: { increment: item.qty } },
-        });
-      }
-
-      await tx.productVariant.updateMany({
-        where: {
-          id: { in: returnItems.map((item) => item.variant_id) },
-          return_count: { gte: 3 },
-        },
-        data: { qa_flag: true },
+      // Serial / batch variants go back to the lots their sale line drew.
+      const returnWarehouseId = await this.inventory.defaultWarehouseId(tx, context.tenantId, original.branch_id);
+      const returnLots = await loadReturnLots({
+        inventory: this.inventory,
+        tx,
+        tenantId: context.tenantId,
+        invoiceId: original.id,
+        warehouseId: returnWarehouseId,
+        requested,
+        serials: requestedSerials,
+        sold: soldById,
+        returnedBefore,
       });
+
+      // Goods come back at the cost they were sold at (moving average), one
+      // line per variant.
+      const stockLines = new Map<string, { qty: Prisma.Decimal; value: Prisma.Decimal; lineId: string; lots?: StockLots }>();
+      for (const item of returnRecord.items) {
+        if (soldById.get(item.sales_invoice_item_id)!.variant.item_type !== 'stocked') continue;
+        const line = stockLines.get(item.variant_id) ?? { qty: new Prisma.Decimal(0), value: new Prisma.Decimal(0), lineId: item.id, lots: returnLots.get(item.sales_invoice_item_id) };
+        line.qty = line.qty.plus(item.qty);
+        line.value = line.value.plus(item.unit_cost.mul(item.qty));
+        stockLines.set(item.variant_id, line);
+      }
+      await this.inventory.apply(tx, {
+        tenantId: context.tenantId,
+        warehouseId: returnWarehouseId,
+        occurredAt: returnRecord.created_at,
+        actorId: actor.sub,
+        type: 'return',
+        costType: 'customer_return',
+        reference: { type: 'Return', id: returnRecord.id },
+        idempotencyKey: `return:${returnRecord.id}`,
+        allowNegative: true,
+        metadata: {
+          return_invoice_number: returnRecord.return_invoice_number,
+          original_invoice_id: original.id,
+        },
+        lines: [...stockLines].map(([variantId, line]) => ({
+          variantId,
+          qtyDelta: line.qty,
+          referenceLineId: line.lineId,
+          unitCost: unitCost(line.value.div(line.qty)),
+          value: line.value,
+          ...(line.lots ? { lots: line.lots } : {}),
+        })),
+      });
+
+      // A variant returned three or more times is flagged for QA.
+      const returnedUnits = new Map<string, number>();
+      for (const item of returnItems) {
+        returnedUnits.set(
+          item.variant_id,
+          (returnedUnits.get(item.variant_id) ?? 0) + Math.ceil(item.qty.toNumber()),
+        );
+      }
+      await tx.$executeRaw`
+        UPDATE "ProductVariant" v
+        SET "return_count" = v."return_count" + u."units",
+            "qa_flag" = v."qa_flag" OR v."return_count" + u."units" >= 3
+        FROM unnest(${[...returnedUnits.keys()]}::uuid[], ${[...returnedUnits.values()]}::int[]) AS u("variant_id", "units")
+        WHERE v."tenant_id" = ${context.tenantId}::uuid AND v."id" = u."variant_id"
+      `;
 
       if (original.customer_id) {
         const customer = await tx.customer.findFirst({
@@ -948,7 +905,6 @@ export class SalesService {
       timeout: 20_000,
     });
 
-    this.countCache.clear();
     // `ReturnItem.unit_cost` is copied from the sale line it reverses, so the
     // return response is the same disclosure under a different table. Gated,
     // not unconditional: unlike `POST /pos/sale` this endpoint authenticates an
@@ -1001,14 +957,14 @@ export class SalesService {
       ...invoice,
       items: invoice.items.map((item) => {
         const returnedQty = item.return_items.reduce(
-          (sum, record) => sum + record.qty,
-          0,
+          (sum, record) => sum.plus(record.qty),
+          new Prisma.Decimal(0),
         );
         const { return_items: _returnItems, ...safe } = item;
         return {
           ...safe,
-          returned_qty: returnedQty,
-          returnable_qty: item.qty - returnedQty,
+          returned_qty: quantityNumber(returnedQty),
+          returnable_qty: quantityNumber(item.qty.minus(returnedQty)),
         };
       }),
     };

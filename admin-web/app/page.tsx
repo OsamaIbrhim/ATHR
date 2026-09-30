@@ -1,17 +1,19 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
-import { apiGet, getStoredUser } from '@/lib/api'
+import { apiGet } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { loadDashboardData } from '@/lib/dashboard'
-import { hasCapability, type Capability } from '@/lib/permissions'
+import { hasPermission, type Permission } from '@/lib/permissions'
 import { businessDate } from '@/lib/business-time'
+import { ADMIN_APP_NAME, BRAND_NAME } from '@/lib/brand'
 
 export default function Dashboard(){
-  const user = getStoredUser()
-  const quickLinks: { href: string; label: string; capability: Capability; className: string }[] = [
-    { href: '/products', label: 'المنتجات', capability: 'products.read', className: 'btn' },
-    { href: '/sales', label: 'المبيعات', capability: 'sales.read', className: 'btn' },
-    { href: '/reports', label: 'التقارير', capability: 'reports.read', className: 'btn-accent' },
-    { href: '/offers', label: 'العروض المقترحة', capability: 'offers.manage', className: 'btn' },
+  const user = useSessionUser()
+  const quickLinks: { href: string; label: string; permission: Permission; className: string }[] = [
+    { href: '/products', label: 'المنتجات', permission: 'catalog.product.view', className: 'btn' },
+    { href: '/sales', label: 'المبيعات', permission: 'sales.sale.view', className: 'btn' },
+    { href: '/reports', label: 'التقارير', permission: 'reports.sales.view', className: 'btn-accent' },
+    { href: '/offers', label: 'العروض المقترحة', permission: 'promotion.view', className: 'btn' },
   ]
   const [stats, setStats] = useState({ total_sales:0, profit:0, count:0 })
   const [productCount, setProductCount] = useState(0)
@@ -34,7 +36,7 @@ export default function Dashboard(){
   useEffect(() => { void load() }, [load])
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">لوحة تحكم ATHR Operations</h1>
+      <h1 className="text-2xl font-bold">لوحة تحكم {ADMIN_APP_NAME}</h1>
       {error && (
         <div className="card border border-red-200 bg-red-50 text-red-800" role="alert">
           {error}{' '}
@@ -51,11 +53,11 @@ export default function Dashboard(){
         <h2 className="font-bold mb-3">روابط سريعة</h2>
         <div className="flex gap-3 flex-wrap">
           {quickLinks
-            .filter(({ capability }) => hasCapability(user, capability))
+            .filter(({ permission }) => hasPermission(user, permission))
             .map(({ href, label, className }) => <a key={href} href={href} className={className}>{label}</a>)}
         </div>
       </div>
-      <div className="text-sm text-gray-500">ATHR API: متصل عبر بوابة الخادم الآمنة</div>
+      <div className="text-sm text-gray-500">{BRAND_NAME} API: متصل عبر بوابة الخادم الآمنة</div>
     </div>
   )
 }

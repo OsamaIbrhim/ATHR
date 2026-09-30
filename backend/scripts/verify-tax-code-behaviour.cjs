@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // WP-008 Phase C — database-level proof for the invariants that live in SQL,
 // not in application code. Runs against a real, freshly-migrated Postgres
-// (wired into the CI `migration-gate` job's `athr_migrations_clean` database),
+// (run by `npm run test:db`),
 // same convention as `verify-price-book-behaviour.cjs` and
 // `verify-tenant-constraints.cjs`.
 //
@@ -77,7 +77,8 @@ async function expectRejected(name, attempt, expectedFragment) {
     record(name, false, 'expected the write to be rejected but it succeeded');
   } catch (error) {
     const message = String(error?.message ?? error);
-    const ok = message.includes(expectedFragment);
+    const ok =
+      expectedFragment instanceof RegExp ? expectedFragment.test(message) : message.includes(expectedFragment);
     record(name, ok, ok ? undefined : `unexpected error: ${message.slice(0, 200)}`);
   }
 }
@@ -262,11 +263,13 @@ async function verifySnapshotImmutability(tenant) {
   );
 
   // A superseded TaxCode that a document snapshotted must remain deletable
-  // only by breaking the evidence -- which the RESTRICT FK forbids.
+  // only by breaking the evidence -- which the RESTRICT FK forbids. Postgres 16
+  // reports it as a foreign key violation (Prisma P2003); Postgres 17+ raises
+  // restrict_violation ("violates RESTRICT setting of foreign key constraint").
   await expectRejected(
     'C1 a TaxCode a document snapshotted cannot be deleted out from under it',
     () => prisma.taxCode.delete({ where: { id: v1.id } }),
-    'Foreign key constraint',
+    /foreign key constraint/i,
   );
 
   return { category, v1, v2, variant, product };
@@ -419,15 +422,23 @@ async function verifySyncChangeEmission(tenant) {
   const product = await prisma.product.create({
     data: { tenant_id: tenant.id, name_en: 'C4 product', tax_category_id: category.id },
   });
-  const beforeRepoint = await countPricingChanges(tenant.id, product.id);
+  // W2a: only the product itself is re-sent (a 'product' change), not the whole catalog.
+  const countProductChanges = () =>
+    prisma.syncChange.count({ where: { tenant_id: tenant.id, kind: 'product', entity_key: product.id } });
+  const beforeRepoint = await countProductChanges();
   await prisma.product.update({
     where: { id: product.id },
     data: { tax_category_id: otherCategory.id },
   });
   expectEqual(
-    'C4 repointing a Product tax category emits a pricing SyncChange',
-    (await countPricingChanges(tenant.id, product.id)) - beforeRepoint,
+    'C4 repointing a Product tax category emits a per-product SyncChange (not a catalog-wide one)',
+    (await countProductChanges()) - beforeRepoint,
     1,
+  );
+  expectEqual(
+    'C4 ...and no catalog-wide pricing SyncChange',
+    await countPricingChanges(tenant.id, product.id),
+    0,
   );
 
   const beforeRename = await countPricingChanges(tenant.id, product.id);

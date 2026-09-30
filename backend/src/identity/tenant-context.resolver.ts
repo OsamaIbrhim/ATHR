@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DomainFailure, Result, fail, ok, parseMembershipId, parseTenantId } from '@athr/domain-core';
 import { PrismaService } from '../prisma/prisma.service';
+import { EntitlementService } from '../entitlements/entitlement.service';
 import { PermissionPolicyService } from './permission-policy.service';
 import { ActorType, ScopeGrant, TenantContext } from './tenant-context.type';
 
@@ -31,6 +32,7 @@ export class TenantContextResolver {
   constructor(
     private readonly prisma: PrismaService,
     private readonly permissionPolicy: PermissionPolicyService,
+    private readonly entitlements: EntitlementService,
   ) {}
 
   async resolve(input: ResolveTenantContextInput): Promise<Result<TenantContext, DomainFailure>> {
@@ -43,7 +45,7 @@ export class TenantContextResolver {
     }
 
     const membership = await this.prisma.membership.findUnique({
-      where: { identityId_tenantId: { identityId: input.authenticatedIdentityId, tenantId: input.requestedTenantId } },
+      where: { user_id_tenant_id: { user_id: input.authenticatedIdentityId, tenant_id: input.requestedTenantId } },
       include: { access_scope_assignments: true },
     });
 
@@ -60,14 +62,15 @@ export class TenantContextResolver {
       .map((assignment) => ({ scopeType: assignment.scope_type, scopeRefId: assignment.scope_ref_id }));
 
     const permissionPolicyVersion = await this.permissionPolicy.getCurrentVersion();
+    const access = await this.entitlements.resolve(tenant.id);
 
     const context: TenantContext = {
       tenantId: parseTenantId(tenant.id),
       membershipId: parseMembershipId(membership.id),
       servicePrincipalId: null,
       authenticatedIdentityId: input.authenticatedIdentityId,
-      tenantAccessMode: tenant.access_mode,
-      entitlementSnapshotVersion: null,
+      tenantAccessMode: access.mode,
+      entitlementSnapshotVersion: access.snapshotVersion,
       permissionPolicyVersion,
       scopeSet,
       selectedLocationId: input.selectedLocationId ?? null,

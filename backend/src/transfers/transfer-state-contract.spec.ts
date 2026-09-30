@@ -1,90 +1,55 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-describe('transfer state migration contract', () => {
-  const earlierMigration = readFileSync(
+describe('transfer state baseline contract', () => {
+  const baseline = readFileSync(
     join(
       process.cwd(),
-      'prisma/migrations/20260719130000_transfer_integrity/migration.sql',
-    ),
-    'utf8',
-  );
-  const migration = readFileSync(
-    join(
-      process.cwd(),
-      'prisma/migrations/202607230002_transfer_state_machine/migration.sql',
+      'prisma/migrations/000000000000_baseline/migration.sql',
     ),
     'utf8',
   );
 
-  it('adds partial receipt and explicit transit quantities', () => {
-    expect(migration).toContain("'partially_received'");
-    expect(migration).toContain('"shipped_qty"');
-    expect(migration).toContain('"received_qty"');
-    expect(migration).toContain('"damaged_qty"');
-    expect(migration).toContain('"missing_qty"');
+  it('has partial receipt and explicit transit quantities', () => {
+    expect(baseline).toContain("'partially_received'");
+    expect(baseline).toContain('shipped_qty');
+    expect(baseline).toContain('received_qty');
+    expect(baseline).toContain('damaged_qty');
+    expect(baseline).toContain('missing_qty');
   });
 
-  it('replaces the legacy transfer-level inventory trigger', () => {
-    expect(migration).toContain(
-      'DROP TRIGGER IF EXISTS "Transfer_inventory_movement"',
+  it('moves inventory per transfer item through the service, not through a trigger', () => {
+    const engineMigration = readFileSync(
+      join(
+        process.cwd(),
+        'prisma/migrations/202609300001_site_model_inventory_engine/migration.sql',
+      ),
+      'utf8',
     );
-    expect(migration).toContain(
-      '"TransferItem_inventory_and_transit_movements"',
+    const service = readFileSync(
+      join(process.cwd(), 'src/transfers/transfers.service.ts'),
+      'utf8',
     );
+
+    expect(baseline).not.toContain('"Transfer_inventory_movement"');
+    expect(engineMigration).toContain(
+      'DROP TRIGGER "TransferItem_inventory_and_transit_movements"',
+    );
+    expect(service).toContain("type: 'transfer_out'");
+    expect(service).toContain("type: 'transfer_in'");
+    expect(service).toContain('this.inventory.apply(tx');
   });
 
-  it('drops the deferred legacy trigger before backfilling transfers', () => {
-    const dropLegacyTrigger = migration.indexOf(
-      'DROP TRIGGER IF EXISTS "Transfer_inventory_movement"',
-    );
-    const transferBackfill = migration.search(/UPDATE "Transfer"\r?\nSET/);
-    const firstTransferConstraint = migration.indexOf(
-      'ADD CONSTRAINT "Transfer_distinct_branches"',
-    );
-
-    expect(dropLegacyTrigger).toBeGreaterThan(-1);
-    expect(transferBackfill).toBeGreaterThan(dropLegacyTrigger);
-    expect(firstTransferConstraint).toBeGreaterThan(transferBackfill);
-  });
-
-  it('creates append-only in-transit accounting', () => {
-    expect(migration).toContain(
-      'CREATE TABLE IF NOT EXISTS "TransferTransitMovement"',
-    );
-    expect(migration).toContain('"TransferTransitMovement_append_only"');
-    expect(migration).toContain('"quantity_delta"');
-    expect(migration).toContain('"in_transit_after"');
+  it('has append-only in-transit accounting', () => {
+    expect(baseline).toContain('CREATE TABLE "TransferTransitMovement"');
+    expect(baseline).toContain('"TransferTransitMovement_append_only"');
+    expect(baseline).toContain('quantity_delta');
+    expect(baseline).toContain('in_transit_after');
   });
 
   it('guards posted transfer documents', () => {
-    expect(migration).toContain('"Transfer_protect_posted_document"');
-    expect(migration).toContain('"TransferItem_protect_posted_document"');
-  });
-
-  it('does not recreate the legacy positive-quantity constraint', () => {
-    expect(earlierMigration).toContain(
-      'ADD CONSTRAINT "TransferItem_qty_positive"',
-    );
-    expect(migration).not.toContain(
-      'ADD CONSTRAINT "TransferItem_qty_positive"',
-    );
-  });
-
-  it('can resume after PostgreSQL committed its initial DDL', () => {
-    expect(migration).toContain('WHEN duplicate_object THEN NULL');
-    expect(migration).toContain(
-      'ADD COLUMN IF NOT EXISTS "idempotency_key"',
-    );
-    expect(migration).toContain(
-      'CREATE TABLE IF NOT EXISTS "TransferTransitMovement"',
-    );
-    expect(migration).toContain(
-      'CREATE UNIQUE INDEX IF NOT EXISTS "TransferItem_transfer_id_variant_id_key"',
-    );
-    expect(migration).toContain(
-      'ON CONFLICT ("idempotency_key") DO NOTHING',
-    );
+    expect(baseline).toContain('"Transfer_protect_posted_document"');
+    expect(baseline).toContain('"TransferItem_protect_posted_document"');
   });
 
   it('keeps the hard smoke command cross-platform', () => {

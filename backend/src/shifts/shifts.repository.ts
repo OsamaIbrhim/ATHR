@@ -1,3 +1,4 @@
+import { FIRST_PAGE, pageArgs, pageOf, type PageQuery } from '../common/pagination';
 import { Injectable } from '@nestjs/common';
 import type { Prisma, Shift } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,12 +25,13 @@ export class ShiftsRepository {
     });
   }
 
-  async list(context: TenantScope, branchId?: string): Promise<Shift[]> {
-    return this.prisma.shift.findMany({
-      where: { tenant_id: context.tenantId, ...(branchId ? { branch_id: branchId } : {}) },
-      orderBy: { opened_at: 'desc' },
-      take: 50,
-    });
+  async list(context: TenantScope, branchId?: string, paging: PageQuery = FIRST_PAGE) {
+    const where = { tenant_id: context.tenantId, ...(branchId ? { branch_id: branchId } : {}) };
+    const [items, total] = await Promise.all([
+      this.prisma.shift.findMany({ where, orderBy: [{ opened_at: 'desc' }, { id: 'desc' }], ...pageArgs(paging) }),
+      this.prisma.shift.count({ where }),
+    ]);
+    return pageOf(items, total, paging);
   }
 
   async findActiveBranch(context: TenantScope, branchId: string, db: Db = this.prisma) {

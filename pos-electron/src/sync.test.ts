@@ -20,15 +20,19 @@ const status = {
 }
 
 const compatibility = async () => ({
-  api_protocol: { minimum: 2, maximum: 2 },
+  api_protocol: { minimum: 2, maximum: 3 },
   minimum_pos_version: '1.4.0',
   backend_version: 'test',
 })
 
 const finalPull = async () => ({
+  catalog_version: 3,
+  mode: 'snapshot',
   products: [],
   stock: [],
-  cursor: '1',
+  cursor: '1:1',
+  snapshot_after: null,
+  reset_products: true,
   has_more: false,
   server_time: '2026-07-28T00:00:00.000Z',
   catalog_valid_until: '2026-07-29T00:00:00.000Z',
@@ -211,7 +215,7 @@ describe('acceptance-first POS synchronization', () => {
     const local: any = {
       sync_get_status: async () => ({
         ...status,
-        sync_cursor: '0',
+        sync_cursor: '0:0',
         catalog_valid_until: 'old-validity',
       }),
       sync_set_status: async () => ({ ok: true }),
@@ -228,9 +232,11 @@ describe('acceptance-first POS synchronization', () => {
       pull: async () => {
         page += 1
         return {
+          catalog_version: 3,
+          mode: 'delta',
           products: [],
           stock: [],
-          cursor: String(page),
+          cursor: `${page}:0`,
           has_more: page < 12,
           server_time: `page-${page}`,
           catalog_valid_until: `valid-${page}`,
@@ -245,13 +251,13 @@ describe('acceptance-first POS synchronization', () => {
       (value) => value.catalog_valid_until === null,
     )).toBe(true)
     expect(applied.at(-1).catalog_valid_until).toBe('valid-12')
-    expect(result.sync_cursor).toBe('12')
+    expect(result.sync_cursor).toBe('12:0')
   })
 
   it('rejects a paged response whose cursor does not advance', async () => {
     let applied = false
     const local: any = {
-      sync_get_status: async () => ({ ...status, sync_cursor: '5' }),
+      sync_get_status: async () => ({ ...status, sync_cursor: '5:0' }),
       sync_set_status: async () => ({ ok: true }),
       sync_get_outbox: async () => [],
       sync_apply_pull: async () => {
@@ -263,9 +269,11 @@ describe('acceptance-first POS synchronization', () => {
       compatibility,
       heartbeat: async () => ({}),
       pull: async () => ({
+        catalog_version: 3,
+        mode: 'delta',
         products: [],
         stock: [],
-        cursor: '5',
+        cursor: '5:0',
         has_more: true,
       }),
     }
@@ -278,7 +286,7 @@ describe('acceptance-first POS synchronization', () => {
 
   it('rejects a final response that moves the cursor backwards', async () => {
     const local: any = {
-      sync_get_status: async () => ({ ...status, sync_cursor: '5' }),
+      sync_get_status: async () => ({ ...status, sync_cursor: '5:0' }),
       sync_set_status: async () => ({ ok: true }),
       sync_get_outbox: async () => [],
       sync_apply_pull: async () => {
@@ -289,9 +297,11 @@ describe('acceptance-first POS synchronization', () => {
       compatibility,
       heartbeat: async () => ({}),
       pull: async () => ({
+        catalog_version: 3,
+        mode: 'delta',
         products: [],
         stock: [],
-        cursor: '4',
+        cursor: '4:0',
         has_more: false,
       }),
     }

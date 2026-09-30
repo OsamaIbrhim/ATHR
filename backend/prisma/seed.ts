@@ -1,7 +1,13 @@
-import { PrismaClient } from '@prisma/client';
+import { MembershipRole, PrismaClient } from '@prisma/client';
 import * as bcryptjs from 'bcryptjs';
+import { ensureActiveSubscription, seedPlans } from './seed/plans';
+import { InventoryRepository } from '../src/inventory/inventory.repository';
+import { InventoryService } from '../src/inventory/inventory.service';
+import { applyPreset } from '../src/catalog/presets';
 
 const prisma = new PrismaClient();
+// The seed writes stock through the same single writer as the application.
+const inventory = new InventoryService(new InventoryRepository(prisma as any));
 let randomState = 0x1a2b3c4d;
 
 function deterministicRandom() {
@@ -32,6 +38,7 @@ async function main() {
   await prisma.offerSuggestion.deleteMany();
   await prisma.productVariant.deleteMany();
   await prisma.product.deleteMany();
+  await prisma.productType.deleteMany();
   // After Product/ProductVariant (both hold onDelete: Restrict FKs to
   // TaxCategory) and before Customer (TaxExemption restricts on it).
   await prisma.taxExemption.deleteMany();
@@ -47,6 +54,7 @@ async function main() {
   await prisma.membership.deleteMany();
   await prisma.user.deleteMany();
   await prisma.category.deleteMany();
+  await prisma.warehouse.deleteMany();
   await prisma.branch.deleteMany();
 
   // WP-007 Phase A: every seeded row belongs to a Tenant, and every seeded
@@ -58,43 +66,24 @@ async function main() {
     (await prisma.tenant.create({ data: { name: 'Initial ATHR Demo Tenant' } }));
   const tenant_id = tenant.id;
 
+  // Plans are data; the demo tenant runs on an active Business subscription.
+  await seedPlans(prisma);
+  await ensureActiveSubscription(prisma, tenant_id, 'business');
+
   const password_hash = await bcryptjs.hash('Bold1234', 10);
 
-  // WP-009 Phase A: BranchesRepository.save() never creates a matching
-  // Location/Warehouse (tracked as a follow-up, not fixed by Phase A), so a
-  // freshly seeded Branch is exactly as warehouse-less as one created
-  // through the live app. Give every seeded Branch its own Location +
-  // default Warehouse here so InventoryStock/InventoryMovement/
-  // InventoryCostMovement rows below never need a NULL warehouse_id — that
-  // column is nullable only until PR2's cutover, and a seed script that
-  // relies on nullability breaks the moment it stops being true.
-  const primaryLegalEntity =
-    (await prisma.legalEntity.findFirst({ where: { tenant_id, is_primary: true } })) ??
-    (await prisma.legalEntity.create({ data: { tenant_id, legal_name: tenant.name, is_primary: true } }));
+  // The tenant's primary legal entity (tax / commercial-register identity).
+  if (!(await prisma.legalEntity.findFirst({ where: { tenant_id, is_primary: true } }))) {
+    await prisma.legalEntity.create({ data: { tenant_id, legal_name: tenant.name, is_primary: true } });
+  }
 
+  // A branch always comes with its default warehouse, which holds its stock.
   async function createBranchWithWarehouse(data: {
     code: string; name_ar: string; name_en: string; address?: string; phone?: string; cash_drawer_enabled: boolean;
   }) {
     const branch = await prisma.branch.create({ data: { tenant_id, ...data } });
-    const location = await prisma.location.create({
-      data: {
-        id: branch.id,
-        tenantId: tenant_id,
-        legal_entity_id: primaryLegalEntity.id,
-        code: branch.code,
-        name_ar: branch.name_ar,
-        name_en: branch.name_en,
-        address: branch.address,
-        phone: branch.phone,
-      },
-    });
     const warehouse = await prisma.warehouse.create({
-      data: {
-        tenant_id,
-        location_id: location.id,
-        name: `${branch.name_ar} — Default Warehouse`,
-        is_default: true,
-      },
+      data: { tenant_id, branch_id: branch.id, name: `${branch.name_ar} — Default Warehouse`, is_default: true },
     });
     return { branch, warehouse };
   }
@@ -103,32 +92,51 @@ async function main() {
   const { branch: b1, warehouse: w1 } = await createBranchWithWarehouse({ code: 'BOLD-01', name_ar: 'بولد – الفرع الرئيسي', name_en: 'Bold Main', address: 'طنطا', phone: '0400000000', cash_drawer_enabled: false });
   const { branch: b2, warehouse: w2 } = await createBranchWithWarehouse({ code: 'BOLD-02', name_ar: 'بولد – القاهرة الجديدة', name_en: 'Bold New Cairo', cash_drawer_enabled: true });
 
-  // Users
-  const owner = await prisma.user.create({ data: { name: 'Owner – أسامة', phone: '+200100000000', email: 'owner@bold.eg', password_hash, role: 'owner', branch_id: b1.id }});
-  const manager = await prisma.user.create({ data: { name: 'مدير فرع', phone: '+200100000001', email: 'manager@bold.eg', password_hash, role: 'branch_manager', branch_id: b1.id }});
-  const cashier = await prisma.user.create({ data: { name: 'كاشير', phone: '+200100000002', email: 'cashier@bold.eg', password_hash, role: 'cashier', branch_id: b1.id }});
-  const warehouse = await prisma.user.create({ data: { name: 'أمين مخزن', phone: '+200100000003', email: 'warehouse@bold.eg', password_hash, role: 'warehouse_manager', branch_id: b1.id }});
-  const seller = await prisma.user.create({ data: { name: 'بائع', phone: '+200100000004', email: 'seller@bold.eg', password_hash, role: 'seller', branch_id: b1.id }});
-
-  // WP-007 Phase A: one Membership per seeded identity, mapping the legacy
-  // Role enum exactly as migration 202608020003 does.
-  const membershipRoleFor = {
-    owner: 'tenant_owner',
-    branch_manager: 'location_manager',
-    cashier: 'cashier',
-    warehouse_manager: 'warehouse_manager',
-    seller: 'seller',
-  } as const;
-  for (const identity of [owner, manager, cashier, warehouse, seller]) {
-    await prisma.membership.create({
+  // Staff: a global User plus a Membership carrying the role and access scope.
+  // `all` = tenant-wide scope (owner, warehouse manager); otherwise the branch.
+  async function createStaff(
+    data: { name: string; phone: string; email: string },
+    role: MembershipRole,
+    scope: 'all' | { branch_id: string },
+  ) {
+    return prisma.user.create({
       data: {
-        tenantId: tenant_id,
-        identityId: identity.id,
-        role: membershipRoleFor[identity.role],
-        status: 'active',
+        ...data,
+        password_hash,
+        memberships: {
+          create: {
+            tenant_id,
+            role,
+            status: 'active',
+            access_scope_assignments: {
+              create: {
+                scope_type: scope === 'all' ? 'tenant_wide' : 'location',
+                scope_ref_id: scope === 'all' ? null : scope.branch_id,
+                grant_source: 'seed',
+              },
+            },
+          },
+        },
       },
     });
   }
+
+  const owner = await createStaff({ name: 'Owner – أسامة', phone: '+200100000000', email: 'owner@bold.eg' }, 'tenant_owner', 'all');
+  const manager = await createStaff({ name: 'مدير فرع', phone: '+200100000001', email: 'manager@bold.eg' }, 'location_manager', { branch_id: b1.id });
+  const cashier = await createStaff({ name: 'كاشير', phone: '+200100000002', email: 'cashier@bold.eg' }, 'cashier', { branch_id: b1.id });
+  const warehouse = await createStaff({ name: 'أمين مخزن', phone: '+200100000003', email: 'warehouse@bold.eg' }, 'warehouse_manager', 'all');
+  const seller = await createStaff({ name: 'بائع', phone: '+200100000004', email: 'seller@bold.eg' }, 'seller', { branch_id: b1.id });
+
+  // Platform console operator (ADR-0006): no Membership, so no tenant data access.
+  await prisma.user.create({
+    data: {
+      name: 'Platform Admin',
+      phone: '+200100000099',
+      email: 'platform@athr.local',
+      password_hash,
+      is_platform_admin: true,
+    },
+  });
 
   // Suppliers
   const s1 = await prisma.supplier.create({ data: { tenant_id, name: 'محمد', company_name: 'Mohamed Fabrics Co.', phone: '01222222222', alias_names: ['Mohamed Fabrics Co.', 'Mohamed Trading'] }});
@@ -172,7 +180,7 @@ async function main() {
     },
   });
 
-  // Products + Variants – 12 products, 28 variants
+  // Products + Variants – 12 clothing products (28 variants) + 3 simple products
   const productsData = [
     { name_en: 'Classic T-Shirt', brand: 'Bold', category_id: cat_t.id, variants: [
       { sku: 'BOLD-TS-001-S-BLK', size: 'S', color: 'Black', cost: 85, ean: '6223001000011' },
@@ -231,6 +239,14 @@ async function main() {
     ]},
   ];
 
+  // Trade presets are data: the demo tenant is a clothing shop that also sells
+  // a few groceries, so it gets both presets (product types, units, scale settings).
+  await applyPreset(prisma as any, tenant_id, 'clothing');
+  await applyPreset(prisma as any, tenant_id, 'grocery');
+  const clothingType = await prisma.productType.findFirstOrThrow({ where: { tenant_id, name_en: 'Clothing' } });
+  const uom = async (code: string) => prisma.unitOfMeasure.findFirstOrThrow({ where: { tenant_id, code } });
+  const [piece, kilogram] = [await uom('pcs'), await uom('kg')];
+
   const allVariants: any[] = [];
   for (const p of productsData) {
     const prod = await prisma.product.create({
@@ -239,17 +255,18 @@ async function main() {
         name_en: p.name_en,
         brand: p.brand,
         category_id: p.category_id,
+        product_type_id: clothingType.id,
         tax_category_id: taxCategory.id,
         has_variants: true,
         variants: {
           create: p.variants.map(v => ({
             sku: v.sku,
-            barcode_ean13: v.ean,
-            barcode_internal: v.sku,
-            size: v.size,
-            color: v.color,
+            attributes: { size: v.size, color: v.color },
+            label: `${v.size} · ${v.color}`,
+            base_uom_id: piece.id,
             cost_price: v.cost,
             return_count: 0,
+            barcodes: { create: [{ code: v.ean }, { code: v.sku }] },
           }))
         }
       },
@@ -258,13 +275,65 @@ async function main() {
     allVariants.push(...prod.variants.map(v => ({ ...v, product_name: p.name_en, brand: p.brand, category_id: p.category_id })));
   }
 
-  // Inventory
-  for (const [variantIndex, v] of allVariants.entries()) {
-    const primaryQuantity =
-      variantIndex === 0 ? 250 : Math.floor(deterministicRandom()*20)+2;
-    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b1.id, warehouse_id: w1.id, variant_id: v.id, qty_on_hand: primaryQuantity, last_sold_at: deterministicRandom() > 0.3 ? new Date(Date.now() - deterministicRandom()*60*86400000) : null }});
-    await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b2.id, warehouse_id: w2.id, variant_id: v.id, qty_on_hand: Math.floor(deterministicRandom()*12), last_sold_at: deterministicRandom() > 0.5 ? new Date(Date.now() - deterministicRandom()*90*86400000) : null }});
+  // Simple (typeless) products of other trades: a pack barcode (6 x water), a
+  // plain electronics item, and a weighed item (kg, 3 decimals) sold by scale label.
+  const simpleProducts = [
+    { name_en: 'Mineral Water 600ml', name_ar: 'مياه معدنية', brand: 'Aqua', sku: 'AQ-W600', cost: 4, uom: piece,
+      barcodes: [{ code: '6223002000011' }, { code: '6223002000066', pack_qty: 6 }] },
+    { name_en: 'USB-C Charger', name_ar: 'شاحن USB-C', brand: 'Volt', sku: 'VT-CH-20W', cost: 120, uom: piece,
+      barcodes: [{ code: '6223003000019' }] },
+    { name_en: 'Tomatoes', name_ar: 'طماطم', brand: undefined, sku: 'FR-TOM-KG', cost: 12, uom: kilogram,
+      barcodes: [{ code: '2000001', kind: 'scale_plu' as const }] },
+  ];
+  for (const p of simpleProducts) {
+    const prod = await prisma.product.create({
+      data: {
+        tenant_id,
+        name_en: p.name_en,
+        name_ar: p.name_ar,
+        brand: p.brand,
+        tax_category_id: taxCategory.id,
+        has_variants: false,
+        variants: {
+          create: [{
+            sku: p.sku,
+            base_uom_id: p.uom.id,
+            cost_price: p.cost,
+            barcodes: { create: p.barcodes },
+          }],
+        },
+      },
+      include: { variants: true },
+    });
+    allVariants.push(...prod.variants.map(v => ({ ...v, product_name: p.name_en, brand: p.brand, category_id: null })));
   }
+
+  // Opening stock: one inventory command per warehouse (opening ledger rows,
+  // the warehouse average cost and the variant cost all come from the engine).
+  const openingLines = (quantityOf: (index: number) => number) =>
+    allVariants
+      .map((v, index) => ({ variantId: v.id, qtyDelta: quantityOf(index), unitCost: v.cost_price }))
+      .filter((line) => line.qtyDelta > 0);
+  const openingQuantities = [
+    { warehouse: w1, lines: openingLines((index) => (index === 0 ? 250 : Math.floor(deterministicRandom() * 20) + 2)) },
+    { warehouse: w2, lines: openingLines(() => Math.floor(deterministicRandom() * 12)) },
+  ];
+  await prisma.$transaction(async (tx) => {
+    for (const { warehouse, lines } of openingQuantities) {
+      await inventory.apply(tx, {
+        tenantId: tenant_id,
+        warehouseId: warehouse.id,
+        occurredAt: new Date(),
+        type: 'opening_balance',
+        costType: 'opening_balance',
+        reference: { type: 'InventorySeed', id: warehouse.id },
+        idempotencyKey: `seed-opening:${warehouse.id}`,
+        allowNegative: true,
+        metadata: { source: 'development-seed' },
+        lines,
+      });
+    }
+  });
 
   // Pricing rules -- WP-008 Phase B: deprecated, PricingService no longer
   // reads this table. Kept only because seeded data is never destructively

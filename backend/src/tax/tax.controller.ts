@@ -1,6 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
-import { RequireCapabilities } from '../auth/roles.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -34,7 +33,6 @@ type AuthedRequest = Request & { user: AuthenticatedUser };
  * additionally granted to no role by default (BR-TAX-206).
  */
 @Controller('tax')
-@RequireCapabilities('products.read')
 export class TaxController {
   constructor(
     private readonly codes: TaxCodeService,

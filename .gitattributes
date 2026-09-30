@@ -1,0 +1,6 @@
+# LF everywhere: tests compare source text, and Windows checkouts must match CI.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.jpg binary
+*.node binary

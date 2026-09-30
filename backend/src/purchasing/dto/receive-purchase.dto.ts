@@ -2,31 +2,50 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
+  IsArray,
   IsDateString,
-  IsInt,
   IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsQuantity } from '../../common/quantity';
 
 export class ReceivePurchaseItemDto {
   @IsUUID()
   variant_id: string;
 
-  @IsInt()
-  @Min(1)
-  @Max(2147483647)
+  @IsQuantity()
   qty: number;
 
-  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0)
-  @Max(9999999999.99)
+  @Max(999999999.9999)
   unit_cost: number;
+
+  /** Serial-tracked variants: one serial per unit received (`qty` of them). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10000)
+  @IsString({ each: true })
+  @MaxLength(191, { each: true })
+  serials?: string[];
+
+  /** Batch-tracked variants: the batch this line's `qty` belongs to (repeat the variant for more batches). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  batch_no?: string;
+
+  /** Expiry of that batch, YYYY-MM-DD; an existing batch keeps the expiry it has. */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'expiry_date must be YYYY-MM-DD' })
+  expiry_date?: string;
 }
 
 export class ReceivePurchaseDto {
@@ -91,10 +110,22 @@ export class CreateSupplierReturnItemDto {
   @IsUUID()
   purchase_invoice_item_id: string;
 
-  @IsInt()
-  @Min(1)
-  @Max(2147483647)
+  @IsQuantity()
   qty: number;
+
+  /** Serial-tracked variants: the serial of each unit returned. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10000)
+  @IsString({ each: true })
+  @MaxLength(191, { each: true })
+  serials?: string[];
+
+  /** Batch-tracked variants: the batch the units are taken from. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  batch_no?: string;
 }
 
 export class CreateSupplierReturnDto {

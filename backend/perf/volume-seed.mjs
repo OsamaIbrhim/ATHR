@@ -1,7 +1,8 @@
 import { PrismaClient } from '@prisma/client'
 import { createHash } from 'node:crypto'
-import { ensureSeededInventoryLedger } from '../prisma/ensure-seeded-inventory-ledger.mjs'
-import { ensureSeededCostLedger } from '../prisma/ensure-seeded-cost-ledger.mjs'
+// Stock is written through the application's single writer (needs `npm run build`).
+import { InventoryService } from '../dist/src/inventory/inventory.service.js'
+import { InventoryRepository } from '../dist/src/inventory/inventory.repository.js'
 
 const databaseUrl = process.env.DATABASE_URL || ''
 if (!databaseUrl.includes('athr_perf') && process.env.PERF_ALLOW_VOLUME_SEED !== '1') {
@@ -9,6 +10,7 @@ if (!databaseUrl.includes('athr_perf') && process.env.PERF_ALLOW_VOLUME_SEED !==
 }
 
 const prisma = new PrismaClient()
+const inventory = new InventoryService(new InventoryRepository(prisma))
 function positiveInteger(name, fallback) {
   const value = Number(process.env[name] || fallback)
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`)
@@ -36,11 +38,8 @@ const taxCategory = await prisma.taxCategory.findFirst({
   where: { tenant_id: branch?.tenant_id, code: 'STANDARD' },
 })
 if (!branch || !category || !taxCategory) throw new Error('Run the normal development seed before volume-seed.mjs')
-// WP-009 Phase A: InventoryStock.warehouse_id is nullable only until PR2's
-// primary-key swap makes it NOT NULL -- resolve the branch's default
-// Warehouse now (the normal development seed gives every branch one) rather
-// than let this script start failing the moment that constraint lands.
-const warehouse = await prisma.warehouse.findFirst({ where: { tenant_id: branch.tenant_id, location_id: branch.id, is_default: true } })
+// The branch's default warehouse holds the stock (the development seed creates one per branch).
+const warehouse = await prisma.warehouse.findFirst({ where: { tenant_id: branch.tenant_id, branch_id: branch.id, is_default: true } })
 if (!warehouse) throw new Error(`Branch ${branch.id} has no default Warehouse -- run the normal development seed before volume-seed.mjs`)
 
 const variantIds = []
@@ -60,7 +59,7 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
   const variants = products.map((product) => {
     const index = Number(product.name_en.slice('Performance product '.length))
     const id = stableUuid('variant', index)
-    return { id, tenant_id: branch.tenant_id, product_id: product.id, sku: `PERF-${String(index).padStart(8, '0')}`, barcode_internal: `PERF-${index}`, cost_price: 100 + (index % 200) }
+    return { id, tenant_id: branch.tenant_id, product_id: product.id, sku: `PERF-${String(index).padStart(8, '0')}`, cost_price: 100 + (index % 200) }
   })
   const newVariantBySku = new Map(variants.map((variant) => [variant.sku, variant.id]))
   const batchVariantIds = skus.map((sku) => existingBySku.get(sku) || newVariantBySku.get(sku))
@@ -69,8 +68,20 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
   await prisma.$transaction([
     prisma.product.createMany({ data: products, skipDuplicates: true }),
     prisma.productVariant.createMany({ data: variants, skipDuplicates: true }),
-    prisma.inventoryStock.createMany({ data: batchVariantIds.map((variantId) => ({ tenant_id: branch.tenant_id, branch_id: branch.id, warehouse_id: warehouse.id, variant_id: variantId, qty_on_hand: 100_000 })), skipDuplicates: true }),
   ])
+  // One opening command per batch: stock, its ledger rows and the warehouse cost together.
+  await prisma.$transaction((tx) => inventory.apply(tx, {
+    tenantId: branch.tenant_id,
+    warehouseId: warehouse.id,
+    occurredAt: new Date(),
+    type: 'opening_balance',
+    costType: 'opening_balance',
+    reference: { type: 'InventorySeed', id: warehouse.id },
+    idempotencyKey: `volume-seed:${warehouse.id}:${offset}`,
+    allowNegative: true,
+    metadata: { source: 'volume-seed' },
+    lines: batchVariantIds.map((variantId, local) => ({ variantId, qtyDelta: 100_000, unitCost: 100 + ((offset + local) % 200) })),
+  }), { timeout: 120_000 })
   process.stdout.write(`\rproducts ${Math.min(offset + size, productCount)}/${productCount}`)
 }
 process.stdout.write('\n')
@@ -119,11 +130,6 @@ if (defaultPriceBook) {
     'volume-seed: no active default PriceBook found for the tenant; PERF-* variants remain unpriced.\n',
   )
 }
-
-// InventoryStock is a materialized balance. Every newly seeded non-zero row must
-// receive an opening movement before historical invoice fixtures are inserted.
-await ensureSeededInventoryLedger(prisma, 'volume-seed')
-await ensureSeededCostLedger(prisma, 'volume-seed')
 
 for (let offset = 0; offset < invoiceCount; offset += batchSize) {
   const size = Math.min(batchSize, invoiceCount - offset)

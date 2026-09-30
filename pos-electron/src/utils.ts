@@ -5,6 +5,7 @@ import {
   lineCents,
   toCents,
 } from '../electron/money'
+import { sumQuantities } from '../electron/quantity'
 
 export { fromCents, lineCents, toCents }
 
@@ -24,7 +25,8 @@ export function cartTotals(items: CartItem[]) {
     subtotal: fromCents(subtotalCents),
     tax: fromCents(taxCents),
     total: fromCents(subtotalCents + taxCents),
-    quantity: items.reduce((sum, item) => sum + item.qty, 0),
+    quantity: sumQuantities(items.map((item) => item.qty)),
+    lines: items.length,
   }
 }
 

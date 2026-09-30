@@ -5,7 +5,7 @@ export default function SuppliersPage(){
   const [rows,setRows]=useState<any[]>([])
   const [q,setQ]=useState('')
   const [name,setName]=useState(''), [company,setCompany]=useState(''), [phone,setPhone]=useState('')
-  const load = async()=>{ const r = await apiGet(`/suppliers${q?`?q=${encodeURIComponent(q)}`:''}`); setRows(Array.isArray(r)?r:[]) }
+  const load = async()=>{ const r = await apiGet(`/suppliers?page=1&page_size=100${q?`&q=${encodeURIComponent(q)}`:''}`); setRows(r?.items||[]) }
   useEffect(()=>{ load() },[])
   const create = async()=>{ await apiPost('/suppliers', { name, company_name: company, phone, alias_names: [] }); setName(''); setCompany(''); setPhone(''); load() }
   const del = async(id:string)=>{ if(!confirm('حذف المورد؟'))return; try{ await apiDelete(`/suppliers/${id}`); load() }catch(e:any){ alert('فشل: '+e.message)}}

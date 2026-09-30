@@ -14,5 +14,5 @@
     "types": ["node"]
   },
   "include": ["electron"],
-  "exclude": ["electron/**/*.test.ts", "electron/**/*.spec.ts"]
+  "exclude": ["electron/**/*.test.ts", "electron/**/*.spec.ts", "electron/**/test-support.ts"]
 }

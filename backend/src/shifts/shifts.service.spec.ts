@@ -1,3 +1,4 @@
+import { actorFor } from '../auth/testing/actors';
 import { ShiftsService } from './shifts.service';
 import { ShiftsRepository } from './shifts.repository';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
@@ -9,11 +10,7 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 // with the tenant predicate added to the expected aggregate filters.
 const ctx = contextFor(TENANT_A);
 
-const actor = {
-  sub: 'cashier-1',
-  role: 'cashier' as const,
-  branch_id: 'branch-1',
-};
+const actor = actorFor('cashier', { sub: 'cashier-1', branchId: 'branch-1' });
 const shiftId = '11111111-1111-4111-8111-111111111111';
 
 function serviceOver(prisma: any) {

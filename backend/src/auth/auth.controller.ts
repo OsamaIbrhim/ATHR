@@ -6,16 +6,17 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { AuthenticatedUser } from './authenticated-user';
 import { AthrExceptionFilter } from '../common/http/athr-exception.filter';
+import { AllowInAnyAccessMode } from '../entitlements/entitlement.decorators';
 import { Envelope } from '../common/http/response-envelope.interceptor';
 @Controller('auth')
 export class AuthController {
   constructor(private auth: AuthService) {}
   @Public()
   @Post('login')
-  login(@Body() dto: LoginDto) { return this.auth.login(dto.phone, dto.password); }
+  login(@Body() dto: LoginDto) { return this.auth.login(dto.phone, dto.password, dto.tenant_id); }
   @Public()
   @Post('refresh')
-  refresh(@Body() dto: RefreshTokenDto) { return this.auth.refresh(dto.refresh_token); }
+  refresh(@Body() dto: RefreshTokenDto) { return this.auth.refresh(dto.refresh_token, dto.tenant_id); }
   // WP-003 proof-of-concept command endpoint — already idempotent (revoking an
   // already-revoked/absent token is a no-op success), so it is low-risk to be
   // the first migrated command. See
@@ -28,6 +29,8 @@ export class AuthController {
   @Post('logout')
   logout(@Body() dto: RefreshTokenDto) { return this.auth.logout(dto.refresh_token); }
 
+  // Session info must keep working when the subscription has lapsed.
+  @AllowInAnyAccessMode()
   @Get('me')
-  me(@Req() req: Request & { user: AuthenticatedUser }) { return this.auth.me(req.user.sub); }
+  me(@Req() req: Request & { user: AuthenticatedUser }) { return this.auth.me(req.user); }
 }

@@ -1,3 +1,4 @@
+import { POS_APP_NAME } from './brand'
 import { app, clipboard, dialog, ipcMain } from 'electron'
 import * as fs from 'fs'
 import * as os from 'os'
@@ -125,7 +126,7 @@ function snapshot(
     schema_version: 2,
     generated_at: new Date().toISOString(),
     application: {
-      name: 'ATHR POS',
+      name: POS_APP_NAME,
       version: app.getVersion(),
       protocol_version: dependencies.protocolVersion,
       api_base: safeApiBase(dependencies.apiBase()),
@@ -234,7 +235,7 @@ export function registerDiagnosticsIpc(
         snapshot(dependencies, rendererState),
       )
       const result = await dialog.showSaveDialog({
-        title: 'تصدير تشخيص ATHR POS',
+        title: `تصدير تشخيص ${POS_APP_NAME}`,
         defaultPath: path.join(
           app.getPath('documents'),
           diagnosticFilename(),

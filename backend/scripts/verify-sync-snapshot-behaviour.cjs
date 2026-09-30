@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // fix/hard-load-stack-depth -- database-level proof for the POS catalog
 // snapshot's query shape at realistic catalog volume. Wired into
-// migration-gate, same convention as verify-tax-code-behaviour.cjs and
+// `npm run test:db`, same convention as verify-tax-code-behaviour.cjs and
 // verify-price-book-behaviour.cjs: a green fakePrisma spec proves nothing
 // about real Postgres execution, and this is exactly that kind of bug.
 //
@@ -24,7 +24,7 @@
 // (a hand-copied reimplementation of the batching loop) but never called
 // SyncService itself -- a revert of the actual fix, or a bad edit to
 // PRODUCT_BATCH_SIZE, or a broken merge would have sailed through
-// migration-gate. This version constructs SyncService directly against a
+// `npm run test:db`. This version constructs SyncService directly against a
 // real PrismaClient -- the pattern already used in
 // `sync.cross-tenant.spec.ts` -- and asserts on the actual output of
 // `.pull()` (which, with no cursor, calls the private `snapshot()`). It
@@ -51,17 +51,21 @@ const { PrismaClient, Prisma } = require('@prisma/client');
 const distSync = path.join(__dirname, '..', 'dist', 'src', 'sync', 'sync.service.js');
 const distPricing = path.join(__dirname, '..', 'dist', 'src', 'pricing', 'pricing.service.js');
 const distTax = path.join(__dirname, '..', 'dist', 'src', 'tax', 'tax-resolution.service.js');
+const distInventoryService = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.service.js');
+const distInventoryRepository = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.repository.js');
 
-let SyncService, PRODUCT_BATCH_SIZE, PricingService, TaxResolutionService;
+let SyncService, PRODUCT_BATCH_SIZE, SNAPSHOT_PAGE_SIZE, PricingService, TaxResolutionService, InventoryService, InventoryRepository;
 try {
-  ({ SyncService, PRODUCT_BATCH_SIZE } = require(distSync));
+  ({ SyncService, PRODUCT_BATCH_SIZE, SNAPSHOT_PAGE_SIZE } = require(distSync));
   ({ PricingService } = require(distPricing));
   ({ TaxResolutionService } = require(distTax));
+  ({ InventoryService } = require(distInventoryService));
+  ({ InventoryRepository } = require(distInventoryRepository));
 } catch (error) {
   console.error(
     `Could not load compiled SyncService from ${distSync}. This script asserts on the ` +
       `actual shipped code, so it requires \`npm run build\` to have run first (see ` +
-      `migration-gate in ci.yml). Original error: ${error?.message ?? error}`,
+      `\`npm run test:db\`). Original error: ${error?.message ?? error}`,
   );
   process.exit(1);
 }
@@ -91,6 +95,10 @@ async function seedCatalog() {
   });
   const branch = await prisma.branch.create({
     data: { tenant_id: tenant.id, code: `SNAP-${randomUUID().slice(0, 8)}`, name_ar: 'فرع الفحص' },
+  });
+  // The POS syncs the stock of the branch's default warehouse.
+  await prisma.warehouse.create({
+    data: { tenant_id: tenant.id, branch_id: branch.id, name: 'Default', is_default: true },
   });
   const category = await prisma.taxCategory.create({
     data: { tenant_id: tenant.id, code: 'STANDARD', name_en: 'Standard', updated_at: new Date() },
@@ -202,28 +210,40 @@ async function verifyRawIncludeStillFails(tenant) {
 async function verifyRealSyncServiceSucceeds(tenant, branch) {
   const tax = new TaxResolutionService(prisma);
   const pricing = new PricingService(prisma, tax);
-  const service = new SyncService(prisma, pricing, tax);
+  const service = new SyncService(prisma, pricing, tax, new InventoryService(new InventoryRepository(prisma)));
   const context = { tenantId: tenant.id };
 
-  let result;
+  // The snapshot is paged (keyset on variant id): walk every page like the POS does.
+  const productIds = [];
+  let pages = 0;
+  let query = {};
+  let firstCursor;
   try {
-    // No cursor -> pull() calls the private snapshot(), the code path that
-    // crashed. This is SyncService.pull as shipped, not a reimplementation.
-    result = await service.pull(context, branch.id);
+    for (;;) {
+      const page = await service.pull(context, branch.id, query);
+      pages += 1;
+      firstCursor ??= page.cursor;
+      if (page.cursor !== firstCursor) throw new Error('snapshot cursor changed between pages');
+      productIds.push(...page.products.map((product) => product.id));
+      if (!page.has_more) break;
+      query = { snapshot_after: page.snapshot_after, snapshot_cursor: page.cursor };
+    }
   } catch (error) {
     record(
-      'S2 SyncService.pull() (the real shipped code) succeeds at 10,500 rows',
+      'S2 SyncService.pull() (the real shipped code) pages through 10,500 rows',
       false,
       `threw: ${String(error?.message ?? error).slice(0, 300)}`,
     );
     return;
   }
-  record('S2 SyncService.pull() (the real shipped code) succeeds at 10,500 rows', true);
+  record('S2 SyncService.pull() (the real shipped code) pages through 10,500 rows', true);
   expectEqual(
-    "S2 every seeded, fully-priced variant is present in the real snapshot's products",
-    result.products.length,
+    'S2 every seeded, fully-priced variant arrives exactly once across the pages',
+    new Set(productIds).size,
     VARIANT_COUNT,
   );
+  expectEqual('S2 no variant is sent twice', productIds.length, VARIANT_COUNT);
+  expectEqual('S2 the catalog is split into pages of SNAPSHOT_PAGE_SIZE', pages, Math.ceil(VARIANT_COUNT / SNAPSHOT_PAGE_SIZE));
 }
 
 async function main() {

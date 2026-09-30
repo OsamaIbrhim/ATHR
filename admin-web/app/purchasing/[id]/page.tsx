@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
-import { apiGet, apiPost, getStoredUser } from '@/lib/api'
-import { hasCapability } from '@/lib/permissions'
+import { apiGet, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
+import { hasPermission } from '@/lib/permissions'
 
 export default function PurchaseDetail() {
   const { id } = useParams<{ id: string }>()
-  const canManage = hasCapability(getStoredUser(), 'purchasing.manage')
+  const canManage = hasPermission(useSessionUser(), 'purchasing.goods-receipt.post')
   const [invoice, setInvoice] = useState<any|null>(null)
   const [returnQty, setReturnQty] = useState<Record<string,string>>({})
   const [returnReason, setReturnReason] = useState('')
@@ -66,7 +67,7 @@ export default function PurchaseDetail() {
     {error&&<div className="card border border-red-200 bg-red-50 text-red-800" role="alert">{error}</div>}
     <div className="card grid grid-cols-2 md:grid-cols-4 gap-3"><div>المورد<br/><b>{invoice.supplier?.name}</b></div><div>الفرع<br/><b>{invoice.branch?.name_ar}</b></div><div>تاريخ الفاتورة<br/><b>{invoice.invoice_date?new Date(invoice.invoice_date).toLocaleDateString('ar-EG'):'—'}</b></div><div>وقت الاستلام<br/><b>{new Date(invoice.received_at).toLocaleString('ar-EG')}</b></div><div>الإجمالي الفرعي<br/><b>{Number(invoice.subtotal).toFixed(2)}</b></div><div>الخصم<br/><b>{Number(invoice.discount_amount).toFixed(2)}</b></div><div>الإجمالي<br/><b>{Number(invoice.total).toFixed(2)}</b></div><div>سجلها<br/><b>{invoice.creator?.name||'—'}</b></div></div>
 
-    <div className="card overflow-auto"><h2 className="font-bold mb-2">أصناف الفاتورة</h2><table><thead><tr><th>SKU</th><th>الصنف</th><th>الكمية</th><th>تكلفة الوحدة</th><th>خصم موزع</th><th>الصافي</th>{canManage&&invoice.status==='posted'&&<th>إرجاع للمورد</th>}</tr></thead><tbody>{invoice.items.map((item:any)=>{const already=returnedByItem.get(item.id)||0;const available=item.qty-already;return <tr key={item.id}><td>{item.variant?.sku}</td><td>{item.variant?.product?.name_ar||item.variant?.product?.name_en}</td><td>{item.qty}</td><td>{Number(item.unit_cost).toFixed(2)}</td><td>{Number(item.allocated_discount||0).toFixed(2)}</td><td>{Number(item.net_line_total||0).toFixed(2)}</td>{canManage&&invoice.status==='posted'&&<td><input className="input w-24" type="number" min="0" max={available} step="1" value={returnQty[item.id]||''} placeholder={`متاح ${available}`} onChange={event=>setReturnQty(current=>({...current,[item.id]:event.target.value}))}/></td>}</tr>})}</tbody></table></div>
+    <div className="card overflow-auto"><h2 className="font-bold mb-2">أصناف الفاتورة</h2><table><thead><tr><th>SKU</th><th>الصنف</th><th>الكمية</th><th>تكلفة الوحدة</th><th>خصم موزع</th><th>الصافي</th>{canManage&&invoice.status==='posted'&&<th>إرجاع للمورد</th>}</tr></thead><tbody>{invoice.items.map((item:any)=>{const already=returnedByItem.get(item.id)||0;const available=item.qty-already;return <tr key={item.id}><td>{item.variant?.sku}</td><td>{item.variant?.product?.name_ar||item.variant?.product?.name_en} {item.variant?.label||''}</td><td>{item.qty}</td><td>{Number(item.unit_cost).toFixed(2)}</td><td>{Number(item.allocated_discount||0).toFixed(2)}</td><td>{Number(item.net_line_total||0).toFixed(2)}</td>{canManage&&invoice.status==='posted'&&<td><input className="input w-24" type="number" min="0" max={available} step="1" value={returnQty[item.id]||''} placeholder={`متاح ${available}`} onChange={event=>setReturnQty(current=>({...current,[item.id]:event.target.value}))}/></td>}</tr>})}</tbody></table></div>
 
     {canManage&&invoice.status==='posted'&&<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div className="card"><h2 className="font-bold mb-2">مرتجع مورد</h2><textarea className="input min-h-24" placeholder="سبب المرتجع" value={returnReason} onChange={event=>setReturnReason(event.target.value)}/><button className="btn-accent mt-2" disabled={saving||!returnReason.trim()||selectedReturnCount===0} onClick={supplierReturn}>ترحيل المرتجع المحدد</button></div>

@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('athr', {
-  search: (q: string) => ipcRenderer.invoke('pos:search', q),
+  scan: (term: string) => ipcRenderer.invoke('pos:scan', term),
   stock: (variant_id: string) => ipcRenderer.invoke('pos:stock', variant_id),
   sellers: () => ipcRenderer.invoke('pos:list_sellers'),
   sale: (sale: any) => ipcRenderer.invoke('pos:sale', sale),

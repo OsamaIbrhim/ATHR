@@ -1,8 +1,10 @@
+import { FIRST_PAGE, pageArgs, pageOf, type PageQuery } from '../common/pagination';
 import {
   BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma, Transfer } from '@prisma/client';
 import { randomUUID } from 'crypto';
@@ -15,12 +17,18 @@ import {
   TransferCommandDto,
 } from './dto/transfer.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
-import { assertBranchAccess } from '../auth/branch-access';
+import { assertBranchAccess, canAccessAllBranches, hasBranchAccess } from '../auth/branch-access';
 import {
   commandFingerprint,
   resolveCommandId,
   TransferCommandType,
 } from './transfer-command';
+import { InventoryService } from '../inventory/inventory.service';
+import {
+  assertQuantityPrecision,
+  quantity,
+  variantQuantityPrecision,
+} from '../common/quantity';
 
 type TransferCommandRow = {
   command_fingerprint: string;
@@ -29,6 +37,7 @@ type TransferCommandRow = {
 
 type TransferStateRow = {
   status: string;
+  transfer_number: string;
   from_branch_id: string;
   to_branch_id: string;
   command_fingerprint: string | null;
@@ -37,29 +46,67 @@ type TransferStateRow = {
 type TransferItemState = {
   id: string;
   variant_id: string;
-  qty: number;
-  shipped_qty: number;
-  received_qty: number;
-  damaged_qty: number;
-  missing_qty: number;
+  qty: Prisma.Decimal;
+  shipped_qty: Prisma.Decimal;
+  received_qty: Prisma.Decimal;
+  damaged_qty: Prisma.Decimal;
+  missing_qty: Prisma.Decimal;
+  unit_cost: Prisma.Decimal | null;
 };
+
+/** One row of the append-only in-transit ledger. */
+type TransitRow = {
+  itemId: string;
+  variantId: string;
+  type: 'shipped' | 'received' | 'damaged' | 'missing';
+  delta: Prisma.Decimal;
+  after: Prisma.Decimal;
+  key: string;
+};
+
+const ZERO = new Prisma.Decimal(0);
+
+/**
+ * Transfer line columns exposed to API callers. `unit_cost` (the source average
+ * cost carried to the destination) is deliberately absent: like every cost it
+ * is not something a transfer reader may see.
+ */
+const ITEM_COLUMNS = {
+  id: true,
+  tenant_id: true,
+  transfer_id: true,
+  variant_id: true,
+  qty: true,
+  shipped_qty: true,
+  received_qty: true,
+  damaged_qty: true,
+  missing_qty: true,
+} as const;
 
 @Injectable()
 export class TransfersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private inventory: InventoryService,
+  ) {}
 
-  list(context: TenantContext, branch_id?: string) {
-    return this.prisma.transfer.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        ...(branch_id
-          ? { OR: [{ from_branch_id: branch_id }, { to_branch_id: branch_id }] }
-          : {}),
-      },
-      include: { from_branch: true, to_branch: true, items: true },
-      orderBy: { created_at: 'desc' },
-      take: 50,
-    });
+  async list(context: TenantContext, branch_id?: string, paging: PageQuery = FIRST_PAGE) {
+    const where: Prisma.TransferWhereInput = {
+      tenant_id: context.tenantId,
+      ...(branch_id
+        ? { OR: [{ from_branch_id: branch_id }, { to_branch_id: branch_id }] }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.transfer.findMany({
+        where,
+        include: { from_branch: true, to_branch: true, items: { select: ITEM_COLUMNS } },
+        orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
+        ...pageArgs(paging),
+      }),
+      this.prisma.transfer.count({ where }),
+    ]);
+    return pageOf(items, total, paging);
   }
 
   async get(context: TenantContext, id: string, actor: AuthenticatedUser) {
@@ -68,13 +115,13 @@ export class TransfersService {
       include: {
         from_branch: true,
         to_branch: true,
-        items: { include: { variant: { include: { product: true } } } },
+        items: { select: { ...ITEM_COLUMNS, variant: { include: { product: true } } } },
       },
     });
     if (!transfer) throw new NotFoundException('Transfer not found');
     this.assertTransferVisibility(actor, transfer);
     const [state] = await this.prisma.$queryRaw<TransferStateRow[]>`
-      SELECT "status"::text, "from_branch_id", "to_branch_id", "command_fingerprint"
+      SELECT "status"::text, "transfer_number", "from_branch_id", "to_branch_id", "command_fingerprint"
       FROM "Transfer"
       WHERE "id" = ${id}::uuid
         AND "tenant_id" = ${context.tenantId}::uuid
@@ -104,16 +151,13 @@ export class TransfersService {
         'Source and destination branches must be different',
       );
     }
-    assertBranchAccess(actor, dto.from_branch_id, [
-      'owner',
-      'warehouse_manager',
-    ]);
+    assertBranchAccess(actor, dto.from_branch_id);
 
-    const quantities = new Map<string, number>();
+    const quantities = new Map<string, Prisma.Decimal>();
     for (const item of dto.items) {
       quantities.set(
         item.variant_id,
-        (quantities.get(item.variant_id) || 0) + item.qty,
+        (quantities.get(item.variant_id) ?? ZERO).plus(quantity(item.qty)),
       );
     }
     const items = [...quantities.entries()]
@@ -123,7 +167,7 @@ export class TransfersService {
     const fingerprint = commandFingerprint({
       from_branch_id: dto.from_branch_id,
       to_branch_id: dto.to_branch_id,
-      items,
+      items: items.map((item) => ({ ...item, qty: item.qty.toNumber() })),
     });
 
     return this.serializable(async (tx) => {
@@ -146,7 +190,7 @@ export class TransfersService {
         return this.loadTransfer(tx, context, existing.id);
       }
 
-      const [branches, variantCount] = await Promise.all([
+      const [branches, variants] = await Promise.all([
         // Both branches must belong to the caller's tenant. Without this a
         // transfer could be created with another tenant's branch as its
         // destination, moving stock straight across the boundary.
@@ -157,20 +201,38 @@ export class TransfersService {
             is_active: true,
           },
         }),
-        tx.productVariant.count({
+        tx.productVariant.findMany({
           where: {
             id: { in: items.map((item) => item.variant_id) },
             tenant_id: context.tenantId,
           },
+          select: { id: true, sku: true, item_type: true, tracking: true, base_uom: { select: { precision: true } } },
         }),
       ]);
       if (branches !== 2) {
         throw new NotFoundException('One or more active branches were not found');
       }
-      if (variantCount !== items.length) {
+      if (variants.length !== items.length) {
         throw new NotFoundException(
           'One or more product variants were not found',
         );
+      }
+      const variantById = new Map(variants.map((variant) => [variant.id, variant]));
+      for (const item of items) {
+        const variant = variantById.get(item.variant_id)!;
+        if (variant.item_type !== 'stocked') {
+          throw new BadRequestException(`Only stocked items can be transferred (${variant.sku})`);
+        }
+        // W2b-2 will move serials and batches with the goods; until then a transfer would lose them.
+        if (variant.tracking === 'serial' || variant.tracking === 'batch') {
+          throw new UnprocessableEntityException({
+            code: 'TRACKED_TRANSFER_NOT_SUPPORTED',
+            message: `Serial- and batch-tracked items cannot be transferred yet (${variant.sku})`,
+            message_ar: 'لا يمكن تحويل الأصناف المتتبعة بالسيريال أو بالدفعات حاليًا.',
+            variant_id: variant.id,
+          });
+        }
+        assertQuantityPrecision(item.qty, variantQuantityPrecision(variant), variant.sku);
       }
 
       const id = randomUUID();
@@ -187,18 +249,18 @@ export class TransfersService {
           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
       `;
-      for (const item of items) {
-        await tx.$executeRaw`
-          INSERT INTO "TransferItem" (
-            "id", "transfer_id", "variant_id", "qty",
-            "shipped_qty", "received_qty", "damaged_qty", "missing_qty",
-            "tenant_id"
-          ) VALUES (
-            ${randomUUID()}::uuid, ${id}::uuid, ${item.variant_id}::uuid,
-            ${item.qty}, 0, 0, 0, 0, ${context.tenantId}::uuid
-          )
-        `;
-      }
+      await tx.$executeRaw`
+        INSERT INTO "TransferItem" (
+          "id", "transfer_id", "variant_id", "qty",
+          "shipped_qty", "received_qty", "damaged_qty", "missing_qty",
+          "tenant_id"
+        )
+        SELECT gen_random_uuid(), ${id}::uuid, u."variant_id", u."qty", 0, 0, 0, 0, ${context.tenantId}::uuid
+        FROM unnest(
+          ${items.map((item) => item.variant_id)}::uuid[],
+          ${items.map((item) => item.qty.toFixed(3))}::numeric[]
+        ) AS u("variant_id", "qty")
+      `;
       await this.audit(tx, context, actor.sub, 'transfer.created', id, {
         command_id: commandId,
         transfer_number: transferNumber,
@@ -218,10 +280,7 @@ export class TransfersService {
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
       const transfer = await this.lockTransfer(tx, context, id);
-      assertBranchAccess(actor, transfer.from_branch_id, [
-        'owner',
-        'warehouse_manager',
-      ]);
+      assertBranchAccess(actor, transfer.from_branch_id);
       if (
         await this.replayCommand(tx, context, id, 'ship', commandId, fingerprint)
       ) {
@@ -232,36 +291,60 @@ export class TransfersService {
       }
 
       const items = await this.lockItems(tx, context, id);
-      for (const item of items) {
-        const changed = await tx.$executeRaw`
-          UPDATE "InventoryStock"
-          SET "qty_on_hand" = "qty_on_hand" - ${item.qty}
-          WHERE "branch_id" = ${transfer.from_branch_id}::uuid
-            AND "tenant_id" = ${context.tenantId}::uuid
-            AND "variant_id" = ${item.variant_id}::uuid
-            AND ("qty_on_hand" - "qty_reserved") >= ${item.qty}
-        `;
-        if (changed !== 1) {
-          throw new ConflictException({
-            code: 'INVENTORY_INSUFFICIENT_AVAILABLE_QUANTITY',
-            message: `Insufficient available stock for variant ${item.variant_id}`,
-            message_ar: 'الكمية المتاحة من المخزون غير كافية لإتمام الشحن.',
-          });
-        }
-        await tx.$executeRaw`
-          UPDATE "TransferItem"
-          SET "shipped_qty" = "qty"
-          WHERE "id" = ${item.id}::uuid
-        `;
-      }
+      const shippedAt = new Date();
+
+      // Goods leave the source branch's default warehouse at its average
+      // cost; the cost is kept on the line for the receiving warehouse.
+      const after = await this.inventory.apply(tx, {
+        tenantId: context.tenantId,
+        warehouseId: await this.inventory.defaultWarehouseId(tx, context.tenantId, transfer.from_branch_id),
+        occurredAt: shippedAt,
+        actorId: actor.sub,
+        type: 'transfer_out',
+        reference: { type: 'Transfer', id },
+        idempotencyKey: `transfer-out:${id}`,
+        allowNegative: false,
+        metadata: { transfer_number: transfer.transfer_number },
+        lines: items.map((item) => ({
+          variantId: item.variant_id,
+          qtyDelta: item.qty.negated(),
+          referenceLineId: item.id,
+        })),
+      });
+      const avgCost = new Map(after.map((stock) => [stock.variantId, stock.avgCost]));
+      await tx.$executeRaw`
+        UPDATE "TransferItem" item
+        SET "shipped_qty" = item."qty", "unit_cost" = u."unit_cost"
+        FROM unnest(
+          ${items.map((item) => item.id)}::uuid[],
+          ${items.map((item) => (avgCost.get(item.variant_id) ?? ZERO).toFixed(4))}::numeric[]
+        ) AS u("id", "unit_cost")
+        WHERE item."id" = u."id"
+      `;
       await tx.$executeRaw`
         UPDATE "Transfer"
         SET "status" = 'shipped'::"TransferStatus",
             "shipped_by" = ${actor.sub}::uuid,
-            "shipped_at" = CURRENT_TIMESTAMP,
+            "shipped_at" = ${shippedAt.toISOString()}::timestamp,
             "updated_at" = CURRENT_TIMESTAMP
         WHERE "id" = ${id}::uuid
       `;
+      await this.insertTransitMovements(
+        tx,
+        context,
+        id,
+        shippedAt,
+        actor.sub,
+        transfer.transfer_number,
+        items.map((item) => ({
+          itemId: item.id,
+          variantId: item.variant_id,
+          type: 'shipped' as const,
+          delta: item.qty,
+          after: item.qty,
+          key: `transit-shipped:${item.id}:${item.qty.toFixed(3)}`,
+        })),
+      );
       await this.recordCommand(
         tx,
         context,
@@ -305,10 +388,7 @@ export class TransfersService {
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
       const transfer = await this.lockTransfer(tx, context, id);
-      assertBranchAccess(actor, transfer.to_branch_id, [
-        'owner',
-        'warehouse_manager',
-      ]);
+      assertBranchAccess(actor, transfer.to_branch_id);
       if (
         await this.replayCommand(tx, context, id, 'receive', commandId, fingerprint)
       ) {
@@ -321,95 +401,105 @@ export class TransfersService {
       }
 
       const items = await this.lockItems(tx, context, id);
+      const outstandingOf = (item: TransferItemState) =>
+        item.shipped_qty.minus(item.received_qty).minus(item.damaged_qty).minus(item.missing_qty);
       const requested = normalizedItems.length
-        ? normalizedItems
+        ? normalizedItems.map((item) => ({
+            transfer_item_id: item.transfer_item_id,
+            received_qty: quantity(item.received_qty),
+            damaged_qty: quantity(item.damaged_qty),
+            missing_qty: quantity(item.missing_qty),
+          }))
         : items.map((item) => ({
             transfer_item_id: item.id,
-            received_qty:
-              item.shipped_qty -
-              item.received_qty -
-              item.damaged_qty -
-              item.missing_qty,
-            damaged_qty: 0,
-            missing_qty: 0,
+            received_qty: outstandingOf(item),
+            damaged_qty: ZERO,
+            missing_qty: ZERO,
           }));
       const requestIds = new Set(requested.map((item) => item.transfer_item_id));
       if (requestIds.size !== requested.length) {
         throw new BadRequestException('Duplicate transfer item in receipt');
       }
 
+      const itemById = new Map(items.map((item) => [item.id, item]));
+      const transit: TransitRow[] = [];
+      const stockLines: Array<{ item: TransferItemState; qty: Prisma.Decimal }> = [];
+      let remaining = items.reduce((sum, item) => sum.plus(outstandingOf(item)), ZERO);
       for (const receipt of requested) {
-        const item = items.find(
-          (candidate) => candidate.id === receipt.transfer_item_id,
-        );
+        const item = itemById.get(receipt.transfer_item_id);
         if (!item) {
           throw new BadRequestException(
             `Transfer item ${receipt.transfer_item_id} does not belong to this transfer`,
           );
         }
-        const resolved =
-          receipt.received_qty + receipt.damaged_qty + receipt.missing_qty;
-        const outstanding =
-          item.shipped_qty -
-          item.received_qty -
-          item.damaged_qty -
-          item.missing_qty;
-        if (resolved <= 0 || resolved > outstanding) {
+        const resolved = receipt.received_qty.plus(receipt.damaged_qty).plus(receipt.missing_qty);
+        let cursor = outstandingOf(item);
+        if (resolved.lte(0) || resolved.gt(cursor)) {
           throw new BadRequestException(
             `Invalid receipt quantities for transfer item ${item.id}`,
           );
         }
+        remaining = remaining.minus(resolved);
+        if (receipt.received_qty.gt(0)) stockLines.push({ item, qty: receipt.received_qty });
 
-        if (receipt.received_qty > 0) {
-          await tx.inventoryStock.upsert({
-            where: {
-              branch_id_variant_id: {
-                branch_id: transfer.to_branch_id,
-                variant_id: item.variant_id,
-              },
-            },
-            update: { qty_on_hand: { increment: receipt.received_qty } },
-            create: {
-              tenant_id: context.tenantId,
-              branch_id: transfer.to_branch_id,
-              variant_id: item.variant_id,
-              qty_on_hand: receipt.received_qty,
-            },
-          });
-        } else {
-          await tx.inventoryStock.upsert({
-            where: {
-              branch_id_variant_id: {
-                branch_id: transfer.to_branch_id,
-                variant_id: item.variant_id,
-              },
-            },
-            update: {},
-            create: {
-              tenant_id: context.tenantId,
-              branch_id: transfer.to_branch_id,
-              variant_id: item.variant_id,
-              qty_on_hand: 0,
-            },
+        // The in-transit ledger, in the order goods are resolved.
+        const cumulative = {
+          received: item.received_qty,
+          damaged: item.damaged_qty,
+          missing: item.missing_qty,
+        };
+        for (const type of ['received', 'damaged', 'missing'] as const) {
+          const qty = receipt[`${type}_qty`];
+          if (qty.lte(0)) continue;
+          cursor = cursor.minus(qty);
+          cumulative[type] = cumulative[type].plus(qty);
+          transit.push({
+            itemId: item.id,
+            variantId: item.variant_id,
+            type,
+            delta: qty.negated(),
+            after: cursor,
+            key: `transit-${type}:${item.id}:${cumulative[type].toFixed(3)}`,
           });
         }
-        await tx.$executeRaw`
-          UPDATE "TransferItem"
-          SET "received_qty" = "received_qty" + ${receipt.received_qty},
-              "damaged_qty" = "damaged_qty" + ${receipt.damaged_qty},
-              "missing_qty" = "missing_qty" + ${receipt.missing_qty}
-          WHERE "id" = ${item.id}::uuid
-        `;
       }
 
-      const [remaining] = await tx.$queryRaw<{ quantity: bigint }[]>`
-        SELECT COALESCE(SUM(
-          "shipped_qty" - "received_qty" - "damaged_qty" - "missing_qty"
-        ), 0)::bigint AS quantity
-        FROM "TransferItem"
-        WHERE "transfer_id" = ${id}::uuid
+      // Only received units reach the destination warehouse, at the cost
+      // recorded when they were shipped.
+      const receivedAt = new Date();
+      await this.inventory.apply(tx, {
+        tenantId: context.tenantId,
+        warehouseId: await this.inventory.defaultWarehouseId(tx, context.tenantId, transfer.to_branch_id),
+        occurredAt: receivedAt,
+        actorId: actor.sub,
+        type: 'transfer_in',
+        costType: 'adjustment',
+        reference: { type: 'Transfer', id },
+        idempotencyKey: `transfer-in:${id}:${commandId}`,
+        allowNegative: true,
+        metadata: { transfer_number: transfer.transfer_number },
+        lines: stockLines.map(({ item, qty }) => ({
+          variantId: item.variant_id,
+          qtyDelta: qty,
+          referenceLineId: item.id,
+          unitCost: item.unit_cost ?? ZERO,
+        })),
+      });
+      await tx.$executeRaw`
+        UPDATE "TransferItem" item
+        SET "received_qty" = item."received_qty" + u."received",
+            "damaged_qty" = item."damaged_qty" + u."damaged",
+            "missing_qty" = item."missing_qty" + u."missing"
+        FROM unnest(
+          ${requested.map((receipt) => receipt.transfer_item_id)}::uuid[],
+          ${requested.map((receipt) => receipt.received_qty.toFixed(3))}::numeric[],
+          ${requested.map((receipt) => receipt.damaged_qty.toFixed(3))}::numeric[],
+          ${requested.map((receipt) => receipt.missing_qty.toFixed(3))}::numeric[]
+        ) AS u("id", "received", "damaged", "missing")
+        WHERE item."id" = u."id"
       `;
-      const nextStatus = remaining.quantity === 0n ? 'received' : 'partially_received';
+
+      const nextStatus = remaining.isZero() ? 'received' : 'partially_received';
       await tx.$executeRaw`
         UPDATE "Transfer"
         SET "status" = ${nextStatus}::"TransferStatus",
@@ -421,6 +511,7 @@ export class TransfersService {
             "updated_at" = CURRENT_TIMESTAMP
         WHERE "id" = ${id}::uuid
       `;
+      await this.insertTransitMovements(tx, context, id, receivedAt, actor.sub, transfer.transfer_number, transit);
       await this.recordCommand(
         tx,
         context,
@@ -434,7 +525,7 @@ export class TransfersService {
       await this.audit(tx, context, actor.sub, 'transfer.received', id, {
         command_id: commandId,
         status: nextStatus,
-        items: requested,
+        items: normalizedItems,
       });
       return this.loadTransfer(tx, context, id);
     });
@@ -455,10 +546,7 @@ export class TransfersService {
     return this.serializable(async (tx) => {
       await this.enableTransferCommand(tx);
       const transfer = await this.lockTransfer(tx, context, id);
-      assertBranchAccess(actor, transfer.from_branch_id, [
-        'owner',
-        'warehouse_manager',
-      ]);
+      assertBranchAccess(actor, transfer.from_branch_id);
       if (
         await this.replayCommand(tx, context, id, 'cancel', commandId, fingerprint)
       ) {
@@ -497,17 +585,17 @@ export class TransfersService {
   }
 
   async reconcileInTransit(context: TenantContext, actor: AuthenticatedUser) {
-    if (actor.role !== 'owner' && actor.role !== 'warehouse_manager') {
+    if (!canAccessAllBranches(actor)) {
       throw new ConflictException(
-        'Only owner or warehouse manager can reconcile in-transit inventory',
+        'Only a tenant-wide user can reconcile in-transit inventory',
       );
     }
     const mismatches = await this.prisma.$queryRaw<
       Array<{
         transfer_id: string;
         transfer_item_id: string;
-        expected_in_transit: number;
-        ledger_in_transit: bigint;
+        expected_in_transit: Prisma.Decimal;
+        ledger_in_transit: Prisma.Decimal;
       }>
     >`
       WITH expected AS (
@@ -522,7 +610,7 @@ export class TransfersService {
       ledger AS (
         SELECT
           movement."transfer_item_id",
-          COALESCE(SUM(movement."quantity_delta"), 0)::bigint AS ledger_in_transit
+          COALESCE(SUM(movement."quantity_delta"), 0) AS ledger_in_transit
         FROM "TransferTransitMovement" movement
         WHERE movement."tenant_id" = ${context.tenantId}::uuid
         GROUP BY movement."transfer_item_id"
@@ -531,12 +619,12 @@ export class TransfersService {
         expected."transfer_id",
         expected.transfer_item_id,
         expected.expected_in_transit,
-        COALESCE(ledger.ledger_in_transit, 0)::bigint AS ledger_in_transit
+        COALESCE(ledger.ledger_in_transit, 0) AS ledger_in_transit
       FROM expected
       LEFT JOIN ledger
         ON ledger."transfer_item_id" = expected.transfer_item_id
-      WHERE expected.expected_in_transit::bigint
-        <> COALESCE(ledger.ledger_in_transit, 0)::bigint
+      WHERE expected.expected_in_transit
+        <> COALESCE(ledger.ledger_in_transit, 0)
       ORDER BY expected."transfer_id", expected.transfer_item_id
       LIMIT 500
     `;
@@ -550,17 +638,46 @@ export class TransfersService {
     };
   }
 
+  /** Appends rows to the in-transit ledger: one multi-row INSERT for the whole command. */
+  private insertTransitMovements(
+    tx: Prisma.TransactionClient,
+    context: TenantScope,
+    transferId: string,
+    occurredAt: Date,
+    actorId: string,
+    transferNumber: string,
+    rows: TransitRow[],
+  ) {
+    if (!rows.length) return Promise.resolve(0);
+    return tx.$executeRaw`
+      INSERT INTO "TransferTransitMovement" (
+        "transfer_id", "transfer_item_id", "variant_id", "movement_type",
+        "quantity_delta", "in_transit_after", "idempotency_key",
+        "occurred_at", "created_by", "metadata", "tenant_id"
+      )
+      SELECT
+        ${transferId}::uuid, u."item_id", u."variant_id", u."type"::"TransferTransitMovementType",
+        u."delta", u."after", u."key",
+        ${occurredAt.toISOString()}::timestamp, ${actorId}::uuid,
+        jsonb_build_object('transfer_number', ${transferNumber}::text),
+        ${context.tenantId}::uuid
+      FROM unnest(
+        ${rows.map((row) => row.itemId)}::uuid[],
+        ${rows.map((row) => row.variantId)}::uuid[],
+        ${rows.map((row) => row.type)}::text[],
+        ${rows.map((row) => row.delta.toFixed(3))}::numeric[],
+        ${rows.map((row) => row.after.toFixed(3))}::numeric[],
+        ${rows.map((row) => row.key)}::text[]
+      ) AS u("item_id", "variant_id", "type", "delta", "after", "key")
+    `;
+  }
+
   private assertTransferVisibility(
     actor: AuthenticatedUser,
     transfer: Pick<Transfer, 'from_branch_id' | 'to_branch_id'>,
   ) {
-    if (actor.role === 'owner' || actor.role === 'warehouse_manager') return;
-    if (
-      actor.branch_id !== transfer.from_branch_id &&
-      actor.branch_id !== transfer.to_branch_id
-    ) {
-      assertBranchAccess(actor, transfer.from_branch_id);
-    }
+    if (hasBranchAccess(actor, transfer.from_branch_id) || hasBranchAccess(actor, transfer.to_branch_id)) return;
+    assertBranchAccess(actor, transfer.from_branch_id);
   }
 
   private serializable<T>(
@@ -594,7 +711,7 @@ export class TransfersService {
   ) {
     const [transfer] = await tx.$queryRaw<TransferStateRow[]>`
       SELECT
-        "status"::text, "from_branch_id", "to_branch_id",
+        "status"::text, "transfer_number", "from_branch_id", "to_branch_id",
         "command_fingerprint"
       FROM "Transfer"
       WHERE "id" = ${id}::uuid AND "tenant_id" = ${context.tenantId}::uuid
@@ -612,7 +729,7 @@ export class TransfersService {
     return tx.$queryRaw<TransferItemState[]>`
       SELECT
         "id", "variant_id", "qty", "shipped_qty", "received_qty",
-        "damaged_qty", "missing_qty"
+        "damaged_qty", "missing_qty", "unit_cost"
       FROM "TransferItem"
       WHERE "transfer_id" = ${transferId}::uuid
         AND "tenant_id" = ${context.tenantId}::uuid
@@ -628,7 +745,7 @@ export class TransfersService {
   ) {
     return tx.transfer.findFirstOrThrow({
       where: { id, tenant_id: context.tenantId },
-      include: { items: true, from_branch: true, to_branch: true },
+      include: { items: { select: ITEM_COLUMNS }, from_branch: true, to_branch: true },
     });
   }
 

@@ -100,19 +100,6 @@ describe('SalesReadService', () => {
     expect(result.items[0]).not.toHaveProperty('terminal_id')
   })
 
-  it('coalesces repeated count queries and supports explicit invalidation', async () => {
-    const { prisma, service } = setup()
-    await Promise.all([
-      service.listSales(ctx, { q: '', page: 1, page_size: 20 } as any),
-      service.listSales(ctx, { q: '', page: 2, page_size: 20 } as any),
-    ])
-    expect(prisma.salesInvoice.count).toHaveBeenCalledTimes(1)
-
-    service.invalidateCounts()
-    await service.listSales(ctx, { q: '', page: 1, page_size: 20 } as any)
-    expect(prisma.salesInvoice.count).toHaveBeenCalledTimes(2)
-  })
-
   it('filters reconciliation views to invoices that carry warnings', async () => {
     const { prisma, service } = setup()
     await service.listSales(

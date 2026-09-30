@@ -36,12 +36,16 @@ const { PrismaClient, Prisma } = require('@prisma/client');
 const distPurchasing = path.join(__dirname, '..', 'dist', 'src', 'purchasing', 'purchasing.service.js');
 const distSellersService = path.join(__dirname, '..', 'dist', 'src', 'sellers', 'sellers.service.js');
 const distSellersRepository = path.join(__dirname, '..', 'dist', 'src', 'sellers', 'sellers.repository.js');
+const distInventoryService = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.service.js');
+const distInventoryRepository = path.join(__dirname, '..', 'dist', 'src', 'inventory', 'inventory.repository.js');
 
-let PurchasingService, SellersService, SellersRepository;
+let PurchasingService, SellersService, SellersRepository, InventoryService, InventoryRepository;
 try {
   ({ PurchasingService } = require(distPurchasing));
   ({ SellersService } = require(distSellersService));
   ({ SellersRepository } = require(distSellersRepository));
+  ({ InventoryService } = require(distInventoryService));
+  ({ InventoryRepository } = require(distInventoryRepository));
 } catch (error) {
   console.error(
     `Could not load compiled services from dist/. This script asserts on the ` +
@@ -71,9 +75,14 @@ async function createTenant(label) {
 }
 
 async function createBranch(tenantId, label) {
-  return prisma.branch.create({
+  const branch = await prisma.branch.create({
     data: { tenant_id: tenantId, code: `${label}-${randomUUID().slice(0, 8)}`, name_ar: 'فرع الفحص' },
   });
+  // A branch's stock lives in its default warehouse.
+  await prisma.warehouse.create({
+    data: { tenant_id: tenantId, branch_id: branch.id, name: `${label} default`, is_default: true },
+  });
+  return branch;
 }
 
 async function createTaxCategory(tenantId) {
@@ -110,16 +119,16 @@ async function createSupplier(tenantId, label) {
 
 async function createOwnerUser() {
   return prisma.user.create({
-    data: { name: 'Verify owner', password_hash: 'not-a-real-hash', role: 'owner' },
+    data: { name: 'Verify owner', password_hash: 'not-a-real-hash' },
   });
 }
 
 async function createSellerWithMembership(tenantId) {
   const seller = await prisma.user.create({
-    data: { name: 'Verify seller', password_hash: 'not-a-real-hash', role: 'seller' },
+    data: { name: 'Verify seller', password_hash: 'not-a-real-hash' },
   });
   await prisma.membership.create({
-    data: { tenantId, identityId: seller.id, role: 'seller', status: 'active' },
+    data: { tenant_id: tenantId, user_id: seller.id, role: 'seller', status: 'active' },
   });
   return seller;
 }
@@ -135,9 +144,9 @@ async function verifyReceiveAgainstRealPostgres() {
   const taxCategory = await createTaxCategory(tenant.id);
   const variant = await createVariant(tenant.id, taxCategory);
   const owner = await createOwnerUser();
-  const service = new PurchasingService(prisma);
+  const service = new PurchasingService(prisma, new InventoryService(new InventoryRepository(prisma)));
   const context = { tenantId: tenant.id };
-  const actor = { sub: owner.id, role: 'owner', branch_id: null };
+  const actor = { sub: owner.id, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
 
   let invoice = null;
   let caught = null;
@@ -180,23 +189,7 @@ async function verifyClosePeriodAgainstRealPostgres() {
   const owner = await createOwnerUser();
   const service = new SellersService(new SellersRepository(prisma));
   const context = { tenantId: tenant.id };
-  const actor = { sub: owner.id, role: 'owner', branch_id: null };
-
-  // Found but not fixed, out of scope for this PR (see PR description):
-  // `SellerCommissionSettings` carries CHECK("id" = 1) from its single-
-  // tenant-era migration (202607240003) -- a TRUE global singleton that
-  // survived the later addition of `tenant_id` (202608020001) with no
-  // corresponding constraint change. `getSettings()`'s "allocate a fresh
-  // primary key per tenant" comment (sellers.repository.ts:12-17) describes
-  // behaviour the schema does not allow: any tenant other than whichever one
-  // already holds the one permitted row gets a real Postgres CHECK-
-  // constraint violation on first use of any SellersService method that
-  // touches settings. Confirmed against real Postgres while building this
-  // guard. Re-pointing the existing singleton row to this test's tenant
-  // (an UPDATE keeping id=1, which the constraint allows) is a test-only
-  // accommodation for that separate, disclosed defect -- not a fix, and not
-  // something `closePeriod()` itself does.
-  await prisma.$executeRaw`UPDATE "SellerCommissionSettings" SET tenant_id = ${tenant.id}::uuid WHERE id = 1`;
+  const actor = { sub: owner.id, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
 
   let period = null;
   let caught = null;

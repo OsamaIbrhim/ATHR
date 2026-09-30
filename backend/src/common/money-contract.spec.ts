@@ -18,8 +18,9 @@ describe('financial precision contract', () => {
   it('keeps report aggregation on Decimal arithmetic', () => {
     const reports = source('src/reports/reports.service.ts');
 
-    expect(reports).toContain('sumMoney(');
-    expect(reports).toContain('lineMoney(');
+    // Sums are SQL `numeric`, rounded per line (`round(price * qty, 2)`) exactly as `lineMoney` does.
+    expect(reports).toContain('round(it."unit_price" * it."qty", 2)');
+    expect(reports).toContain('moneyNumber(');
     expect(reports).not.toMatch(/\bMath\.round\s*\(/);
     expect(reports).not.toMatch(/\bNumber\s*\(\s*(?:invoice|item|record|row)\./);
   });

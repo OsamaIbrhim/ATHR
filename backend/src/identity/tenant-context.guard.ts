@@ -4,19 +4,19 @@ import type { Request } from 'express';
 import { parseMembershipId, parseTenantId } from '@athr/domain-core';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { IS_PUBLIC_KEY } from '../auth/public.decorator';
+import type { AuthenticatedUser } from '../auth/authenticated-user';
+import { PLATFORM_ROUTE_KEY } from '../entitlements/entitlement.decorators';
+import { EntitlementService } from '../entitlements/entitlement.service';
+import type { EntitlementAccess } from '../entitlements/entitlement.types';
 import type { ScopeGrant, TenantContext } from './tenant-context.type';
 
 export interface RequestWithTenantContext extends Request {
   tenantContext?: TenantContext;
   requestId?: string;
   correlationId?: string;
-  user?: {
-    sub: string;
-    tenant_id?: string | null;
-    membership_id?: string | null;
-    scope_set?: ReadonlyArray<{ scope_type: string; scope_ref_id: string | null }>;
-    permission_policy_version?: number | null;
-  };
+  user?: AuthenticatedUser;
+  /** The tenant's resolved plan access, set by `TenantContextGuard`. */
+  entitlement?: EntitlementAccess;
 }
 
 /**
@@ -40,9 +40,12 @@ export interface RequestWithTenantContext extends Request {
  */
 @Injectable()
 export class TenantContextGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly entitlements: EntitlementService,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -51,9 +54,22 @@ export class TenantContextGuard implements CanActivate {
     // (login/health). The POS sale path derives its context from the enrolled
     // Terminal's own tenant instead — see `deviceTenantContext()`.
     if (isPublic) return true;
+    // Platform console routes have no tenant (ADR-0006); `PlatformAdminGuard` protects them.
+    const isPlatform = this.reflector.getAllAndOverride<boolean>(PLATFORM_ROUTE_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPlatform) return true;
 
     const request = context.switchToHttp().getRequest<RequestWithTenantContext>();
-    request.tenantContext = buildTenantContextFromSession(request);
+    const tenantContext = buildTenantContextFromSession(request);
+    const access = await this.entitlements.resolve(tenantContext.tenantId);
+    request.entitlement = access;
+    request.tenantContext = {
+      ...tenantContext,
+      tenantAccessMode: access.mode,
+      entitlementSnapshotVersion: access.snapshotVersion,
+    };
     return true;
   }
 }
@@ -81,11 +97,9 @@ export function buildTenantContextFromSession(request: RequestWithTenantContext)
     membershipId: user.membership_id ? parseMembershipId(user.membership_id) : null,
     servicePrincipalId: null,
     authenticatedIdentityId: user.sub,
-    // Access-mode gating (`TenantAccessModeAllows` in the Permission Matrix
-    // §2 ALLOW equation) is not enforced here: WP-007 Phase A is isolation,
-    // and no endpoint today reads it. The field is carried honestly rather
-    // than fabricated.
-    tenantAccessMode: 'active',
+    // Placeholders: `TenantContextGuard` fills in the real access mode and
+    // entitlement snapshot from the tenant's subscription.
+    tenantAccessMode: 'full',
     entitlementSnapshotVersion: null,
     permissionPolicyVersion: user.permission_policy_version ?? 1,
     scopeSet,

@@ -30,6 +30,10 @@ export class AthrDomainError extends Error {
       currentVersion?: number;
       requiredAction?: string;
       operationId?: string | null;
+      /** Arabic text for clients that show `message_ar` (the legacy error body). */
+      messageAr?: string;
+      /** Machine-readable specifics, e.g. `{ limit, current }` for a plan limit. */
+      data?: Readonly<Record<string, unknown>>;
     }>,
   ) {
     super(message ?? code);

@@ -1,3 +1,4 @@
+import { BRAND_NAME, POS_APP_NAME } from '../../electron/brand'
 import React, { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
 import { athr } from '../electron'
@@ -33,7 +34,7 @@ export function EnrollmentScreen({
       return
     }
     if (!apiBaseUrl.trim()) {
-      setError('أدخل عنوان خادم ATHR قبل تسجيل الجهاز.')
+      setError(`أدخل عنوان خادم ${BRAND_NAME} قبل تسجيل الجهاز.`)
       return
     }
 
@@ -61,13 +62,13 @@ export function EnrollmentScreen({
       <section className="auth-card enrollment-card">
         <div className="brand-mark">A</div>
         <span className="eyebrow">إعداد الجهاز</span>
-        <h1>تسجيل ATHR POS</h1>
+        <h1>تسجيل {POS_APP_NAME}</h1>
         <p className="muted">
           أنشئ رمزًا مؤقتًا من صفحة أجهزة نقاط البيع في لوحة الإدارة، ثم أدخله
           هنا لربط الجهاز بالفرع.
         </p>
         <form onSubmit={submit} className="auth-form">
-          <label htmlFor="api-base-url">عنوان خادم ATHR</label>
+          <label htmlFor="api-base-url">عنوان خادم {BRAND_NAME}</label>
           <input
             id="api-base-url"
             dir="ltr"

@@ -1,10 +1,12 @@
 import { api, ApiError } from './api'
+import { pullCatalog, SyncIntegrityError } from './catalog-pull'
 import { athr, AthrBridge } from './electron'
 import { SyncState } from './types'
 import {
   assertPosCompatibility,
   PosCompatibilityError,
 } from './pos-compatibility'
+import { cursorTransitionIsValid } from './sync-cursor'
 import {
   classifySyncError,
   formatSyncError,
@@ -32,34 +34,9 @@ type SyncApi = Pick<
 
 let activeSync: Promise<SyncState> | null = null
 let consecutiveSyncFailures = 0
-const MAX_SYNC_PULL_PAGES = 100
 const SUCCESS_SYNC_INTERVAL_MS = 15_000
 
-export class SyncIntegrityError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'SyncIntegrityError'
-  }
-}
-
-function cursorTransitionIsValid(
-  current: string | null,
-  next: string | null,
-  hasMore: boolean,
-) {
-  if (next === null) return false
-  try {
-    const nextValue = BigInt(next)
-    if (nextValue < 0n) return false
-    if (current === null) return !hasMore
-    const currentValue = BigInt(current)
-    return hasMore
-      ? nextValue > currentValue
-      : nextValue >= currentValue
-  } catch {
-    return false
-  }
-}
+export { cursorTransitionIsValid, SyncIntegrityError }
 
 export function isRetryableSyncError(error: unknown) {
   return classifySyncError(error).retryable
@@ -272,54 +249,7 @@ export async function performSync(
   }
   await publishHeartbeat(client, state)
 
-  let cursor = state.sync_cursor || null
-  let response: any
-  let pages = 0
-
-  while (true) {
-    response = await client.pull(
-      branchId,
-      cursor,
-    )
-
-    const nextCursor =
-      response.cursor === undefined ||
-      response.cursor === null
-        ? cursor
-        : String(response.cursor)
-
-    if (
-      !cursorTransitionIsValid(
-        cursor,
-        nextCursor,
-        !!response.has_more,
-      )
-    ) {
-      throw new SyncIntegrityError(
-        'أوقف POS المزامنة لأن الخادم أعاد cursor غير صالح أو غير متقدم.',
-      )
-    }
-
-    // A multi-page delta is not safe for checkout until every page is
-    // committed. Clearing catalog validity on intermediate pages makes that
-    // invariant durable across crashes and process restarts.
-    await local.sync_apply_pull({
-      ...response,
-      catalog_valid_until:
-        response.has_more
-          ? null
-          : response.catalog_valid_until,
-    })
-
-    cursor = nextCursor
-    pages += 1
-    if (!response.has_more) break
-    if (pages >= MAX_SYNC_PULL_PAGES) {
-      throw new SyncIntegrityError(
-        `أوقف POS المزامنة بعد ${MAX_SYNC_PULL_PAGES} صفحة لحماية الكتالوج من دورة غير منتهية.`,
-      )
-    }
-  }
+  const response = await pullCatalog(branchId, localStatus, local, client)
 
   const completed: SyncState = {
     ...state,
@@ -334,7 +264,7 @@ export async function performSync(
     quarantined_count: localStatus.quarantined_count,
     next_sync_at: null,
     blocked_reason: null,
-    sync_cursor: cursor,
+    sync_cursor: response.cursor,
     catalog_valid_until: response.catalog_valid_until || state.catalog_valid_until || null,
   }
 

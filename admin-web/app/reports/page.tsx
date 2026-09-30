@@ -123,7 +123,7 @@ export default function Reports(){
           <h2 className="font-bold mb-2">تقييم المخزون – إجمالي القيمة: {Number(invVal.total_value||0).toFixed(2)} ج – الكمية: {invVal.total_qty||0}</h2>
           <div className="max-h-96 overflow-auto">
           <table><thead><tr><th>الفرع</th><th>SKU</th><th>المنتج</th><th>الكمية</th><th>التكلفة</th><th>القيمة</th></tr></thead>
-          <tbody>{(invVal.rows||[]).slice(0,100).map((r:any,i:number)=><tr key={i}><td>{r.branch}</td><td>{r.sku}</td><td>{r.product} {r.size||''} {r.color||''}</td><td>{r.qty}</td><td>{r.cost_price}</td><td>{r.value.toFixed(0)}</td></tr>)}</tbody>
+          <tbody>{(invVal.rows||[]).slice(0,100).map((r:any,i:number)=><tr key={i}><td>{r.branch}</td><td>{r.sku}</td><td>{r.product} {r.label||''}</td><td>{r.qty}</td><td>{r.cost_price}</td><td>{r.value.toFixed(0)}</td></tr>)}</tbody>
           </table>
           </div>
         </div>

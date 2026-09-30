@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { apiGet, apiPatch, apiPost, getStoredUser } from '@/lib/api'
+import { apiGet, apiPatch, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { businessMonthRange } from '@/lib/business-time'
 
 function monthRange() {
@@ -10,7 +11,7 @@ function monthRange() {
 
 export default function SellerReportsPage() {
   const initial = monthRange()
-  const actor = getStoredUser()
+  const actor = useSessionUser()
   const [from, setFrom] = useState(initial.from)
   const [to, setTo] = useState(initial.to)
   const [branchId, setBranchId] = useState('')

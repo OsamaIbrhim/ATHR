@@ -23,10 +23,8 @@ export class PosProtocolGuard implements CanActivate {
     const rawProtocol = headerValue(request.headers['x-pos-protocol-version']);
     const appVersion = headerValue(request.headers['x-pos-app-version']);
 
-    // Staged rollout: legacy tills remain accepted until every installation has
-    // upgraded. Explicit malformed or unsupported headers still fail closed.
+    // Every POS request carries its protocol and app version; no header, no access.
     if (!rawProtocol || !appVersion) {
-      if (!manifest.require_protocol_headers) return true;
       throw new HttpException({
         code: 'POS_PROTOCOL_HEADER_REQUIRED',
         retryable: false,

@@ -1,127 +1,118 @@
 import { randomUUID } from 'crypto';
 import { UsersRepository } from './users.repository';
 import { UsersService } from './users.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
+import { unlimited } from '../entitlements/testing';
 
 /**
- * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `users` module.
+ * Cross-tenant isolation for the `users` module.
  *
- * `User` has no `tenant_id` column by design (ADR-0003: it is the global
- * Platform Identity), so isolation here is proved through the Membership
- * join rather than a column predicate.
+ * `User` has no `tenant_id` by design (it is the global identity), so isolation
+ * here is proved through the Membership, which carries the tenant.
  */
 
 const USER_A = randomUUID();
 const USER_B = randomUUID();
 
-function setup() {
-  const prisma = fakePrisma({
-    user: [
-      {
-        id: USER_A,
-        name: 'A Cashier',
-        role: 'cashier',
-        branch_id: null,
-        is_active: true,
-        granted_capabilities: [],
-        revoked_capabilities: [],
-        memberships: [{ tenantId: TENANT_A }],
-      },
-      {
-        id: USER_B,
-        name: 'B Cashier',
-        role: 'cashier',
-        branch_id: null,
-        is_active: true,
-        granted_capabilities: [],
-        revoked_capabilities: [],
-        memberships: [{ tenantId: TENANT_B }],
-      },
-    ],
-    membership: [],
-  });
-
-  // `memberships: { some: { tenantId } }` is a to-many filter; evaluate it
-  // against the embedded array the fixtures carry.
-  const originalMatch = prisma.user.findMany;
-  const scoped = (rows: any[], where: any) =>
-    rows.filter((row) => {
-      const tenantId = where?.memberships?.some?.tenantId;
-      if (tenantId && !row.memberships.some((m: any) => m.tenantId === tenantId)) return false;
-      if (where?.role?.not && row.role === where.role.not) return false;
-      if (where?.role?.in && !where.role.in.includes(row.role)) return false;
-      return true;
-    });
-  prisma.user.findMany = async ({ where }: any) => scoped(prisma.user.rows, where);
-  prisma.user.findFirst = async ({ where }: any) =>
-    scoped(prisma.user.rows, where).find((row: any) => row.id === where.id) ?? null;
-  void originalMatch;
-
-  const repository = new UsersRepository(prisma);
-  return { prisma, repository, service: new UsersService(repository) };
+function staff(id: string, tenantId: string, name: string) {
+  return {
+    id: randomUUID(),
+    tenant_id: tenantId,
+    user_id: id,
+    role: 'cashier',
+    status: 'active',
+    granted_permissions: [],
+    revoked_permissions: [],
+    access_scope_assignments: [],
+    user: { id, name, phone: null, email: null, is_active: true, created_at: new Date() },
+  };
 }
 
-const ownerActor = { sub: randomUUID(), role: 'owner', branch_id: null, capabilities: [] } as any;
+function setup() {
+  const prisma = fakePrisma({
+    membership: [staff(USER_A, TENANT_A, 'A Cashier'), staff(USER_B, TENANT_B, 'B Cashier')],
+  });
+  const repository = new UsersRepository(prisma);
+  return { prisma, repository, service: new UsersService(repository, unlimited) };
+}
+
+const tenantWideOwner = actorFor('tenant_owner', { tenantWide: true });
 
 describe('users — cross-tenant isolation', () => {
-  it('lists only identities with a Membership in the calling tenant', async () => {
+  it('lists only users with a Membership in the calling tenant', async () => {
     const { service } = setup();
-    expect((await service.findAll(contextFor(TENANT_A), ownerActor)).map((row: any) => row.id)).toEqual([
-      USER_A,
-    ]);
-    expect((await service.findAll(contextFor(TENANT_B), ownerActor)).map((row: any) => row.id)).toEqual([
-      USER_B,
-    ]);
+    expect((await service.findAll(contextFor(TENANT_A), tenantWideOwner)).items.map((row) => row.id)).toEqual([USER_A]);
+    expect((await service.findAll(contextFor(TENANT_B), tenantWideOwner)).items.map((row) => row.id)).toEqual([USER_B]);
   });
 
-  it('does not resolve an identity from another tenant', async () => {
+  it('does not resolve a user from another tenant', async () => {
     const { repository } = setup();
-    expect(await repository.findById(contextFor(TENANT_B), USER_A)).toBeNull();
-    expect(await repository.findById(contextFor(TENANT_A), USER_A)).not.toBeNull();
+    expect(await repository.findMembership(contextFor(TENANT_B), USER_A)).toBeNull();
+    expect(await repository.findMembership(contextFor(TENANT_A), USER_A)).not.toBeNull();
   });
 
   it('refuses to change another tenant\'s user permissions', async () => {
-    const { service } = setup();
+    const { service, prisma } = setup();
     await expect(
       service.updatePermissions(
         contextFor(TENANT_B),
         USER_A,
-        { granted_capabilities: [], revoked_capabilities: [] } as any,
-        ownerActor,
+        { granted_permissions: ['pricing.cost.view'], revoked_permissions: [] },
+        tenantWideOwner,
       ),
     ).rejects.toThrow('User not found');
+    expect(prisma.membership.rows.find((row: any) => row.user_id === USER_A).granted_permissions).toEqual([]);
+  });
+
+  it('updates permissions on the Membership of the calling tenant only', async () => {
+    const { service, prisma } = setup();
+    const result = await service.updatePermissions(
+      contextFor(TENANT_A),
+      USER_A,
+      { granted_permissions: ['pricing.cost.view'], revoked_permissions: ['sales.sale.create'] },
+      tenantWideOwner,
+    );
+    expect(result.permissions).toContain('pricing.cost.view');
+    expect(result.permissions).not.toContain('sales.sale.create');
+    expect(prisma.membership.rows.find((row: any) => row.user_id === USER_A).granted_permissions).toEqual(['pricing.cost.view']);
+    expect(prisma.membership.rows.find((row: any) => row.user_id === USER_B).granted_permissions).toEqual([]);
   });
 
   /**
    * Without a Membership a new account would authenticate but resolve no
    * TenantContext, so the global guard would deny every one of its requests.
    */
-  it('creates a Membership in the calling tenant alongside the identity', async () => {
-    const { repository, prisma } = setup();
-    const created: any = await repository.save(contextFor(TENANT_B), {
-      name: 'New',
-      role: 'cashier',
-      is_active: true,
-      password_hash: 'x',
-    } as any);
+  it('creates the Membership and access scope in the calling tenant alongside the user', async () => {
+    const userId = randomUUID();
+    const tx = {
+      user: { create: jest.fn().mockResolvedValue({ id: userId }) },
+      membership: {
+        create: jest.fn().mockResolvedValue({ id: 'membership-id' }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          ...staff(userId, TENANT_B, 'New'),
+          role: 'location_manager',
+          access_scope_assignments: [
+            { scope_type: 'location', scope_ref_id: 'branch-1', effective_from: new Date('2020-01-01'), effective_to: null },
+          ],
+        }),
+      },
+      accessScopeAssignment: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const repository = new UsersRepository({ $transaction: (fn: any) => fn(tx) } as any);
 
-    expect(prisma.membership.rows).toHaveLength(1);
-    expect(prisma.membership.rows[0]).toMatchObject({
-      tenantId: TENANT_B,
-      identityId: created.id,
-      role: 'cashier',
-      status: 'active',
+    const created = await repository.save(contextFor(TENANT_B), {
+      user: { name: 'New', password_hash: 'x', is_active: true },
+      role: 'location_manager',
+      branchId: 'branch-1',
     });
-  });
 
-  it('maps the legacy Role enum onto the migration\'s MembershipRole', async () => {
-    const { repository, prisma } = setup();
-    await repository.save(contextFor(TENANT_A), {
-      name: 'Manager',
-      role: 'branch_manager',
-      is_active: true,
-      password_hash: 'x',
-    } as any);
-    expect(prisma.membership.rows[0].role).toBe('location_manager');
+    expect(tx.membership.create).toHaveBeenCalledWith({
+      data: { tenant_id: TENANT_B, user_id: userId, role: 'location_manager', status: 'active' },
+    });
+    expect(tx.accessScopeAssignment.create).toHaveBeenCalledWith({
+      data: { membership_id: 'membership-id', scope_type: 'location', scope_ref_id: 'branch-1', grant_source: 'user_admin' },
+    });
+    expect(created).toMatchObject({ role: 'location_manager', branch_id: 'branch-1' });
   });
 });

@@ -1,44 +1,59 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { apiGet, apiPatch, apiPost, getStoredUser } from '@/lib/api'
+import { apiGet, apiPatch, apiPost } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
 import { normalizeUserPhone, validateUserPhone } from '@/lib/user-form'
 
+// Membership roles, as the users API returns and accepts them.
 const roleNames: Record<string, string> = {
-  owner: 'مالك',
-  branch_manager: 'مدير فرع',
+  tenant_owner: 'مالك',
+  location_manager: 'مدير فرع',
   cashier: 'كاشير',
   warehouse_manager: 'مدير مخزن',
   seller: 'بائع',
 }
 
-const capabilityNames: Record<string, string> = {
-  'dashboard.read': 'لوحة التحكم',
-  'products.read': 'عرض المنتجات',
-  'products.manage': 'إدارة المنتجات',
-  'inventory.read': 'عرض المخزون',
-  'sales.read': 'عرض المبيعات',
-  'sales.create': 'إنشاء مبيعات',
-  'returns.create': 'إنشاء مرتجعات',
-  'customers.read': 'عرض العملاء',
-  'customers.manage': 'إدارة العملاء',
-  'purchasing.read': 'عرض المشتريات',
-  'purchasing.manage': 'إدارة المشتريات',
-  'suppliers.manage': 'إدارة الموردين',
-  'pricing.manage': 'إدارة التسعير',
-  'offers.manage': 'إدارة العروض',
-  'transfers.manage': 'إدارة التحويلات',
-  'reports.read': 'عرض التقارير',
-  'reports.send': 'إرسال التقارير',
-  'branches.manage': 'إدارة الفروع',
-  'users.manage': 'إدارة المستخدمين',
-  'shifts.manage': 'إدارة الورديات',
-  'terminals.read': 'عرض أجهزة POS',
-  'terminals.manage': 'إدارة أجهزة POS',
-  'settings.manage': 'الإعدادات',
-  'seller_reports.read': 'تقارير البائعين',
-  'seller_settings.manage': 'إعدادات عمولات البائعين',
-  'seller_periods.close': 'إقفال فترات البائعين',
+// Permission keys an owner can grant or revoke per user (backend permission catalog).
+const permissionNames: Record<string, string> = {
+  'reports.sales.view': 'لوحة التحكم وتقارير المبيعات',
+  'reports.sales.export': 'إرسال التقارير',
+  'reports.sales.view-cost-margin': 'أرباح الأصناف',
+  'reports.inventory.view-cost': 'تقييم المخزون',
+  'catalog.product.view': 'عرض المنتجات',
+  'catalog.product.create': 'إنشاء منتجات',
+  'catalog.product.update': 'تعديل المنتجات',
+  'catalog.product.view-cost-sensitive': 'رؤية تكلفة المنتجات',
+  'inventory.position.view': 'عرض المخزون',
+  'sales.sale.view': 'عرض المبيعات',
+  'sales.sale.create': 'إنشاء مبيعات',
+  'sales.sale.view-cost-margin': 'رؤية تكلفة وهامش المبيعات',
+  'returns.return.request': 'إنشاء مرتجعات',
+  'customer.profile.view': 'عرض العملاء',
+  'customer.profile.update': 'إدارة العملاء',
+  'purchasing.purchase-order.view': 'عرض المشتريات',
+  'purchasing.goods-receipt.post': 'استلام المشتريات',
+  'supplier.view': 'عرض الموردين',
+  'supplier.update': 'إدارة الموردين',
+  'pricing.price-book.view': 'عرض التسعير',
+  'pricing.price-entry.manage': 'إدارة الأسعار',
+  'pricing.cost.view': 'رؤية التكلفة في التسعير',
+  'promotion.view': 'عرض العروض',
+  'promotion.approve': 'اعتماد العروض',
+  'transfer.view': 'عرض التحويلات',
+  'transfer.create': 'إدارة التحويلات',
+  'shift.view': 'عرض الورديات',
+  'shift.open-own': 'فتح وردية',
+  'terminal.view': 'عرض أجهزة POS',
+  'terminal.provision': 'إدارة أجهزة POS',
+  'location.create': 'إدارة الفروع',
+  'tenant.membership.view': 'عرض المستخدمين',
+  'membership.invite': 'إنشاء مستخدمين',
+  'membership.role.assign': 'تعديل صلاحيات المستخدمين',
+  'tenant.settings.manage': 'الإعدادات',
+  'sellers.report.view': 'تقارير البائعين',
+  'sellers.commission.manage': 'إعدادات عمولات البائعين',
+  'sellers.period.close': 'إقفال فترات البائعين',
 }
 
 export default function Users() {
@@ -55,13 +70,13 @@ export default function Users() {
   const [editing, setEditing] = useState<any | null>(null)
   const [grants, setGrants] = useState<string[]>([])
   const [revokes, setRevokes] = useState<string[]>([])
-  const actor = getStoredUser()
+  const actor = useSessionUser()
 
   const load = () => Promise.all([
-    apiGet('/users'),
+    apiGet('/users?page=1&page_size=100'),
     actor?.role === 'owner' ? apiGet('/branches') : Promise.resolve([]),
   ]).then(([users, branchList]) => {
-      setItems(users)
+      setItems(users.items)
       setBranches(branchList)
     })
     .catch((loadError: any) => setError(loadError.message))
@@ -103,8 +118,8 @@ export default function Users() {
     setError('')
     try {
       await apiPatch(`/users/${editing.id}/permissions`, {
-        granted_capabilities: grants,
-        revoked_capabilities: revokes,
+        granted_permissions: grants,
+        revoked_permissions: revokes,
       })
       setEditing(null)
       await load()
@@ -160,7 +175,7 @@ export default function Users() {
           />
           <select className="select" value={role} onChange={(event) => setRole(event.target.value)}>
             {Object.entries(roleNames).filter(([value]) =>
-              actor?.role === 'owner' ? value !== 'owner' : ['cashier', 'warehouse_manager', 'seller'].includes(value)
+              actor?.role === 'owner' ? value !== 'tenant_owner' : ['cashier', 'warehouse_manager', 'seller'].includes(value)
             ).map(([value, label]) => (
               <option key={value} value={value}>{label}</option>
             ))}
@@ -202,8 +217,8 @@ export default function Users() {
                 <td>{user.is_active ? 'نشط' : 'معطل'}</td>
                 <td><button className="btn" onClick={() => {
                   setEditing(user)
-                  setGrants(user.granted_capabilities || [])
-                  setRevokes(user.revoked_capabilities || [])
+                  setGrants(user.granted_permissions || [])
+                  setRevokes(user.revoked_permissions || [])
                 }}>تعديل</button></td>
               </tr>
             ))}
@@ -223,19 +238,19 @@ export default function Users() {
           <button className="btn" onClick={() => setEditing(null)}>إلغاء</button>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-          {Object.entries(capabilityNames).map(([capability, label]) => {
-            const granted = grants.includes(capability)
-            const revoked = revokes.includes(capability)
-            return <div key={capability} className="rounded border p-2">
+          {Object.entries(permissionNames).map(([permission, label]) => {
+            const granted = grants.includes(permission)
+            const revoked = revokes.includes(permission)
+            return <div key={permission} className="rounded border p-2">
               <div className="font-medium">{label}</div>
               <div className="flex gap-2 mt-2">
                 <button className={granted ? 'btn-accent' : 'btn'} onClick={() => {
-                  setGrants(current => granted ? current.filter(item => item !== capability) : [...current, capability])
-                  setRevokes(current => current.filter(item => item !== capability))
+                  setGrants(current => granted ? current.filter(item => item !== permission) : [...current, permission])
+                  setRevokes(current => current.filter(item => item !== permission))
                 }}>منح</button>
                 <button className={revoked ? 'btn-accent' : 'btn'} onClick={() => {
-                  setRevokes(current => revoked ? current.filter(item => item !== capability) : [...current, capability])
-                  setGrants(current => current.filter(item => item !== capability))
+                  setRevokes(current => revoked ? current.filter(item => item !== permission) : [...current, permission])
+                  setGrants(current => current.filter(item => item !== permission))
                 }}>سحب</button>
               </div>
             </div>

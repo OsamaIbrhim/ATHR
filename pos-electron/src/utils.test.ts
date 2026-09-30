@@ -23,6 +23,7 @@ describe('POS checkout calculations', () => {
       tax: 8.4,
       total: 68.37,
       quantity: 3,
+      lines: 1,
     })
   })
 
@@ -41,7 +42,15 @@ describe('POS checkout calculations', () => {
       tax: 34.93,
       total: 284.43,
       quantity: 3,
+      lines: 2,
     })
+  })
+})
+
+describe('POS decimal quantities in the cart', () => {
+  it('totals a weighed line the way the server does', () => {
+    const totals = cartTotals([item(1.235, 10.33, 1.45), { ...item(2, 4.75, 0.67), variant_id: 'v2' }])
+    expect(totals).toEqual({ subtotal: 22.26, tax: 3.13, total: 25.39, quantity: 3.235, lines: 2 })
   })
 })
 

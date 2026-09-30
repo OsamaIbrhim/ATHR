@@ -3,14 +3,18 @@
 @tailwind utilities;
 body { font-family: 'Cairo', 'Segoe UI', system-ui, sans-serif; }
 .rtl { direction: rtl; }
-.card { @apply bg-white rounded-2xl shadow p-5; }
-.btn { @apply px-4 py-2 rounded-xl bg-athr text-white hover:bg-black; }
-.btn-accent { @apply px-4 py-2 rounded-xl bg-accent text-black; }
-.input { @apply border rounded-xl px-3 py-2 w-full; }
-.select { @apply border rounded-xl px-3 py-2 w-full bg-white; }
-.btn-secondary { @apply px-4 py-2 rounded-xl border bg-white hover:bg-gray-50; }
+.card { @apply bg-white rounded-2xl border border-gray-200/80 shadow-sm p-5; }
+.btn { @apply px-4 py-2 rounded-xl bg-athr text-white hover:bg-black transition-colors; }
+.btn-accent { @apply px-4 py-2 rounded-xl bg-accent text-black hover:brightness-95 transition; }
+.input { @apply border border-gray-300 rounded-xl px-3 py-2 w-full bg-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent; }
+.select { @apply border border-gray-300 rounded-xl px-3 py-2 w-full bg-white focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent; }
+.btn-secondary { @apply px-4 py-2 rounded-xl border border-gray-300 bg-white hover:bg-gray-50 transition-colors; }
 .status-dot { @apply inline-block w-2.5 h-2.5 rounded-full ml-2; }
-table { @apply w-full; }
-th { @apply text-right bg-athr text-white px-3 py-2; }
-td { @apply px-3 py-2 border-b border-gray-100; }
+table { @apply w-full text-sm; }
+th { @apply text-right bg-gray-50 text-gray-600 text-xs font-semibold px-3 py-2 border-b border-gray-200 whitespace-nowrap; }
+td { @apply px-3 py-2 border-b border-gray-100 align-middle; }
+tbody tr:hover td { @apply bg-gray-50/60; }
 button:disabled { @apply opacity-50 cursor-not-allowed; }
+.input-sm { @apply border border-gray-300 rounded-lg px-2 py-1 w-full bg-white text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent; }
+.tag { @apply inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-800 text-xs px-2.5 py-1 border border-gray-200; }
+.badge { @apply inline-flex items-center rounded-full text-xs px-2 py-0.5 font-medium; }

@@ -37,3 +37,11 @@ export { ok, fail } from './result';
 export type { Result, DomainFailure } from './result';
 
 export { EmailAddress, PhoneNumber } from './identity-value-objects';
+
+export {
+  DEFAULT_SCALE_BARCODE_CONFIG,
+  ean13CheckDigit,
+  isValidEan13,
+  parseScaleBarcode,
+} from "./scale-barcode";
+export type { ScaleBarcodeConfig, ScaleBarcodeReading } from "./scale-barcode";

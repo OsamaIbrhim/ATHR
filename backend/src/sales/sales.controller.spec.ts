@@ -1,20 +1,14 @@
+import { actorFor } from '../auth/testing/actors';
 import { SalesController } from './sales.controller';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+import { fullAccess } from '../entitlements/testing';
 
 // WP-007 Phase A: sales entry points take the resolved TenantContext first.
 const ctx = contextFor(TENANT_A);
 
 describe('SalesController POS terminal enforcement', () => {
-  const cashier = {
-    sub: 'cashier-1',
-    role: 'cashier',
-    branch_id: 'branch-1',
-  } as any;
-  const owner = {
-    sub: 'owner-1',
-    role: 'owner',
-    branch_id: null,
-  } as any;
+  const cashier = actorFor('cashier', { sub: 'cashier-1', branchId: 'branch-1' });
+  const owner = actorFor('tenant_owner', { sub: 'owner-1', tenantWide: true });
   const request = (user: any) => ({ user }) as any;
   const sale = {
     branch_id: 'branch-1',
@@ -33,7 +27,6 @@ describe('SalesController POS terminal enforcement', () => {
     } as any;
     const reads = {
       listSales: jest.fn(),
-      invalidateCounts: jest.fn(),
     } as any;
     const terminal = {
       id: 'terminal-1',
@@ -50,6 +43,7 @@ describe('SalesController POS terminal enforcement', () => {
         reads,
         {} as any,
         terminals,
+        fullAccess,
       ),
       sales,
       reads,
@@ -66,7 +60,6 @@ describe('SalesController POS terminal enforcement', () => {
       'secret-1',
     );
     expect(sales.createSale).toHaveBeenCalledWith(sale, terminal);
-    expect(reads.invalidateCounts).toHaveBeenCalledTimes(1);
   });
 
   it('authenticates the enrolled terminal before a return or invoice lookup', async () => {
