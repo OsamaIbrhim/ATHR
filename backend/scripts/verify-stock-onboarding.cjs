@@ -56,6 +56,11 @@ const counts = new StockCountsService(prisma, inventory, countReads);
 const countScans = new StockCountScansService(prisma);
 const LowStockService = load('inventory', 'low-stock.service.js', 'LowStockService');
 const lowStock = new LowStockService(prisma);
+const ProductImportService = load('product-import', 'product-import.service.js', 'ProductImportService');
+const LimitService = load('entitlements', 'limit.service.js', 'LimitService');
+const EntitlementService = load('entitlements', 'entitlement.service.js', 'EntitlementService');
+const TaxCodeService = load('tax', 'tax-code.service.js', 'TaxCodeService');
+const TaxCodeRepository = load('tax', 'tax-code.repository.js', 'TaxCodeRepository');
 
 let failed = 0;
 function check(name, ok, detail) {
@@ -563,10 +568,180 @@ async function verifyLowStock() {
   check('L3 another tenant sees none of these items', foreignView.total === 0);
 }
 
+// --- I: bulk product import ----------------------------------------------------
+
+async function withPlan(world, limits) {
+  const plan = await prisma.plan.create({
+    data: { code: `l1-${randomUUID().slice(0, 8)}`, name_ar: 'خطة', name_en: 'L1', price_monthly: 1, limits, features: [] },
+  });
+  await prisma.subscription.create({ data: { tenant_id: world.tenant.id, plan_id: plan.id, status: 'active' } });
+}
+
+const importPermissions = ['pricing.price-entry.manage', 'pricing.price-book.activate', 'inventory.adjustment.post', 'inventory.position.view-cost'];
+
+function importerFor(inventoryLike = inventory) {
+  const entitlements = new EntitlementService(prisma);
+  return new ProductImportService(prisma, inventoryLike, new LimitService(prisma, entitlements), new TaxCodeService(new TaxCodeRepository(prisma)));
+}
+
+/** n valid rows: SKU, barcode, Arabic name, price, cost, opening quantity and a category. */
+const fileRows = (n, prefix, extra = {}) =>
+  Array.from({ length: n }, (_, i) => ({
+    row_ref: i + 2,
+    sku: `${prefix}-${i}`,
+    barcode: `${prefix}B${i}`,
+    name: `منتج ${prefix} ${i}`,
+    price: 50 + i,
+    cost: 30,
+    opening_qty: 5,
+    category: 'منتجات الاستيراد',
+    ...extra,
+  }));
+
+async function verifyImport() {
+  const world = await createTenantWorld('import');
+  const actor = actorOf(world, importPermissions);
+  const importer = importerFor();
+  const run = (rows, extra = {}, who = actor, w = world) =>
+    importer.import(w.context, { price_tax_mode: 'inclusive', branch_id: w.branch.id, rows, ...extra }, who);
+  const productCount = () => prisma.product.count({ where: { tenant_id: world.tenant.id } });
+  await prisma.unitOfMeasure.createMany({
+    data: [
+      { tenant_id: world.tenant.id, code: 'PC', name_en: 'Piece', name_ar: 'قطعة', precision: 0 },
+      { tenant_id: world.tenant.id, code: 'KG', name_en: 'Kilo', name_ar: 'كجم', precision: 3 },
+    ],
+  });
+  await prisma.productType.create({ data: { tenant_id: world.tenant.id, name_ar: 'ملابس', name_en: 'Clothes', attributes: [{ key: 'size', label_ar: 'مقاس', label_en: 'Size', kind: 'text', axis: true }] } });
+  await prisma.productType.create({ data: { tenant_id: world.tenant.id, name_ar: 'عام', name_en: 'General', attributes: [] } });
+  const existing = await createVariant(world, { sku: 'EXISTING-1' });
+  await prisma.productBarcode.create({ data: { tenant_id: world.tenant.id, code: 'TAKEN-1', variant_id: existing.id } });
+
+  const mixed = [
+    ...fileRows(6, 'OK'),
+    { row_ref: 100, sku: 'EXISTING-1', name: 'Already there', price: 9 },
+    { row_ref: 101, sku: 'OK-0', name: 'Same SKU twice', price: 9 },
+    { row_ref: 102, sku: 'NEWSKU', barcode: 'OKB1', name: 'Barcode twice in the file', price: 9 },
+    { row_ref: 103, sku: 'NEWSKU2', barcode: 'TAKEN-1', name: 'Barcode of another item', price: 9 },
+    { row_ref: 104, sku: 'BADPRICE', name: 'Bad price', price: 'abc' },
+    { row_ref: 105, name: 'No identity', price: 1 },
+    { row_ref: 106, sku: 'UNIT-X', name: 'Unknown unit', price: 1, unit: 'لتر' },
+    { row_ref: 107, sku: 'TYPE-X', name: 'Unknown type', price: 1, product_type: 'سيارات' },
+    { row_ref: 108, sku: 'TYPE-CL', name: 'Type that needs attributes', price: 1, product_type: 'ملابس' },
+    { row_ref: 109, sku: 'KG-1', name: 'Loose rice', price: 20, cost: 12, unit: 'كجم', opening_qty: '2.5' },
+    { row_ref: 110, sku: 'PC-FRAC', name: 'Fraction of a piece', price: 20, opening_qty: 1.5 },
+    { row_ref: 111, sku: 'TYPED', name: 'General typed item', price: '٣٥', product_type: 'عام' },
+    { row_ref: 112, sku: 'FREE', name: 'Free sample', price: 0 },
+  ];
+
+  // I1 dry run writes nothing; real run agrees with it row by row
+  const before = await productCount();
+  const dry = await run(mixed, { dry_run: true });
+  check('I1 a dry run writes nothing (no products, no price book, no stock)', (await productCount()) === before && (await prisma.priceBook.count({ where: { tenant_id: world.tenant.id } })) === 0 && (await prisma.inventoryMovement.count({ where: { tenant_id: world.tenant.id, movement_type: 'opening_balance' } })) === 0);
+  const by = (result, sku) => result.rows.find((row) => row.sku === sku);
+  const codesOf = (row) => row.errors.map((error) => error.code).join();
+  check('I1 dry run: valid rows are ready, with warnings kept', dry.summary.ready === 9 && by(dry, 'OK-1').status === 'ready', show(dry.summary));
+  check('I1 dry run: an existing SKU is skipped and names the variant', by(dry, 'EXISTING-1').status === 'skipped' && by(dry, 'EXISTING-1').variant_id === existing.id);
+  check('I1 dry run: file duplicates, taken barcode, bad cells, unit and type problems are per-row errors', [
+    [102, 'IMPORT_DUPLICATE_BARCODE_IN_FILE'], [103, 'CATALOG_BARCODE_CONFLICT'], [104, 'IMPORT_PRICE_INVALID'], [105, 'IMPORT_NO_IDENTITY'],
+    [106, 'IMPORT_UNIT_UNKNOWN'], [107, 'IMPORT_PRODUCT_TYPE_UNKNOWN'], [108, 'IMPORT_PRODUCT_TYPE_NEEDS_ATTRIBUTES'], [110, 'IMPORT_QTY_PRECISION'],
+  ].every(([ref, code]) => dry.rows.find((row) => row.row_ref === ref)?.status === 'failed' && codesOf(dry.rows.find((row) => row.row_ref === ref)) === code), show(dry.rows.filter((r) => r.status === 'failed').map((r) => [r.row_ref, codesOf(r)])));
+  check('I1 dry run: the repeated SKU of the file is named as a duplicate of the first row', codesOf(dry.rows.find((row) => row.row_ref === 101)) === 'IMPORT_DUPLICATE_SKU_IN_FILE' && dry.rows.find((row) => row.row_ref === 101).errors[0].data.first_row === 2);
+
+  const real = await run(mixed);
+  const status = (result) => result.rows.map((row) => (row.status === 'ready' || row.status === 'created' ? 'ok' : `${row.status}:${codesOf(row)}`)).join('|');
+  check('I1 the real run gives the same verdict for every row as the dry run', status(real) === status(dry), `${status(real)} vs ${status(dry)}`);
+  check('I1 the real run reports created / skipped / failed and variant ids', real.summary.created === 9 && real.summary.skipped === 1 && real.summary.failed === 9, show(real.summary));
+
+  // I2 what was written
+  const ok1 = await prisma.productVariant.findFirstOrThrow({ where: { tenant_id: world.tenant.id, sku: 'OK-1' }, include: { barcodes: true, product: true } });
+  check('I2 product, variant, barcode and cost are created; Arabic names fill name_ar', ok1.barcodes.map((b) => b.code).join() === 'OKB1' && ok1.cost_price.equals(30) && ok1.product.name_ar === 'منتج OK 1' && ok1.product.tax_category_id === world.taxCategory.id && ok1.tracking === 'none' && ok1.item_type === 'stocked');
+  const book = await prisma.priceBook.findFirstOrThrow({ where: { tenant_id: world.tenant.id } });
+  check('I2 a tenant without a default price book gets a live one', book.status === 'active' && book.is_default === true && book.scope === 'tenant_default' && book.currency === 'EGP');
+  const entry = await prisma.priceBookEntry.findFirstOrThrow({ where: { tenant_id: world.tenant.id, scope_id: ok1.id } });
+  check('I2 the price is a variant entry of that book with the requested tax mode', entry.unit_price.equals(51) && entry.tax_mode === 'inclusive' && entry.status === 'active' && entry.price_book_id === book.id && entry.scope_type === 'variant');
+  const stock = await stockOf(world, ok1);
+  const movement = await prisma.inventoryMovement.findFirstOrThrow({ where: { tenant_id: world.tenant.id, variant_id: ok1.id } });
+  check('I2 the opening quantity goes through the opening-balance path at the row cost', stock.qty_on_hand.equals(5) && stock.avg_cost.equals(30) && movement.movement_type === 'opening_balance' && (await prisma.inventoryCostMovement.count({ where: { tenant_id: world.tenant.id, variant_id: ok1.id, movement_type: 'opening_balance' } })) === 1);
+  const kg = await prisma.productVariant.findFirstOrThrow({ where: { tenant_id: world.tenant.id, sku: 'KG-1' } });
+  check('I2 a decimal unit takes a decimal quantity', (await stockOf(world, kg)).qty_on_hand.equals('2.5') && kg.base_uom_id !== null);
+  const typed = await prisma.productVariant.findFirstOrThrow({ where: { tenant_id: world.tenant.id, sku: 'TYPED' }, include: { product: true } });
+  const typedEntry = await prisma.priceBookEntry.findFirstOrThrow({ where: { tenant_id: world.tenant.id, scope_id: typed.id } });
+  check('I2 a product type without axis attributes is accepted; Arabic-digit prices are read', typed.product.product_type_id !== null && typedEntry.unit_price.equals(35));
+  const free = await prisma.priceBookEntry.findFirstOrThrow({ where: { tenant_id: world.tenant.id, unit_price: 0 } });
+  check('I2 a zero price is stored with its explicit allowance', free.allow_zero_price === true);
+  const categories = await prisma.category.findMany({ where: { tenant_id: world.tenant.id } });
+  check('I2 an unknown plain category is created once and shared', categories.length === 1 && categories[0].name_ar === 'منتجات الاستيراد' && ok1.product.category_id === categories[0].id && real.summary.categories_created === 1);
+  check('I2 nothing of the failed rows exists', (await prisma.productVariant.count({ where: { tenant_id: world.tenant.id, sku: { in: ['BADPRICE', 'UNIT-X', 'TYPE-X', 'TYPE-CL', 'PC-FRAC', 'NEWSKU', 'NEWSKU2'] } } })) === 0);
+  check('I2 the existing item was not touched', (await prisma.productVariant.findUniqueOrThrow({ where: { id: existing.id } })).cost_price.equals(10) && !(await stockOf(world, existing)));
+  check('I2 a synced catalogue sees the new rows (sync changes were emitted by the triggers)', (await prisma.syncChange.count({ where: { tenant_id: world.tenant.id, kind: 'variant', entity_key: ok1.id } })) > 0);
+
+  // I3 re-sending a chunk is idempotent
+  const variantsBefore = await prisma.productVariant.count({ where: { tenant_id: world.tenant.id } });
+  const again = await run(fileRows(6, 'OK'));
+  check('I3 re-sending the same rows skips them all and changes nothing', again.summary.skipped === 6 && again.summary.created === 0 && (await prisma.productVariant.count({ where: { tenant_id: world.tenant.id } })) === variantsBefore && (await stockOf(world, ok1)).qty_on_hand.equals(5));
+
+  // I4 product limit
+  const limited = await createTenantWorld('import-limit');
+  await withPlan(limited, { products: 5 });
+  await createVariants(limited, 3);
+  const limitedActor = actorOf(limited, importPermissions);
+  const limitedRun = (rows, extra = {}) => importer.import(limited.context, { price_tax_mode: 'exclusive', branch_id: limited.branch.id, rows, ...extra }, limitedActor);
+  const dryLimit = await limitedRun(fileRows(6, 'LIM'), { dry_run: true });
+  check('I4 dry run: rows beyond the plan limit are flagged out of plan, with the limit shown', dryLimit.summary.ready === 2 && dryLimit.summary.out_of_plan === 4 && dryLimit.plan_limit.limit === 5 && dryLimit.plan_limit.remaining === 2, show(dryLimit.summary));
+  const realLimit = await limitedRun(fileRows(6, 'LIM'));
+  const limitedProducts = await prisma.product.count({ where: { tenant_id: limited.tenant.id, is_active: true } });
+  check('I4 real run creates only what the plan allows and fails the rest with the limit code', realLimit.summary.created === 2 && realLimit.summary.failed === 4 && realLimit.rows.filter((row) => codesOf(row) === 'ENTITLEMENT_LIMIT_REACHED').length === 4 && limitedProducts === 5, `products=${limitedProducts}`);
+  const createdLimited = await prisma.productVariant.findMany({ where: { tenant_id: limited.tenant.id, sku: { startsWith: 'LIM-' } } });
+  check('I4 every created row is complete (variant, price entry, stock); nothing half-written', createdLimited.length === 2 && (await prisma.priceBookEntry.count({ where: { tenant_id: limited.tenant.id } })) === 2 && (await prisma.inventoryStock.count({ where: { tenant_id: limited.tenant.id } })) === 2);
+  const [raceA, raceB] = await Promise.all([limitedRun(fileRows(3, 'RA')), limitedRun(fileRows(3, 'RB'))]);
+  check('I4 concurrent imports cannot overshoot the limit', raceA.summary.created + raceB.summary.created === 0 && (await prisma.product.count({ where: { tenant_id: limited.tenant.id, is_active: true } })) === 5);
+  const roomy = await createTenantWorld('import-room');
+  await withPlan(roomy, { products: 6 });
+  const roomyRun = (rows) => importer.import(roomy.context, { price_tax_mode: 'exclusive', branch_id: roomy.branch.id, rows }, actorOf(roomy, importPermissions));
+  const [roomA, roomB] = await Promise.all([roomyRun(fileRows(4, 'XA')), roomyRun(fileRows(4, 'XB'))]);
+  check('I4 two concurrent imports share the remaining room exactly (6 of 8 rows)', roomA.summary.created + roomB.summary.created === 6 && (await prisma.product.count({ where: { tenant_id: roomy.tenant.id } })) === 6, `${roomA.summary.created}+${roomB.summary.created}`);
+
+  // I5 batch statements do not depend on the number of rows
+  const bulk = await createTenantWorld('import-bulk');
+  const bulkActor = actorOf(bulk, importPermissions);
+  const bulkRun = (rows) => importer.import(bulk.context, { price_tax_mode: 'inclusive', branch_id: bulk.branch.id, rows }, bulkActor);
+  await bulkRun(fileRows(1, 'WARM'));
+  const [, oneRow] = await counted(() => bulkRun(fileRows(1, 'ONE')));
+  const [twoHundred, batch200] = await counted(() => bulkRun(fileRows(200, 'TWOH')));
+  const [fourHundred, batch400] = await counted(() => bulkRun(fileRows(400, 'FOURH')));
+  const [, batch450] = await counted(() => bulkRun(fileRows(450, 'FOURFIFTY')));
+  check('I5 1 row and 200 rows (one batch) use the same number of statements', oneRow === batch200, `1 row=${oneRow}, 200 rows=${batch200}`);
+  check('I5 each further batch of 200 adds the same fixed number of statements', batch400 > batch200 && batch400 - batch200 === batch450 - batch400, `200=${batch200}, 400=${batch400}, 450=${batch450}`);
+  check('I5 a whole chunk of 200 rows is a small fixed number of statements (no per-row queries)', batch200 <= 40, `200 rows=${batch200}`);
+  check('I5 all rows of the big chunks were created', twoHundred.summary.created === 200 && fourHundred.summary.created === 400 && (await prisma.product.count({ where: { tenant_id: bulk.tenant.id } })) === 1 + 1 + 200 + 400 + 450);
+  process.stdout.write(`INFO  import statements: 1 row=${oneRow}, 200 rows=${batch200}, 400 rows=${batch400}, 450 rows=${batch450}\n`);
+
+  // I6 a failure inside a batch rolls the batch back and isolates the row at fault
+  const flaky = await createTenantWorld('import-flaky');
+  const flakyInventory = Object.create(inventory);
+  flakyInventory.apply = (tx, command) => {
+    if (command.lines.some((line) => String(line.unitCost) === '77.77')) return Promise.reject(new Error('boom'));
+    return inventory.apply(tx, command);
+  };
+  const flakyRows = [...fileRows(5, 'FL'), { ...fileRows(1, 'BAD')[0], cost: 77.77 }, ...fileRows(4, 'FM')];
+  const flakyRun = await importerFor(flakyInventory).import(flaky.context, { price_tax_mode: 'inclusive', branch_id: flaky.branch.id, rows: flakyRows }, actorOf(flaky, importPermissions));
+  check('I6 a failing row is isolated: only it fails, the rest of its batch is created', flakyRun.summary.created === 9 && flakyRun.summary.failed === 1 && codesOf(flakyRun.rows[5]) === 'IMPORT_ROW_FAILED', show(flakyRun.summary));
+  check('I6 the failed row left nothing behind', (await prisma.productVariant.count({ where: { tenant_id: flaky.tenant.id, sku: 'BAD-0' } })) === 0 && (await prisma.priceBookEntry.count({ where: { tenant_id: flaky.tenant.id } })) === 9);
+
+  // I7 tenants
+  const other = await createTenantWorld('import-other');
+  const otherRun = await importer.import(other.context, { price_tax_mode: 'inclusive', branch_id: other.branch.id, rows: [{ sku: 'OK-1', name: 'Same SKU, other tenant', price: 5, category: 'منتجات الاستيراد', unit: 'كجم' }, { sku: 'X-1', barcode: 'TAKEN-1', name: 'Barcode of another tenant', price: 5 }] }, actorOf(other, importPermissions));
+  check('I7 another tenant\'s SKUs, barcodes and units do not interfere, and its category is its own', codesOf(otherRun.rows[0]) === 'IMPORT_UNIT_UNKNOWN' && otherRun.rows[1].status === 'created');
+  const foreignBranch = await rejection(importer.import(other.context, { price_tax_mode: 'inclusive', branch_id: world.branch.id, rows: fileRows(1, 'FB') }, actorOf(other, importPermissions)));
+  check('I7 another tenant\'s branch cannot receive opening quantities', foreignBranch?.getStatus?.() === 404);
+  const noBranch = await rejection(run(fileRows(1, 'NB'), { branch_id: undefined }));
+  check('I7 opening quantities without a branch are refused by code', codeOf(noBranch) === 'IMPORT_BRANCH_REQUIRED');
+}
+
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyOpeningBalance, verifyAdjustments, verifyStockCounts, verifyLowStock];
+  const sections = [verifyOpeningBalance, verifyAdjustments, verifyStockCounts, verifyLowStock, verifyImport];
   for (const section of sections) {
     try {
       await section();
