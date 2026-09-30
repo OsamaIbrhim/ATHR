@@ -38,6 +38,12 @@ describe('validateAdjustmentLines', () => {
     });
   });
 
+  it('accepts only the fixed reasons (count_variance is written by counts, not chosen)', () => {
+    expect(codeOf(() => validateAdjustmentLines([line({ reason_code: 'found' })], variants(variant('a'))))?.code).toBe('ADJUSTMENT_REASON_INVALID');
+    expect(codeOf(() => validateAdjustmentLines([line({ reason_code: 'count_variance' })], variants(variant('a'))))?.code).toBe('ADJUSTMENT_REASON_INVALID');
+    expect(codeOf(() => validateAdjustmentLines([line({ reason_code: 'gift' })], variants(variant('a'))))).toBeNull();
+  });
+
   it('needs a note for the reason "other"', () => {
     expect(codeOf(() => validateAdjustmentLines([line({ reason_code: 'other' })], variants(variant('a'))))?.code).toBe('ADJUSTMENT_NOTE_REQUIRED');
     expect(codeOf(() => validateAdjustmentLines([line({ reason_code: 'other', note: '   ' })], variants(variant('a'))))?.code).toBe('ADJUSTMENT_NOTE_REQUIRED');

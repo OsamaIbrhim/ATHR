@@ -192,6 +192,24 @@ async function verifyOpeningBalance() {
   const replay = await open([{ variant_id: a.id, qty: 10, unit_cost: 25.5 }, { variant_id: b.id, qty: 4 }], key);
   check('O2 replaying the same key returns the same result without posting again', replay.posted === 2 && (await stockOf(world, a)).qty_on_hand.equals(10) && (await prisma.inventoryMovement.count({ where: { tenant_id: world.tenant.id, variant_id: a.id } })) === 1);
 
+  // O2b a retry after the items sold in between is still a replay (the tills keep selling)
+  const [r1, r2, r3] = await createVariants(world, 3);
+  const retryKey = `opening-${randomUUID()}`;
+  const retryLines = [{ variant_id: r1.id, qty: 4 }, { variant_id: r2.id, qty: 3 }];
+  await open(retryLines, retryKey);
+  await sell(world, r1, 1);
+  await sell(world, r2, 1);
+  const retried = await open(retryLines, retryKey);
+  const openMovements = await prisma.inventoryMovement.count({ where: { tenant_id: world.tenant.id, variant_id: { in: [r1.id, r2.id] }, movement_type: 'opening_balance' } });
+  check('O2 a retry after two of its items sold in between is answered as posted, not refused', retried.posted === 2 && retried.rejected === 0 && retried.results.every((line) => line.status === 'posted') && openMovements === 2 && (await stockOf(world, r1)).qty_on_hand.equals(3), show(retried.results));
+  const singleKey = `opening-${randomUUID()}`;
+  await open([{ variant_id: r3.id, qty: 6 }], singleKey);
+  await sell(world, r3, 2);
+  const singleRetry = await open([{ variant_id: r3.id, qty: 6 }], singleKey);
+  check('O2 a single-line retry after a sale is a 200 replay, not a 422', singleRetry.posted === 1 && singleRetry.results[0].status === 'posted' && (await stockOf(world, r3)).qty_on_hand.equals(4));
+  const changed = await rejection(open([{ variant_id: r3.id, qty: 7 }], singleKey));
+  check('O2 the same key with another quantity is still refused by code', codeOf(changed) === 'IDEMPOTENCY_KEY_REUSED');
+
   const reuse = await rejection(open([{ variant_id: a.id, qty: 99 }, { variant_id: b.id, qty: 4 }], key));
   check('O4 the same key with a different payload is refused by code', codeOf(reuse) === 'IDEMPOTENCY_KEY_REUSED', show(codeOf(reuse)));
 
@@ -219,6 +237,8 @@ async function verifyOpeningBalance() {
   const [, one] = await counted(() => open([{ variant_id: many[0].id, qty: 1 }]));
   const [, forty] = await counted(() => open(many.slice(1).map((variant) => ({ variant_id: variant.id, qty: 2, unit_cost: 3 }))));
   check('O6 opening 1 line and 40 lines use the same number of statements', one === forty, `1 line=${one}, 40 lines=${forty}`);
+  process.stdout.write(`INFO  opening balance statements (any number of lines): ${forty}
+`);
 
   // O7 tracked variants are refused for now.
   const serial = await createVariant(world, { tracking: 'serial' });
@@ -260,7 +280,7 @@ async function verifyAdjustments() {
   const commandId = `cmd-${randomUUID()}`;
   const lines = [
     { variant_id: a.id, qty_delta: -2, reason_code: reason },
-    { variant_id: b.id, qty_delta: 5, reason_code: 'found' },
+    { variant_id: b.id, qty_delta: 5, reason_code: 'correction' },
   ];
   const doc = await draft(lines, { command_id: commandId });
   check('A1 a draft is created with a number and its lines', doc.status === 'draft' && /^ADJ-\d{6}$/.test(doc.adjustment_number) && doc.items.length === 2);
@@ -296,6 +316,8 @@ async function verifyAdjustments() {
   check('A4 the cost ledger has a row per adjusted line', costRows === 2, `rows=${costRows}`);
   check('A4 posted totals carry the net value for a reader with cost access', posted.totals.net_value === '90.00' && posted.totals.increase_value === '150.00');
   check('A3 posting issues a constant number of statements (no per-line queries)', statements < 25, `statements=${statements}`);
+  process.stdout.write(`INFO  adjustment post statements (2 lines, including the read back): ${statements}
+`);
   const replayed = await adjustments.post(world.context, doc.id, actorOf(world));
   check('A2 posting twice returns the posted document and moves nothing more', replayed.status === 'posted' && (await stockOf(world, a)).qty_on_hand.equals(7));
 
@@ -309,7 +331,7 @@ async function verifyAdjustments() {
   const rawHeader = await rejection(prisma.$executeRaw`UPDATE "StockAdjustment" SET "note" = 'tamper' WHERE "id" = ${doc.id}::uuid`);
   const rawDelete = await rejection(prisma.$executeRaw`DELETE FROM "StockAdjustmentItem" WHERE "adjustment_id" = ${doc.id}::uuid`);
   check('A6 a posted document and its lines cannot be changed or deleted by SQL', !!rawItem && !!rawHeader && !!rawDelete);
-  const fresh = await draft([{ variant_id: c.id, qty_delta: 1, reason_code: 'found' }]);
+  const fresh = await draft([{ variant_id: c.id, qty_delta: 1, reason_code: 'correction' }]);
   const skip = await rejection(prisma.$executeRaw`UPDATE "StockAdjustment" SET "status" = 'posted' WHERE "id" = ${fresh.id}::uuid`);
   check('A6 a draft cannot jump straight to posted', !!skip);
 
@@ -338,9 +360,9 @@ async function verifyAdjustments() {
 
   // refusals at creation
   const serial = await createVariant(world, { tracking: 'serial' });
-  const trackedDraft = await rejection(draft([{ variant_id: serial.id, qty_delta: 1, reason_code: 'found' }]));
+  const trackedDraft = await rejection(draft([{ variant_id: serial.id, qty_delta: 1, reason_code: 'correction' }]));
   check('A8 a tracked variant is refused with a clear code and line index', codeOf(trackedDraft) === 'TRACKED_VARIANT_NOT_SUPPORTED' && trackedDraft.response.data.line_index === 0);
-  const dup = await rejection(draft([{ variant_id: a.id, qty_delta: 1, reason_code: 'found' }, { variant_id: a.id, qty_delta: 2, reason_code: 'found' }]));
+  const dup = await rejection(draft([{ variant_id: a.id, qty_delta: 1, reason_code: 'correction' }, { variant_id: a.id, qty_delta: 2, reason_code: 'correction' }]));
   check('A8 a repeated item is refused', codeOf(dup) === 'DUPLICATE_LINE');
 
   // list
@@ -476,6 +498,8 @@ async function verifyStockCounts() {
   const movements = await prisma.inventoryMovement.findMany({ where: { tenant_id: world.tenant.id, reference_type: 'StockCount', reference_id: count.id } });
   check('C4 posting is one stock_count engine command (one key) with a line per changed item', movements.length === 3 && movements.every((m) => m.movement_type === 'stock_count') && new Set(movements.map((m) => m.idempotency_key)).size === 1, `movements=${movements.length}`);
   check('C4 posting issues a constant number of statements', postStatements < 35, `statements=${postStatements}`);
+  process.stdout.write(`INFO  stock count post statements (3 changed lines + 1 zeroed, including the read back): ${postStatements}
+`);
   const lines = await prisma.stockCountLine.findMany({ where: { count_id: count.id } });
   check('C4 lines are stamped with the applied change and cost; the zeroed item has its own line', lines.find((l) => l.variant_id === x.id).applied_delta.equals(-3) && lines.find((l) => l.variant_id === v.id).zeroed === true && lines.find((l) => l.variant_id === x.id).unit_cost.equals(20));
   const replay = await counts.post(world.context, count.id, { uncounted: 'ignore' }, poster);
@@ -720,13 +744,21 @@ async function verifyImport() {
   const flaky = await createTenantWorld('import-flaky');
   const flakyInventory = Object.create(inventory);
   flakyInventory.apply = (tx, command) => {
-    if (command.lines.some((line) => String(line.unitCost) === '77.77')) return Promise.reject(new Error('boom'));
+    if (command.lines.some((line) => String(line.unitCost) === '77.77')) {
+      return Promise.reject(new Prisma.PrismaClientKnownRequestError('duplicate key', { code: 'P2010', clientVersion: Prisma.prismaVersion.client, meta: { code: '23505' } }));
+    }
     return inventory.apply(tx, command);
   };
   const flakyRows = [...fileRows(5, 'FL'), { ...fileRows(1, 'BAD')[0], cost: 77.77 }, ...fileRows(4, 'FM')];
   const flakyRun = await importerFor(flakyInventory).import(flaky.context, { price_tax_mode: 'inclusive', branch_id: flaky.branch.id, rows: flakyRows }, actorOf(flaky, importPermissions));
-  check('I6 a failing row is isolated: only it fails, the rest of its batch is created', flakyRun.summary.created === 9 && flakyRun.summary.failed === 1 && codesOf(flakyRun.rows[5]) === 'IMPORT_ROW_FAILED', show(flakyRun.summary));
+  check('I6 a unique violation inside a batch is isolated: only the row at fault fails: only it fails, the rest of its batch is created', flakyRun.summary.created === 9 && flakyRun.summary.failed === 1 && codesOf(flakyRun.rows[5]) === 'IMPORT_ROW_FAILED', show(flakyRun.summary));
   check('I6 the failed row left nothing behind', (await prisma.productVariant.count({ where: { tenant_id: flaky.tenant.id, sku: 'BAD-0' } })) === 0 && (await prisma.priceBookEntry.count({ where: { tenant_id: flaky.tenant.id } })) === 9);
+
+  const broken = await createTenantWorld('import-broken');
+  const brokenInventory = Object.create(inventory);
+  brokenInventory.apply = () => Promise.reject(new Error('connection lost'));
+  const brokenRun = await rejection(importerFor(brokenInventory).import(broken.context, { price_tax_mode: 'inclusive', branch_id: broken.branch.id, rows: fileRows(20, 'BR') }, actorOf(broken, importPermissions)));
+  check('I6 any other error fails the request and writes nothing of that batch (no per-row retry storm)', brokenRun?.message === 'connection lost' && (await prisma.productVariant.count({ where: { tenant_id: broken.tenant.id } })) === 0 && (await prisma.priceBookEntry.count({ where: { tenant_id: broken.tenant.id } })) === 0);
 
   // I7 tenants
   const other = await createTenantWorld('import-other');

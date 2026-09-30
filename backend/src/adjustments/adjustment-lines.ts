@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { domainError, UNPROCESSABLE } from '../common/domain-error';
 import { quantity } from '../common/quantity';
 import { refuseVariant, type StockVariant } from '../inventory/inventory-variants';
+import { ADJUSTMENT_REASON_CODES } from './adjustment-reasons';
 import type { AdjustmentLineDto } from './dto/adjustment.dto';
 
 export type ValidLine = {
@@ -30,6 +31,9 @@ export function validateAdjustmentLines(lines: AdjustmentLineDto[], variants: Ma
     const qty = quantity(line.qty_delta);
     const refusal = refuseVariant(variants.get(line.variant_id), qty);
     if (refusal) throw lineError(index, line.variant_id, refusal.code, refusal.message, refusal.message_ar);
+    if (!ADJUSTMENT_REASON_CODES.includes(line.reason_code)) {
+      throw lineError(index, line.variant_id, 'ADJUSTMENT_REASON_INVALID', 'Unknown adjustment reason', 'سبب التسوية غير معروف.');
+    }
     const note = line.note?.trim() || null;
     if (line.reason_code === 'other' && !note) {
       throw lineError(index, line.variant_id, 'ADJUSTMENT_NOTE_REQUIRED', 'A note is required when the reason is "other"', 'اكتب ملاحظة عندما يكون السبب "أخرى".');

@@ -43,7 +43,7 @@ function setup() {
     stockAdjustment: [doc(DOC_A, TENANT_A, BRANCH_A, WAREHOUSE_A), doc(DOC_B, TENANT_B, BRANCH_B, WAREHOUSE_B)],
     stockAdjustmentItem: [
       { id: randomUUID(), tenant_id: TENANT_A, adjustment_id: DOC_A, variant_id: VARIANT_A, qty_delta: new Prisma.Decimal(-1), reason_code: 'damaged', note: null, qty_before: null, qty_after: null, unit_cost: null, value: null },
-      { id: randomUUID(), tenant_id: TENANT_B, adjustment_id: DOC_B, variant_id: VARIANT_B, qty_delta: new Prisma.Decimal(5), reason_code: 'found', note: null, qty_before: null, qty_after: null, unit_cost: null, value: null },
+      { id: randomUUID(), tenant_id: TENANT_B, adjustment_id: DOC_B, variant_id: VARIANT_B, qty_delta: new Prisma.Decimal(5), reason_code: 'correction', note: null, qty_before: null, qty_after: null, unit_cost: null, value: null },
     ],
     branch: [aBranch({ id: BRANCH_A, tenant_id: TENANT_A }), aBranch({ id: BRANCH_A2, tenant_id: TENANT_A }), aBranch({ id: BRANCH_B, tenant_id: TENANT_B })],
     productVariant: [aProductVariant({ id: VARIANT_A, tenant_id: TENANT_A }), aProductVariant({ id: VARIANT_B, tenant_id: TENANT_B })],
@@ -93,7 +93,7 @@ describe('stock adjustments — cross-tenant isolation', () => {
       () => service.approve(contextFor(TENANT_B), DOC_A, tenantWide()),
       () => service.post(contextFor(TENANT_B), DOC_A, tenantWide()),
       () => service.cancel(contextFor(TENANT_B), DOC_A, {}, tenantWide()),
-      () => service.update(contextFor(TENANT_B), DOC_A, { lines: [{ variant_id: VARIANT_B, qty_delta: 1, reason_code: 'found' }] } as any, tenantWide()),
+      () => service.update(contextFor(TENANT_B), DOC_A, { lines: [{ variant_id: VARIANT_B, qty_delta: 1, reason_code: 'correction' }] } as any, tenantWide()),
     ]) {
       await expect(step()).rejects.toThrow('Stock adjustment not found');
     }
@@ -105,7 +105,7 @@ describe('stock adjustments — cross-tenant isolation', () => {
   it('does not create a document in another tenant\'s branch', async () => {
     const { service } = setup();
     await expect(
-      service.create(contextFor(TENANT_A), { branch_id: BRANCH_B, lines: [{ variant_id: VARIANT_A, qty_delta: 1, reason_code: 'found' }] } as any, tenantWide()),
+      service.create(contextFor(TENANT_A), { branch_id: BRANCH_B, lines: [{ variant_id: VARIANT_A, qty_delta: 1, reason_code: 'correction' }] } as any, tenantWide()),
     ).rejects.toThrow('Branch not found');
   });
 

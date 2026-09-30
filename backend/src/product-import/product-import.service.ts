@@ -27,6 +27,12 @@ type Shared = {
 type Tally = { categoriesCreated: number; openingPosted: number };
 
 const TX_OPTIONS = { maxWait: 15_000, timeout: 60_000 } as const;
+/** A unique-index violation, as Prisma reports it for a model call (P2002) or for raw SQL (P2010 / 23505). */
+export function isUniqueViolation(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  return error.code === 'P2002' || (error.code === 'P2010' && (error.meta as { code?: string } | undefined)?.code === '23505');
+}
+
 const hasValue = (cell: unknown) => cell !== null && cell !== undefined && String(cell).trim() !== '' && Number(cell) !== 0;
 
 /**
@@ -95,9 +101,11 @@ export class ProductImportService {
   // --- a batch ----------------------------------------------------------------
 
   /**
-   * One batch in one transaction. If it fails for a reason the plan could not see
-   * (a concurrent import took a barcode), it was rolled back whole: split it in
-   * halves and retry, so only the row at fault fails.
+   * One batch in one transaction. If it hits a unique violation the plan could not
+   * see (a concurrent writer took a SKU or barcode), it was rolled back whole: split
+   * it in halves and retry, so only the row at fault fails. Any other error (a
+   * timeout, a lost connection, a bug) is rethrown: the chunk is idempotent, so the
+   * client simply sends it again and the rows already created come back as skipped.
    */
   private async importRows(rows: ParsedRow[], shared: Shared, tally: Tally): Promise<Verdict[]> {
     if (!rows.length) return [];
@@ -107,6 +115,7 @@ export class ProductImportService {
       tally.openingPosted += done.openingPosted;
       return done.verdicts;
     } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
       if (rows.length > 1) {
         const half = Math.ceil(rows.length / 2);
         return [...(await this.importRows(rows.slice(0, half), shared, tally)), ...(await this.importRows(rows.slice(half), shared, tally))];
