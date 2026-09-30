@@ -54,6 +54,8 @@ const StockCountsReadService = load('stock-counts', 'stock-counts.read.service.j
 const countReads = new StockCountsReadService(prisma);
 const counts = new StockCountsService(prisma, inventory, countReads);
 const countScans = new StockCountScansService(prisma);
+const LowStockService = load('inventory', 'low-stock.service.js', 'LowStockService');
+const lowStock = new LowStockService(prisma);
 
 let failed = 0;
 function check(name, ok, detail) {
@@ -520,10 +522,51 @@ async function verifyStockCounts() {
   check('C6 a counter sees their own recently counted items', recent.total === 3 && recent.items.every((item) => item.counted_by_me > 0), show(recent.total));
 }
 
+// --- L: items at or below zero / without a stock row ----------------------------
+
+async function verifyLowStock() {
+  const world = await createTenantWorld('low');
+  const reader = actorOf(world, ['inventory.position.view', 'inventory.position.view-cost']);
+  const [zero, negative, positive, fresh] = await createVariants(world, 4);
+  const service = await createVariant(world, { item_type: 'service' });
+  const archived = await createVariant(world, { is_active: false });
+  await openStock(world, zero, 3, 20);
+  await sell(world, zero, 3);
+  await sell(world, negative, 2);
+  await openStock(world, positive, 5, 20);
+  const page = (extra = {}, actor = reader) => lowStock.list(world.context, { page: 1, page_size: 50, branch_id: world.branch.id, ...extra }, actor);
+
+  const all = await page();
+  check('L1 "all" lists zero and negative items, the most negative first', all.items.map((item) => item.variant.id).join() === [negative.id, zero.id].join() && all.items[0].status === 'negative' && all.items[1].status === 'zero', show(all.items.map((i) => [i.variant.sku, i.status, i.qty_on_hand])));
+  check('L1 tab counts', all.counts.all === 2 && all.counts.zero === 1 && all.counts.negative === 1 && all.counts.no_stock_row === 1, show(all.counts));
+  check('L1 a positive balance, a service and an archived item are not listed', !all.items.some((item) => [positive.id, service.id, archived.id].includes(item.variant.id)));
+  check('L1 the row carries the quantity as a number, last sale and cost for a cost reader', all.items[0].qty_on_hand === -2 && all.items[0].last_sold_at !== null && all.items[0].cost_price === '10.0000');
+  check('L1 cost is hidden without the cost permission', !('cost_price' in (await page({}, actorOf(world, ['inventory.position.view']))).items[0]));
+  check('L1 the negative and zero tabs filter', (await page({ status: 'negative' })).total === 1 && (await page({ status: 'zero' })).items[0].variant.id === zero.id);
+
+  const none = await page({ status: 'no_stock_row' });
+  check('L2 items with no stock row in the branch (never a movement), excluding service and archived', none.total === 1 && none.items[0].variant.id === fresh.id && none.items[0].status === 'no_stock_row' && none.items[0].qty_on_hand === null, show(none.items.map((i) => i.variant.sku)));
+  const needsBranch = await rejection(lowStock.list(world.context, { page: 1, page_size: 50, status: 'no_stock_row' }, reader));
+  check('L2 "no stock row" needs a branch', codeOf(needsBranch) === 'BRANCH_REQUIRED');
+  const search = await page({ q: negative.sku });
+  check('L2 search matches the SKU', search.total === 1 && search.items[0].variant.id === negative.id);
+
+  // a second branch is a different warehouse: nothing has a row there yet
+  const branch2 = await new BranchesRepository(prisma).save(world.context, { code: `L2-${randomUUID().slice(0, 6)}`, name_ar: 'فرع 2' });
+  const other = await lowStock.list(world.context, { page: 1, page_size: 50, branch_id: branch2.id, status: 'no_stock_row' }, reader);
+  check('L3 another branch has its own stock: every stocked item has no row there', other.total === 4 && other.counts.all === 0, `total=${other.total}`);
+  const scoped = actorOf(world, ['inventory.position.view'], { scope_set: [{ scope_type: 'location', scope_ref_id: branch2.id }] });
+  const forbidden = await rejection(lowStock.list(world.context, { page: 1, page_size: 50, branch_id: world.branch.id }, scoped));
+  check('L3 a user scoped to another branch cannot read this branch', forbidden?.getStatus?.() === 403);
+  const foreign = await createTenantWorld('low-other');
+  const foreignView = await lowStock.list(foreign.context, { page: 1, page_size: 50, branch_id: foreign.branch.id }, actorOf(foreign, ['inventory.position.view']));
+  check('L3 another tenant sees none of these items', foreignView.total === 0);
+}
+
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyOpeningBalance, verifyAdjustments, verifyStockCounts];
+  const sections = [verifyOpeningBalance, verifyAdjustments, verifyStockCounts, verifyLowStock];
   for (const section of sections) {
     try {
       await section();
