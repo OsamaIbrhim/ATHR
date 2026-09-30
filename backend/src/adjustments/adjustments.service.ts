@@ -238,7 +238,7 @@ export class AdjustmentsService {
 
   private async nextNumber(tx: Tx): Promise<string> {
     const [row] = await tx.$queryRaw<Array<{ value: bigint }>>`SELECT nextval('"StockAdjustmentNumberSequence"') AS value`;
-    return `ADJ-${row.value.toString().padStart(6, '0')}`;
+    return `ADJ-${String(row?.value).padStart(6, '0')}`;
   }
 
   /** The id of this key's document; 409 when the key was used for a different payload. */

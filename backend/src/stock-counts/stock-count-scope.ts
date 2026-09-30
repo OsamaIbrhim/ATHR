@@ -50,5 +50,5 @@ export async function countScopeItems(
       AND v."item_type" = 'stocked' AND v."tracking" = 'none'
       AND ${scopePredicate(scope)}
   `;
-  return Number(row.items);
+  return Number(row?.items ?? 0);
 }

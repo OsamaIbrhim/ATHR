@@ -76,7 +76,7 @@ export class LowStockService {
       last_sold_at: row.last_sold_at,
       ...(withCost ? { cost_price: row.cost_price.toFixed(4) } : {}),
     }));
-    return { ...pageOf(items, rows.length ? Number(rows[0].total) : 0, paging), counts };
+    return { ...pageOf(items, Number(rows[0]?.total ?? 0), paging), counts };
   }
 
   private atOrBelowZero(tenantId: string, warehouses: Prisma.Sql, search: Prisma.Sql, status: string, paging: { page: number; page_size: number }) {

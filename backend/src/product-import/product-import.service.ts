@@ -55,7 +55,7 @@ export class ProductImportService {
       .map((result) => this.presentInvalid(result));
     const wantsOpening =
       valid.some((row) => row.openingQty) ||
-      dto.rows.some((raw, index) => parsed[index].kind === 'invalid' && hasValue((raw as Record<string, unknown> | null)?.opening_qty));
+      dto.rows.some((raw, index) => parsed[index]?.kind === 'invalid' && hasValue((raw as Record<string, unknown> | null)?.opening_qty));
     this.assertPermissions(actor, wantsOpening);
 
     const warehouseId = wantsOpening ? await this.openingWarehouse(context, dto, actor) : null;
@@ -111,8 +111,9 @@ export class ProductImportService {
         const half = Math.ceil(rows.length / 2);
         return [...(await this.importRows(rows.slice(0, half), shared, tally)), ...(await this.importRows(rows.slice(half), shared, tally))];
       }
-      this.logger.error(`Import row ${rows[0].index} failed: ${error instanceof Error ? error.message : String(error)}`);
-      return [this.failed(rows[0], 'IMPORT_ROW_FAILED', 'The row could not be saved', 'تعذّر حفظ هذا الصف. أعد المحاولة.')];
+      const row = rows[0] as ParsedRow;
+      this.logger.error(`Import row ${row.index} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return [this.failed(row, 'IMPORT_ROW_FAILED', 'The row could not be saved', 'تعذّر حفظ هذا الصف. أعد المحاولة.')];
     }
   }
 

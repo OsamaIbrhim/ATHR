@@ -341,7 +341,7 @@ export class StockCountsService {
 
   private async nextNumber(tx: Tx): Promise<string> {
     const [row] = await tx.$queryRaw<Array<{ value: bigint }>>`SELECT nextval('"StockCountNumberSequence"') AS value`;
-    return `CNT-${row.value.toString().padStart(6, '0')}`;
+    return `CNT-${String(row?.value).padStart(6, '0')}`;
   }
 
   private async findByKey(context: TenantContext, key: string, fingerprint: string): Promise<string | null> {

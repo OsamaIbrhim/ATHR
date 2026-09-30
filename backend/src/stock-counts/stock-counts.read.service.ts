@@ -74,10 +74,12 @@ export class StockCountsReadService {
       last_activity_at: activityBy.get(row.id) ?? row.updated_at,
     }));
     const status_counts: Record<string, number> = { all: 0, open: 0, posted: 0, cancelled: 0 };
+    let all = 0;
     for (const group of statusGroups) {
       status_counts[group.status] = group._count;
-      status_counts.all += group._count;
+      all += group._count;
     }
+    status_counts.all = all;
     return { ...pageOf(items, total, paging), status_counts };
   }
 
@@ -172,8 +174,8 @@ export class StockCountsReadService {
           : {}),
       };
     });
-    const dec = (key: string) => (summary[key] as Prisma.Decimal) ?? ZERO;
-    const num = (key: string) => Number(summary[key] ?? 0);
+    const dec = (key: string) => (summary?.[key] as Prisma.Decimal | undefined) ?? ZERO;
+    const num = (key: string) => Number(summary?.[key] ?? 0);
     const unknown = await this.prisma.$queryRaw<Array<{ barcode: string; scans: bigint; units: Prisma.Decimal; last_at: Date }>>`
       SELECT "barcode", COUNT(*) AS "scans", SUM("qty_delta") AS "units", MAX("created_at") AS "last_at"
       FROM "StockCountEntry"
@@ -198,7 +200,7 @@ export class StockCountsReadService {
           : {}),
       },
       unknown_barcodes: unknown.map((row) => ({ barcode: row.barcode, scans: Number(row.scans), units: quantityNumber(row.units), last_scanned_at: row.last_at })),
-      ...pageOf(items, pageRows.length ? Number(pageRows[0].total) : 0, paging),
+      ...pageOf(items, Number(pageRows[0]?.total ?? 0), paging),
     };
   }
 
@@ -232,7 +234,7 @@ export class StockCountsReadService {
       counted_total: quantityNumber(row.total),
       last_counted_at: row.last_at,
     }));
-    return pageOf(items, rows.length ? Number(rows[0].all_rows) : 0, paging);
+    return pageOf(items, Number(rows[0]?.all_rows ?? 0), paging);
   }
 
   /** How many items a count of this scope would cover (the live "{n} items in this scope"). */

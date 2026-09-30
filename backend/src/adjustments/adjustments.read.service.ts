@@ -57,10 +57,12 @@ export class AdjustmentsReadService {
       ...(withCost ? { net_value: (totals.get(row.id)?.value ?? ZERO).toFixed(2) } : {}),
     }));
     const statusCounts = { all: 0, draft: 0, approved: 0, posted: 0, cancelled: 0 } as Record<string, number>;
+    let all = 0;
     for (const group of counts) {
       statusCounts[group.status] = group._count;
-      statusCounts.all += group._count;
+      all += group._count;
     }
+    statusCounts.all = all;
     return { ...pageOf(items, total, paging), status_counts: statusCounts };
   }
 
