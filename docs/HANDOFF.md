@@ -33,6 +33,17 @@ pull بـsnapshot مقسم قابل للاستئناف (`sync_cursor` وformat v
 - فجوات API للـadmin (مهمة صغيرة قادمة): لا يوجد إعادة تفعيل variant · `product_type_id` غير قابل للتعديل · لا `GET /product-types/:id` ولا عدد الاستخدام · reconciliation المشتريات بدون label.
 - الـmigration الخاصة بـW2a (backend) لم تُختبر على بيانات موجودة (فقط قواعد فارغة + seed).
 
+## L0 — تنظيف ما قبل الإطلاق (D9) — دُمج
+
+لا توافق مع إصدارات dev: قاعدة الـPOS المحلية migration واحدة v1 (ملف dev قديم يُرفض برسالة "احذف مجلد البيانات"؛ `PRAGMA application_id`) ·
+المال في الـPOS أعداد صحيحة `*_minor_units` فقط · حذف shims الترحيل القديمة وsize/color · البروتوكول 3 فقط والـheaders إلزامية دائمًا ·
+**اسم المنتج من ثابت واحد:** `pos-electron/electron/brand.ts` و`admin-web/lib/brand.ts` (+ `productName`/`shortcutName` في `pos-electron/package.json`؛ اختبار يمنع الاختلاف).
+
+## الأسعار (قرار المالك 2026-09-30، `docs/strategy/pricing.md`)
+
+Starter 449 · Pro 999 · Business 1,999 (مخفية، عند الطلب) · عرض المؤسسين 299/649 لأول 15 محل (ربع سنوي/سنوي) · `uom` في كل الباقات ·
+`promotions`/`tracking.*`/`api.access` خارج كل الباقات حتى تكتمل شاشاتها. قاعدة البيانات: الخطة المجانية حتى ~10 عملاء → backups ذاتية في W7 إلزامية.
+
 ## W2b — التتبع serial/batch (التصميم: `docs/design/W2b-tracking.md`)
 
 **W2b-1 دُمج (backend):** migration `202610020001_tracking_serial_batch` (`ProductVariant.tracking`، `InventoryBatch`، `InventorySerial`، `InventoryLotMovement` append-only) ·
