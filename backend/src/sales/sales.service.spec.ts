@@ -15,6 +15,15 @@ import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { CreateSaleItemDto } from './dto/create-sale.dto';
 
+// The per-tenant counter is one real statement (covered against Postgres by
+// scripts/verify-document-sequence.cjs); these specs only need a number back.
+jest.mock('../common/document-sequence', () => ({
+  ...jest.requireActual('../common/document-sequence'),
+  nextDocumentValue: jest.fn().mockResolvedValue(1n),
+  nextDocumentNumber: jest.fn().mockImplementation((_tx: unknown, _tenant: string, key: string) =>
+    Promise.resolve(key === 'terminal' ? 'POS1' : 'R-000001')),
+}));
+
 const TAX_CODE_ID = '00000000-0000-0000-0000-0000000c0de1';
 
 /**

@@ -1,3 +1,4 @@
+import { nextDocumentNumber } from '../common/document-sequence';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -79,7 +80,7 @@ export class StockCountsService {
             tenant_id: context.tenantId,
             branch_id: dto.branch_id,
             warehouse_id: warehouseId,
-            count_number: await this.nextNumber(tx),
+            count_number: await nextDocumentNumber(tx, context.tenantId, 'count'),
             name: dto.name?.trim() || `جرد ${branch.name_ar} ${new Date().toISOString().slice(0, 10)}`,
             ...scope,
             scope_key: scopeKey(scope),
@@ -337,11 +338,6 @@ export class StockCountsService {
       ) AS u("id", "delta", "cost")
       WHERE l."tenant_id" = ${tenantId}::uuid AND l."id" = u."id"
     `;
-  }
-
-  private async nextNumber(tx: Tx): Promise<string> {
-    const [row] = await tx.$queryRaw<Array<{ value: bigint }>>`SELECT nextval('"StockCountNumberSequence"') AS value`;
-    return `CNT-${String(row?.value).padStart(6, '0')}`;
   }
 
   private async findByKey(context: TenantContext, key: string, fingerprint: string): Promise<string | null> {

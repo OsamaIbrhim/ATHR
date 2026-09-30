@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { nextDocumentNumber } from '../common/document-sequence';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import {
@@ -89,11 +90,17 @@ export class TerminalsService {
         data: { used_at: now },
       });
       if (claimed.count !== 1) throw new UnauthorizedException('Enrollment code was already used');
+      // The code is the prefix of every invoice number this till prints
+      // (`POS3-000123`), so it must never be shared. It comes from a per-tenant
+      // counter, not from the device id (two devices could share 8 characters of
+      // it), and only a device enrolling for the first time takes a number: a
+      // known device keeps its code, and with it the high-water mark below.
+      const terminalCode = existing ? existing.terminal_code : await nextDocumentNumber(tx, tenantId, 'terminal');
       return tx.posTerminal.upsert({
         where: { device_id: dto.device_id },
         create: {
           device_id: dto.device_id,
-          terminal_code: `POS-${dto.device_id.slice(0, 8).toUpperCase()}`,
+          terminal_code: terminalCode,
           name: dto.name?.trim() || enrollment.terminal_name || `POS ${dto.device_id.slice(0, 8)}`,
           branch_id: enrollment.branch_id,
           // The terminal inherits its Tenant from the branch it enrolls into.
@@ -120,6 +127,11 @@ export class TerminalsService {
         id: terminal.id,
         device_id: terminal.device_id,
         terminal_code: terminal.terminal_code,
+        // Highest sale sequence the server has for this device. A till that was
+        // wiped and re-enrolled continues its invoice numbers after it (its next
+        // `terminal_sequence` is max(local, this) + 1) instead of reusing numbers
+        // the server already holds. 0 for a device that never sold.
+        last_sale_sequence: String(terminal.last_sale_sequence ?? 0),
         name: terminal.name,
         branch: terminal.branch,
         // WP-007 Phase C (BR-TRM-101/BR-ENR-102): the enrollment contract now

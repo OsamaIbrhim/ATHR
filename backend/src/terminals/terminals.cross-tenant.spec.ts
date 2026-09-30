@@ -7,6 +7,15 @@ import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/
 import { aBranch } from '../identity/testing/fixture-builders';
 import { fullAccess, unlimited } from '../entitlements/testing';
 
+// The per-tenant counter is one real statement (covered against Postgres by
+// scripts/verify-document-sequence.cjs); these specs only need a number back.
+jest.mock('../common/document-sequence', () => ({
+  ...jest.requireActual('../common/document-sequence'),
+  nextDocumentValue: jest.fn().mockResolvedValue(1n),
+  nextDocumentNumber: jest.fn().mockImplementation((_tx: unknown, _tenant: string, key: string) =>
+    Promise.resolve(key === 'terminal' ? 'POS1' : 'R-000001')),
+}));
+
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `terminals` module.
  *

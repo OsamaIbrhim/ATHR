@@ -2310,6 +2310,18 @@ enum StockAdjustmentStatus {
   cancelled
 }
 
+// W3: per-tenant document numbers (returns, adjustments, counts, exchange
+// invoices, terminal codes). `last_value` is the number most recently issued;
+// the next one is taken by one `INSERT ... ON CONFLICT DO UPDATE ... RETURNING`
+// (see `common/document-sequence.ts`), a single statement that locks one row.
+model DocumentSequence {
+  tenant_id  String @db.Uuid
+  key        String @db.VarChar(40)
+  last_value BigInt
+
+  @@id([tenant_id, key])
+}
+
 model StockAdjustment {
   id                  String                @id @default(uuid()) @db.Uuid
   tenant_id           String                @db.Uuid

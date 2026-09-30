@@ -8,6 +8,7 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { nextDocumentNumber } from '../common/document-sequence';
 import { PrismaService } from '../prisma/prisma.service';
 import { deviceTenantContext } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -805,7 +806,7 @@ export class SalesService {
           original_invoice_id: original.id,
           branch_id: original.branch_id,
           shift_id: shiftId,
-          return_invoice_number: `R-${Date.now()}-${randomUUID().slice(0, 8)}`,
+          return_invoice_number: await nextDocumentNumber(tx, context.tenantId, 'return'),
           reason: dto.reason,
           is_partial: totalReturnedQty.lt(originalQty),
           created_by: actor.sub,
