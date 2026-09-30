@@ -76,7 +76,6 @@ Packaging notes (`package.json` -> `build`):
 - `asarUnpack` keeps the `.node` file outside `app.asar` (Windows cannot
   `dlopen` from an archive); `files` drops the other platforms' prebuilds and
   the C++ sources, so only `win32-x64.node` (~2 MB) is shipped.
-- The old `sql-wasm.wasm` extra resource is gone.
 
 Schema changes are ordered migrations in `electron/db/migrations.ts`, tracked
 with `PRAGMA user_version`. Append a new entry; never edit an old one. A

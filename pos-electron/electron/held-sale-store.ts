@@ -1,3 +1,4 @@
+import { toCatalogProduct } from './db/product-row'
 import { get, q, run, tx } from './db/queries'
 import { isValidCatalogProduct } from './catalog-format'
 import {
@@ -6,7 +7,6 @@ import {
   sanitizeHeldSaleCustomer,
 } from './held-sale'
 import { fromCents, lineCents } from './money'
-import { minorUnitsToDecimal } from './money-codec'
 import { isValidQuantity } from './quantity'
 import { readSecureState } from './secure-state'
 
@@ -49,16 +49,17 @@ function parseHeldCustomer(value: unknown) {
 /** Rebuilds every line from the current catalog and stock; throws if a line is no longer sellable. */
 export function hydrateHeldSale(row: any) {
   const items = parseHeldSaleItems(row.items_json).map((stored) => {
-    const product = get(
+    const row = get(
       `SELECT p.*,COALESCE(s.qty,0) AS available_qty
        FROM products p
        LEFT JOIN stock s ON s.variant_id=p.id
        WHERE p.id=?`,
       [stored.variant_id],
     )
+    const product = row && toCatalogProduct(row)
     const available = Number(product?.available_qty)
-    const price = Number(minorUnitsToDecimal(Number(product?.selling_price_minor_units ?? 0)))
-    const tax = Number(minorUnitsToDecimal(Number(product?.unit_tax_minor_units ?? 0)))
+    const price = Number(product?.selling_price)
+    const tax = Number(product?.unit_tax)
     if (
       !product ||
       !isValidCatalogProduct(product) ||

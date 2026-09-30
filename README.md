@@ -447,9 +447,6 @@ npm run dist
 
 Use `npm run pack` for an unpacked directory build. ATHR stores local POS data
 in `athr_pos.sqlite` under Electron's platform-specific `userData` directory.
-On first launch it copies and verifies a legacy `bold_pos.sqlite` and encrypted
-secure state without deleting or overwriting the source, preserving pending
-demo sales.
 
 ## Accounts, authentication, and roles
 

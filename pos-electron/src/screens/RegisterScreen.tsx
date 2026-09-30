@@ -57,10 +57,6 @@ export function RegisterScreen({
   },[accountingReady,notify])
 
   useEffect(()=>{
-    // Older builds stored unscoped drafts in renderer localStorage. They
-    // cannot be trusted or attributed to the current cashier/shift.
-    localStorage.removeItem('bold_pos_held_sales_v1')
-    localStorage.removeItem('athr_pos_held_sales_v1')
     void loadHeldSales()
   },[loadHeldSales])
 

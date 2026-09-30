@@ -3,8 +3,8 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { closeDb, initDb, openDatabase, PRE_ENGINE_BACKUP_SUFFIX } from './connection'
-import { LATEST_SCHEMA_VERSION } from './migrations'
+import { closeDb, initDb, openDatabase } from './connection'
+import { APPLICATION_ID, LATEST_SCHEMA_VERSION } from './migrations'
 import { markSending, updateSyncStatus, markFailed } from './outbox'
 import { get, getMeta, q, run, setMeta } from './queries'
 import { assertQuantityPrecision, commitLocalSale, type LocalSaleRecord } from './sales'
@@ -23,46 +23,27 @@ afterEach(() => {
 })
 
 const columns = (db: Database.Database, table: string) =>
-  (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name).sort()
+  (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name)
 
 const TABLES = ['products', 'stock', 'barcodes', 'sellers', 'outbox', 'sales_local', 'held_sales', 'sync_meta']
 
-/** The very first release schema: no tax, Arabic name, sale context or sync columns. */
-const LEGACY_V0 = `
-  CREATE TABLE products (id TEXT PRIMARY KEY, sku TEXT, name_en TEXT, barcode_ean13 TEXT,
-    barcode_internal TEXT, size TEXT, color TEXT, cost_price REAL, selling_price REAL);
-  CREATE TABLE stock (variant_id TEXT PRIMARY KEY, qty INTEGER);
-  CREATE TABLE sellers (id TEXT PRIMARY KEY, name TEXT NOT NULL);
-  CREATE TABLE outbox (id TEXT PRIMARY KEY, type TEXT, payload TEXT,
-    sync_status TEXT DEFAULT 'pending', created_at TEXT);
-  CREATE TABLE sales_local (sync_id TEXT PRIMARY KEY, invoice_number TEXT, total REAL, created_at TEXT);
-  CREATE TABLE held_sales (id TEXT PRIMARY KEY, branch_id TEXT NOT NULL, cashier_id TEXT NOT NULL,
-    shift_id TEXT NOT NULL, customer_json TEXT, items_json TEXT NOT NULL,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-  CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-  INSERT INTO products VALUES ('p1','SKU-1','Shirt','6221234567890','ATHR-1','M','Blue',10.5,19.99);
-  INSERT INTO stock VALUES ('p1', 7);
-  INSERT INTO sellers VALUES ('s1','Seller One');
-  INSERT INTO outbox (id,type,payload,sync_status,created_at) VALUES ('o1','sale','{}','pending','2024-01-01');
-  INSERT INTO sales_local VALUES ('o1','LOCAL-1',19.99,'2024-01-01');
-  INSERT INTO held_sales VALUES ('h1','b1','c1','sh1',NULL,'[]','2024-01-01','2024-01-01');
-  INSERT INTO sync_meta VALUES ('sync_cursor','42');
-`
-
-/** Written exactly like sql.js: rollback journal, never WAL. */
-function createLegacyDatabase(sql: string) {
-  const legacy = new Database(file)
-  legacy.pragma('journal_mode = DELETE')
-  legacy.exec(sql)
-  legacy.close()
+/** A file written by a pre-release dev build: no ATHR application id, whatever its user_version. */
+function createDevDatabase(sql: string) {
+  const dev = new Database(file)
+  dev.exec(sql)
+  dev.close()
 }
 
 describe('migrations', () => {
   it('builds the full schema, indexes and WAL on a fresh database', () => {
     const db = openDatabase(file)
     expect(db.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION)
+    expect(LATEST_SCHEMA_VERSION).toBe(1)
+    expect(db.pragma('application_id', { simple: true })).toBe(APPLICATION_ID)
     expect(db.pragma('journal_mode', { simple: true })).toBe('wal')
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1)
+    const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as any[]).map((row) => row.name)
+    expect(tables.sort()).toEqual([...TABLES].sort())
     const indexes = (db.prepare(`SELECT name FROM sqlite_master WHERE type='index'`).all() as any[]).map(
       (row) => row.name,
     )
@@ -75,8 +56,19 @@ describe('migrations', () => {
         'held_sales_scope_created_idx',
       ]),
     )
-    expect(indexes).not.toContain('products_barcode_ean13_idx')
-    expect(fs.existsSync(`${file}${PRE_ENGINE_BACKUP_SUFFIX}`)).toBe(false)
+    db.close()
+  })
+
+  it('stores money only as integer minor units and has no size/color columns', () => {
+    const db = openDatabase(file)
+    expect(columns(db, 'products')).toEqual(
+      expect.arrayContaining(['selling_price_minor_units', 'unit_tax_minor_units', 'label', 'attributes']),
+    )
+    for (const table of TABLES) {
+      for (const column of columns(db, table)) {
+        expect(column).not.toMatch(/^(size|color|cost_price|selling_price|unit_tax|total)$/)
+      }
+    }
     db.close()
   })
 
@@ -87,79 +79,46 @@ describe('migrations', () => {
     db.close()
   })
 
-  it('upgrades a legacy sql.js-era database, keeps every row and backs it up first', () => {
-    createLegacyDatabase(LEGACY_V0)
-    const before = fs.readFileSync(file)
-
-    const db = openDatabase(file)
-
-    // One-time byte-identical backup of the pre-engine file.
-    expect(fs.readFileSync(`${file}${PRE_ENGINE_BACKUP_SUFFIX}`).equals(before)).toBe(true)
-    expect(db.pragma('journal_mode', { simple: true })).toBe('wal')
-
-    // Same schema as a fresh database.
-    const fresh = openDatabase(path.join(dir, 'fresh.sqlite'))
-    for (const table of TABLES) expect(columns(db, table)).toEqual(columns(fresh, table))
-    fresh.close()
-
-    // Every legacy row survived.
-    expect(db.prepare('SELECT * FROM products').get()).toMatchObject({
-      id: 'p1', sku: 'SKU-1', name_en: 'Shirt', selling_price: 19.99, catalog_version: 2,
-      selling_price_minor_units: 1999, cost_price_minor_units: 1050,
-      // The old size/color become the label, the old barcodes stay scannable, until the next snapshot.
-      label: 'M · Blue', uom_precision: 0,
-    })
-    expect(db.prepare('SELECT code,variant_id,pack_qty,kind FROM barcodes ORDER BY code').all()).toEqual([
-      { code: '6221234567890', variant_id: 'p1', pack_qty: 1, kind: 'standard' },
-      { code: 'ATHR-1', variant_id: 'p1', pack_qty: 1, kind: 'standard' },
-    ])
-    expect(db.prepare('SELECT qty FROM stock').get()).toEqual({ qty: 7 })
-    expect(db.prepare('SELECT name FROM sellers').get()).toEqual({ name: 'Seller One' })
-    expect(db.prepare('SELECT * FROM outbox').get()).toMatchObject({ id: 'o1', sync_status: 'pending', attempt_count: 0 })
-    expect(db.prepare('SELECT * FROM sales_local').get()).toMatchObject({
-      sync_id: 'o1', total: 19.99, total_minor_units: 1999,
-    })
-    expect(db.prepare('SELECT id FROM held_sales').get()).toEqual({ id: 'h1' })
-    // v4 clears the catalog cursor: the next sync is a full snapshot.
-    expect(db.prepare(`SELECT value FROM sync_meta WHERE key='sync_cursor'`).get()).toBeUndefined()
-    db.close()
-
-    // The backup is never recreated or overwritten by later launches.
-    openDatabase(file).close()
-    expect(fs.readFileSync(`${file}${PRE_ENGINE_BACKUP_SUFFIX}`).equals(before)).toBe(true)
-  })
-
-  it('upgrades a database that already had every ALTER except the money columns', () => {
-    createLegacyDatabase(`
-      CREATE TABLE products (id TEXT PRIMARY KEY, sku TEXT, name_en TEXT, name_ar TEXT, barcode_ean13 TEXT,
-        barcode_internal TEXT, size TEXT, color TEXT, cost_price REAL, selling_price REAL,
-        unit_tax REAL DEFAULT 0, catalog_version INTEGER NOT NULL DEFAULT 2);
-      INSERT INTO products (id,sku,name_ar,cost_price,selling_price,unit_tax) VALUES ('p1','A','قميص',1,2.5,0.35);
+  it.each([1, 2, 3, 4])('refuses a pre-release dev database at user_version %i and leaves it untouched', (version) => {
+    createDevDatabase(`
+      CREATE TABLE outbox (id TEXT PRIMARY KEY, payload TEXT);
+      INSERT INTO outbox VALUES ('o1','{}');
+      PRAGMA user_version = ${version};
     `)
-    const db = openDatabase(file)
-    expect(db.prepare('SELECT selling_price_minor_units s, unit_tax_minor_units t FROM products').get()).toEqual({
-      s: 250, t: 35,
-    })
-    db.close()
-  })
-
-  it('fails loudly and rolls back only the failing migration on a broken legacy schema', () => {
-    createLegacyDatabase(`
-      CREATE TABLE held_sales (id TEXT PRIMARY KEY, items_json TEXT);
-      INSERT INTO held_sales VALUES ('h1','[]');
-    `)
-    // held_sales lacks branch_id, so the index migration (3) cannot succeed.
-    expect(() => openDatabase(file)).toThrow(/migration 3 \(hot-path-indexes\) failed: no such column/)
+    expect(() => openDatabase(file)).toThrow(/pre-release ATHR POS build/)
     const raw = new Database(file)
-    expect(raw.pragma('user_version', { simple: true })).toBe(2)
-    expect(raw.prepare('SELECT id FROM held_sales').all()).toEqual([{ id: 'h1' }])
-    expect(raw.prepare(`SELECT name FROM sqlite_master WHERE name='products_sku_idx'`).get()).toBeUndefined()
+    expect(raw.pragma('user_version', { simple: true })).toBe(version)
+    expect(raw.prepare('SELECT id FROM outbox').all()).toEqual([{ id: 'o1' }])
     raw.close()
   })
 
+  it('refuses the oldest unversioned dev database (tables, user_version 0)', () => {
+    createDevDatabase('CREATE TABLE sales_local (sync_id TEXT PRIMARY KEY, total REAL);')
+    expect(() => openDatabase(file)).toThrow(/pre-release ATHR POS build/)
+  })
+
   it('refuses a database written by a newer app', () => {
-    createLegacyDatabase(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION + 1};`)
+    openDatabase(file).close()
+    const raw = new Database(file)
+    raw.pragma(`user_version = ${LATEST_SCHEMA_VERSION + 1}`)
+    raw.close()
     expect(() => openDatabase(file)).toThrow(/newer than this app supports/)
+  })
+
+  it('barcode codes are unique: one code belongs to one variant', () => {
+    const db = openDatabase(file)
+    db.prepare(`INSERT INTO barcodes (code,variant_id,pack_qty,kind) VALUES ('c','a',1,'standard')`).run()
+    expect(() =>
+      db.prepare(`INSERT INTO barcodes (code,variant_id,pack_qty,kind) VALUES ('c','b',1,'standard')`).run(),
+    ).toThrow(/UNIQUE/)
+    db.close()
+  })
+
+  it('stock holds decimal quantities', () => {
+    const db = openDatabase(file)
+    db.prepare(`INSERT INTO stock (variant_id,qty) VALUES ('p1',1.235)`).run()
+    expect(db.prepare(`SELECT typeof(qty) AS t, qty FROM stock`).get()).toEqual({ t: 'real', qty: 1.235 })
+    db.close()
   })
 })
 

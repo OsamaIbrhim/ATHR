@@ -18,7 +18,6 @@ import { RegisterScreen } from './screens/RegisterScreen'
 import { SalesScreen } from './screens/SalesScreen'
 import { ScreenLoader, Toasts, ToastValue } from './components/ui'
 import { DiagnosticsConsole } from './components/DiagnosticsConsole'
-import { migrateLegacyLocalStorage } from './local-storage-migration'
 
 const emptySync: SyncState = {
   device_id: '',
@@ -138,7 +137,6 @@ export default function App() {
   )
 
   useEffect(() => {
-    migrateLegacyLocalStorage(localStorage)
     api
       .bootstrap()
       .then((result) => {

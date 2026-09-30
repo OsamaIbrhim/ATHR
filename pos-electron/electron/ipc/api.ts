@@ -1,7 +1,6 @@
 import { ApiConfigurationError, normalizeApiBase } from '../api-base'
 import { app, ipcMain } from 'electron'
 import { authenticatedFetch, envelope, type ApiFailure } from '../api-client'
-import { reconcileDeviceTenantId } from '../device-tenant-migration'
 import {
   apiConfiguration,
   setConfiguredApiBase,
@@ -85,21 +84,6 @@ export function registerApiIpc() {
                 ...result,
               },
             })
-          }
-        }
-        if (request.pathname === '/terminals/heartbeat') {
-          // WP-007 Phase C: a terminal enrolled before this release has no
-          // tenant_id in its local state. The heartbeat this terminal already
-          // sends periodically carries one, so it self-heals here — no
-          // re-enrollment required.
-          const state = readSecureState()
-          const migratedDevice = reconcileDeviceTenantId(
-            state.device ?? null,
-            result?.terminal,
-          )
-          if (migratedDevice && migratedDevice !== state.device) {
-            state.device = migratedDevice
-            writeSecureState(state)
           }
         }
         return result

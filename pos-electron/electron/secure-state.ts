@@ -29,10 +29,7 @@ export type SecureState = {
     branch_id: string
     terminal_id: string
     terminal_code: string
-    // WP-007 Phase C: optional so a terminal enrolled before this release
-    // (local state predating this field) keeps working without
-    // re-enrollment — see `reconcileDeviceTenantId`.
-    tenant_id?: string
+    tenant_id: string
   }
   accounting?: OfflineAccountingContext
   offline_login?: OfflineLoginVerifier

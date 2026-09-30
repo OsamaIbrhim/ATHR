@@ -18,10 +18,7 @@ export type DeviceCredential = {
   branch_id: string
   terminal_id: string
   terminal_code: string
-  // WP-007 Phase C: optional, not required, so a terminal enrolled before
-  // this release (whose local state predates this field) keeps working
-  // without re-enrollment. It is learned from the next heartbeat if absent.
-  tenant_id?: string
+  tenant_id: string
 }
 
 export type Shift = {
