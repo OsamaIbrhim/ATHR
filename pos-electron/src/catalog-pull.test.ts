@@ -204,11 +204,11 @@ describe('a sale upload refused because the app or protocol is not accepted', ()
   })
 })
 
-describe('sales queued by POS 1.5.1', () => {
-  it('uploads the stored size/color payload unchanged (the server fingerprint covers the label)', async () => {
+describe('queued sales', () => {
+  it('uploads the stored payload byte for byte (the server fingerprint covers every field)', async () => {
     const stored = {
       event_version: 2,
-      sync_id: 'sync-old',
+      sync_id: 'sync-stored',
       items: [
         {
           variant_id: 'v',
@@ -217,8 +217,7 @@ describe('sales queued by POS 1.5.1', () => {
           unit_tax: 14,
           sku_snapshot: 'S',
           name_ar_snapshot: 'قميص',
-          size_snapshot: 'L',
-          color_snapshot: 'أسود',
+          variant_label_snapshot: 'L · أسود',
         },
       ],
       local_total: 228,
@@ -229,7 +228,7 @@ describe('sales queued by POS 1.5.1', () => {
       sync_get_status: async () => ({ ...status }),
       sync_set_status: async () => ({ ok: true }),
       sync_get_outbox: async () =>
-        reads++ === 0 ? [{ id: 'sync-old', payload: JSON.stringify(stored), local_total: 228 }] : [],
+        reads++ === 0 ? [{ id: 'sync-stored', payload: JSON.stringify(stored), local_total: 228 }] : [],
       sync_mark_sending: async () => ({ ok: true }),
       sync_mark_sent: async () => ({ ok: true }),
       sync_mark_failed: async () => ({ ok: true }),

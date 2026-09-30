@@ -49,11 +49,11 @@ const catalog = () =>
     }),
   )
 
-describe('held sales after the 1.6.0 upgrade', () => {
-  it('restores a 1.5.1 draft (size/color extras, integer qty) with the label from the new catalog', () => {
+describe('held sales', () => {
+  it('restores a draft from the current catalog, ignoring any price the draft carries', () => {
     catalog()
     const sale = hydrateHeldSale(
-      held(`[{"variant_id":"${SHIRT}","qty":2,"size":"L","color":"أسود","name":"قميص","unit_price":1}]`),
+      held(`[{"variant_id":"${SHIRT}","qty":2,"name":"قميص","unit_price":1}]`),
     )
     expect(sale.items).toHaveLength(1)
     expect(sale.items[0]).toMatchObject({
@@ -67,12 +67,10 @@ describe('held sales after the 1.6.0 upgrade', () => {
     // Prices come from the catalog, never from the stored draft.
     expect(sale.total).toBe(228)
     expect(sale.item_count).toBe(1)
-    expect(sale.items[0]).not.toHaveProperty('size')
   })
 
-  it('cannot be restored until the first v3 snapshot has arrived (old rows are refused, not sold)', () => {
-    // A row exactly as migration v4 leaves it: version 2, label derived from size/color.
-    // Bypasses the wire validation: this is what the migrated table holds.
+  it('cannot be restored from a product row of another catalog version (refused, not sold)', () => {
+    // Bypasses the wire validation: a cached row whose catalog version is not the current one.
     run(`INSERT INTO products (id,sku,name_ar,catalog_version,selling_price_minor_units,unit_tax_minor_units) VALUES (?,?,?,?,?,?)`, [
       SHIRT, 'S1', 'قميص', 2, 10000, 1400,
     ])

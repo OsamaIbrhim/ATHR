@@ -24,7 +24,6 @@ import {
   toCents,
 } from '../utils'
 import { OPERATIONS_PAGE_SIZE, pageWindow } from '../operations'
-import { variantLabel } from '../variant-label'
 import {
   addQuantity,
   isValidQuantity,
@@ -897,11 +896,7 @@ function itemName(item: InvoiceItem) {
     item.variant?.product?.name_en ||
     item.variant?.sku ||
     item.variant_id
-  const label = variantLabel({
-    label: item.variant_label_snapshot || item.variant?.label,
-    size: item.size_snapshot,
-    color: item.color_snapshot,
-  })
+  const label = String(item.variant_label_snapshot || item.variant?.label || '').trim()
   return label ? `${name} — ${label}` : name
 }
 

@@ -39,7 +39,7 @@ export type Product = {
   sku: string
   name_en?: string
   name_ar?: string
-  /** What tells this variant apart ("L · أسود"); replaces the old size/color columns. */
+  /** What tells this variant apart ("L · أسود"). */
   label?: string | null
   uom_code?: string | null
   uom_name_ar?: string | null
@@ -86,9 +86,6 @@ export type InvoiceItem = {
   name_ar_snapshot?: string
   name_en_snapshot?: string | null
   variant_label_snapshot?: string | null
-  /** Sales recorded by POS <= 1.5 carry these instead of a label. */
-  size_snapshot?: string | null
-  color_snapshot?: string | null
   qty: number
   unit_price: number | string
   unit_tax: number | string
