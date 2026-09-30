@@ -69,9 +69,9 @@ export class SyncService {
   async pull(context: TenantContext, branchId: string, query: PullQuery = {}, terminal?: TerminalRef) {
     const tenant = await this.prisma.tenant.findUniqueOrThrow({
       where: { id: context.tenantId },
-      select: { settings: true, sync_floor: true },
+      select: { settings: true, name: true, sync_floor: true },
     });
-    const settings = readTenantSettings(tenant.settings);
+    const settings = readTenantSettings(tenant.settings, tenant);
     const floor = parseCursor(tenant.sync_floor);
 
     if (query.snapshot_after !== undefined) {
@@ -378,6 +378,10 @@ export class SyncService {
       })),
       selling_price: quote!.net_price,
       unit_tax: quote!.tax_amount,
+      // What the POS needs to price a discount exactly like the server does:
+      // the rate (percent) and whether the shelf price contains it.
+      tax_rate: quote!.tax_percent,
+      tax_mode: quote!.tax.mode_snapshot,
       price_issued_at: issuedAt,
     };
   }
