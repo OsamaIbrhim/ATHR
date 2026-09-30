@@ -48,6 +48,12 @@ const inventory = new InventoryService(new InventoryRepository(prisma));
 const openingBalance = new OpeningBalanceService(prisma, inventory);
 const adjustmentReads = new AdjustmentsReadService(prisma);
 const adjustments = new AdjustmentsService(prisma, inventory, adjustmentReads);
+const StockCountsService = load('stock-counts', 'stock-counts.service.js', 'StockCountsService');
+const StockCountScansService = load('stock-counts', 'stock-count-scans.service.js', 'StockCountScansService');
+const StockCountsReadService = load('stock-counts', 'stock-counts.read.service.js', 'StockCountsReadService');
+const countReads = new StockCountsReadService(prisma);
+const counts = new StockCountsService(prisma, inventory, countReads);
+const countScans = new StockCountScansService(prisma);
 
 let failed = 0;
 function check(name, ok, detail) {
@@ -344,10 +350,180 @@ async function verifyAdjustments() {
   check('A10 another tenant cannot draft into this branch', foreignDraft?.getStatus?.() === 404);
 }
 
+// --- C: stock counts -----------------------------------------------------------
+
+async function verifyStockCounts() {
+  const world = await createTenantWorld('count');
+  const cost = ['inventory.position.view-cost'];
+  const counter = actorOf(world, ['inventory.adjustment.request', ...cost]);
+  const reviewer = actorOf(world, ['inventory.adjustment.request', 'inventory.adjustment.approve', ...cost]);
+  const start = (extra = {}, actor = reviewer) =>
+    counts.start(world.context, { branch_id: world.branch.id, scope: { type: 'all' }, ...extra }, actor);
+  const scan = (countId, entries, actor = counter) => countScans.record(world.context, countId, { entries }, actor);
+  const entry = (extra) => ({ entry_id: `e-${randomUUID()}`, ...extra });
+  const onHand = async (variant) => Number((await stockOf(world, variant)).qty_on_hand);
+
+  const [x, y, z, w, v] = await createVariants(world, 5);
+  for (const variant of [x, y, z, w, v]) await openStock(world, variant, 10, 20);
+
+  // C1 start, one open count, scopes
+  const count = await start();
+  check('C1 a count starts open with a number, default name and scope all', count.status === 'open' && /^CNT-\d{6}$/.test(count.count_number) && count.name.includes('جرد') && count.scope.type === 'all');
+  const again = await rejection(start());
+  check('C1 a second open count of the warehouse is refused and names the running one', codeOf(again) === 'STOCK_COUNT_ALREADY_OPEN' && again.response.data.count_id === count.id, show(codeOf(again)));
+  const cat1 = await prisma.category.create({ data: { tenant_id: world.tenant.id, name_ar: 'قسم 1' } });
+  const cat2 = await prisma.category.create({ data: { tenant_id: world.tenant.id, name_ar: 'قسم 2' } });
+  const overlap = await rejection(start({ scope: { type: 'category', id: cat1.id } }));
+  check('C1 a category count overlaps the open all-items count and is refused', codeOf(overlap) === 'STOCK_COUNT_ALREADY_OPEN');
+  const rawSecond = await rejection(
+    prisma.stockCount.create({
+      data: { tenant_id: world.tenant.id, branch_id: world.branch.id, warehouse_id: world.warehouse.id, count_number: `CNT-raw-${randomUUID().slice(0, 6)}`, name: 'raw', scope_type: 'all', scope_key: 'all' },
+    }),
+  );
+  check('C1 the one-open-count index also holds in the database', !!rawSecond);
+
+  // C2 scanning: barcode +1, pack barcode, idempotent retry, set, undo, unknown
+  await prisma.productBarcode.createMany({
+    data: [
+      { tenant_id: world.tenant.id, code: `BC-${x.sku}`, variant_id: x.id },
+      { tenant_id: world.tenant.id, code: `PACK-${x.sku}`, variant_id: x.id, pack_qty: D(6) },
+    ],
+  });
+  const first = entry({ barcode: `BC-${x.sku}` });
+  let res = await scan(count.id, [first]);
+  check('C2 "+1 of barcode X" counts one and returns the running totals', res.results[0].status === 'counted' && res.results[0].added === 1 && res.results[0].counted_total === 1 && res.results[0].counted_by_me === 1 && res.results[0].expected_at_count === 10, show(res.results[0]));
+  res = await scan(count.id, [first]);
+  check('C2 re-sending the same entry id changes nothing (duplicate)', res.results[0].status === 'duplicate' && res.results[0].counted_total === 1);
+  res = await scan(count.id, [entry({ barcode: `PACK-${x.sku}` })]);
+  check('C2 a pack barcode adds its pack quantity', res.results[0].added === 6 && res.results[0].counted_total === 7 && res.results[0].pack_qty === 6);
+  res = await scan(count.id, [entry({ variant_id: x.id, mode: 'set', qty: 8 })]);
+  check('C2 "set" makes this counter\'s total exactly the typed quantity', res.results[0].counted_total === 8 && res.results[0].counted_by_me === 8);
+  res = await scan(count.id, [entry({ variant_id: x.id, qty: -1 })]);
+  check('C2 a negative add undoes a scan', res.results[0].counted_total === 7);
+  res = await scan(count.id, [entry({ variant_id: x.id, qty: -50 })]);
+  check('C2 a counter cannot take more than they counted', res.results[0].status === 'below_zero' && res.results[0].counted_total === 7);
+  res = await scan(count.id, [entry({ barcode: 'NO-SUCH-CODE' }), entry({ variant_id: randomUUID() })]);
+  check('C2 an unknown barcode and an unknown item get a clear status, not an error', res.results[0].status === 'unknown_barcode' && !!res.results[0].message_ar && res.results[1].status === 'variant_not_found');
+  const serial = await createVariant(world, { tracking: 'serial' });
+  res = await scan(count.id, [entry({ variant_id: serial.id })]);
+  check('C2 a serial-tracked item is refused with its status', res.results[0].status === 'tracked_not_supported');
+  check('C2 scanning moved no stock', (await onHand(x)) === 10);
+
+  // two counters add up; "mine" is per counter
+  const helper = await prisma.user.create({ data: { name: 'Helper', password_hash: 'x' } });
+  const helperActor = actorOf(world, ['inventory.adjustment.request'], { sub: helper.id });
+  res = await scan(count.id, [entry({ variant_id: x.id, qty: 2 })], helperActor);
+  check('C2 two counters add up; each sees their own part', res.results[0].counted_total === 9 && res.results[0].counted_by_me === 2);
+  res = await scan(count.id, [entry({ variant_id: x.id, mode: 'set', qty: 0 })], helperActor);
+  check('C2 a counter can only change their own part', res.results[0].counted_total === 7 && res.results[0].counted_by_me === 0);
+
+  // statements do not grow with the batch
+  const bulk = await createVariants(world, 30);
+  const [, one] = await counted(() => scan(count.id, [entry({ variant_id: bulk[0].id })]));
+  const [, many] = await counted(() => scan(count.id, bulk.slice(1).map((variant) => entry({ variant_id: variant.id, qty: 2 }))));
+  check('C2 scanning 1 entry and 29 entries use the same number of statements', one === many, `1=${one}, 29=${many}`);
+  for (const variant of bulk) await countScans.resetLine(world.context, count.id, variant.id, reviewer);
+
+  // concurrent batches for one new item sum up exactly
+  const [t1, t2] = await Promise.all([
+    scan(count.id, [entry({ variant_id: w.id, qty: 3 })]),
+    scan(count.id, [entry({ variant_id: w.id, qty: 4 })], helperActor),
+  ]);
+  const wLine = await prisma.stockCountLine.findFirstOrThrow({ where: { count_id: count.id, variant_id: w.id } });
+  check('C2 concurrent scans of one new item create one line and sum', Number(wLine.counted_qty) === 7 && [t1, t2].every((r) => r.results[0].status === 'counted'), `counted=${wLine.counted_qty}`);
+  await countScans.resetLine(world.context, count.id, w.id, reviewer);
+
+  // C3 sales before and after an item is counted are both preserved
+  // x was counted (7) while on hand 10: expected 10; 3 sell after it was counted.
+  await sell(world, x, 3);
+  await sell(world, y, 2); // y sold BEFORE it is counted: on hand 8
+  res = await scan(count.id, [entry({ variant_id: y.id, mode: 'set', qty: 8 })]);
+  check('C3 an item sold before counting is expected at its balance when counted', res.results[0].expected_at_count === 8);
+  await sell(world, y, 1); // sold AFTER counting: on hand 7
+  await sell(world, z, 2); // on hand 8, before counting
+  res = await scan(count.id, [entry({ variant_id: z.id, mode: 'set', qty: 7 })]); // one is really missing
+  await sell(world, z, 1); // after counting: on hand 7
+
+  const review = await countReads.review(world.context, count.id, { page: 1, page_size: 50 }, reviewer);
+  const row = (variant) => review.items.find((item) => item.variant.id === variant.id);
+  check('C3 review: x counted 7 of 10 expected, 3 sold after counting', row(x).variance === -3 && row(x).movement_after_count === -3 && row(x).current_on_hand === 7, show(row(x)));
+  check('C3 review: y counted 8 of 8 expected, 1 sold after -> no variance', row(y).variance === 0 && row(y).movement_after_count === -1 && row(y).current_on_hand === 7, show(row(y)));
+  check('C3 review: z counted 7 of 8 expected -> -1, 1 sold after', row(z).variance === -1 && row(z).movement_after_count === -1, show(row(z)));
+  check('C3 review: uncounted items with a balance and unknown barcodes are listed separately', review.summary.uncounted_items === 2 && review.unknown_barcodes.length === 1 && review.unknown_barcodes[0].barcode === 'NO-SUCH-CODE', show(review.summary));
+  check('C3 review: summary counts items and values the variance at cost', review.summary.counted_items === 3 && review.summary.items_with_variance === 2 && review.summary.decrease_qty === 4 && review.summary.decrease_value === '-80.00', show(review.summary));
+  const noCost = await countReads.review(world.context, count.id, { page: 1, page_size: 50 }, actorOf(world, ['inventory.adjustment.request', 'inventory.adjustment.approve']));
+  check('C3 review: cost columns are hidden without inventory.position.view-cost', !('unit_cost' in noCost.items[0]) && !('net_value' in noCost.summary));
+  const onlyUncounted = await countReads.review(world.context, count.id, { page: 1, page_size: 50, filter: 'uncounted' }, reviewer);
+  check('C3 review filter "uncounted" lists w and v', onlyUncounted.total === 2 && onlyUncounted.items.every((item) => item.status === 'uncounted'));
+
+  // C4 posting: the uncounted decision is required, then one engine command
+  const poster = actorOf(world, ['inventory.adjustment.post']);
+  const undecided = await rejection(counts.post(world.context, count.id, {}, poster));
+  check('C4 posting with uncounted items needs an explicit choice', codeOf(undecided) === 'STOCK_COUNT_UNCOUNTED_DECISION_REQUIRED' && undecided.response.data.uncounted_items === 2);
+  const [posted, postStatements] = await counted(() => counts.post(world.context, count.id, { uncounted: 'ignore', zero_variant_ids: [v.id] }, poster));
+  check('C4 the count is posted', posted.status === 'posted' && posted.uncounted_choice === 'ignore');
+  check('C4 x: 10 expected, 7 counted, 3 sold after -> 4 on hand (variance -3 applied on top of the later sale)', (await onHand(x)) === 4, `on hand=${await onHand(x)}`);
+  check('C4 y: no variance, the sale after counting stays -> 7', (await onHand(y)) === 7, `on hand=${await onHand(y)}`);
+  check('C4 z: -1 variance on top of the later sale -> 6', (await onHand(z)) === 6, `on hand=${await onHand(z)}`);
+  check('C4 an uncounted item left alone keeps its balance; the one chosen as zero is zeroed', (await onHand(w)) === 10 && (await onHand(v)) === 0);
+  const movements = await prisma.inventoryMovement.findMany({ where: { tenant_id: world.tenant.id, reference_type: 'StockCount', reference_id: count.id } });
+  check('C4 posting is one stock_count engine command (one key) with a line per changed item', movements.length === 3 && movements.every((m) => m.movement_type === 'stock_count') && new Set(movements.map((m) => m.idempotency_key)).size === 1, `movements=${movements.length}`);
+  check('C4 posting issues a constant number of statements', postStatements < 35, `statements=${postStatements}`);
+  const lines = await prisma.stockCountLine.findMany({ where: { count_id: count.id } });
+  check('C4 lines are stamped with the applied change and cost; the zeroed item has its own line', lines.find((l) => l.variant_id === x.id).applied_delta.equals(-3) && lines.find((l) => l.variant_id === v.id).zeroed === true && lines.find((l) => l.variant_id === x.id).unit_cost.equals(20));
+  const replay = await counts.post(world.context, count.id, { uncounted: 'ignore' }, poster);
+  check('C4 posting twice applies once', replay.status === 'posted' && (await onHand(x)) === 4);
+  const closedScan = await rejection(scan(count.id, [entry({ variant_id: x.id })]));
+  check('C4 a posted count refuses scans', codeOf(closedScan) === 'STOCK_COUNT_CLOSED');
+  const cancelPosted = await rejection(counts.cancel(world.context, count.id, {}, reviewer));
+  check('C4 a posted count cannot be cancelled', codeOf(cancelPosted) === 'STOCK_COUNT_CLOSED');
+
+  // C5 "zero" choice, scope by category, and posting that would go negative
+  const catItems = await createVariants(world, 2, { product: { category_id: cat1.id } });
+  for (const variant of catItems) await openStock(world, variant, 6, 10);
+  const other = await createVariant(world, { product: { category_id: cat2.id } });
+  await openStock(world, other, 6, 10);
+  const catCount = await start({ scope: { type: 'category', id: cat1.id }, name: 'Category count', command_id: `cmd-${randomUUID()}` });
+  check('C5 a category count covers only its category', catCount.items_in_scope === 2 && catCount.scope.name === 'قسم 1' && catCount.name === 'Category count');
+  const secondCat = await rejection(start({ scope: { type: 'category', id: cat2.id } }));
+  check('C5 a second category count of another category may run at the same time', secondCat === null);
+  res = await scan(catCount.id, [entry({ variant_id: other.id })]);
+  check('C5 an item outside the scope is refused unless a reviewer allows it', res.results[0].status === 'out_of_scope');
+  res = await scan(catCount.id, [entry({ variant_id: other.id, allow_out_of_scope: true, mode: 'set', qty: 6 })], reviewer);
+  check('C5 a reviewer may count it anyway', res.results[0].status === 'counted');
+  res = await scan(catCount.id, [entry({ variant_id: catItems[0].id, mode: 'set', qty: 1 })]);
+  await sell(world, catItems[0], 4); // on hand 2, counted 1 of 6 expected: variance -5 would go negative
+  const negative = await rejection(counts.post(world.context, catCount.id, { uncounted: 'zero' }, poster));
+  check('C5 posting that would push an item below zero is refused and names it', codeOf(negative) === 'STOCK_COUNT_WOULD_GO_NEGATIVE' && negative.response.data.items[0].variant_id === catItems[0].id, show(codeOf(negative)));
+  check('C5 the refused count stays open and stock is untouched', (await onHand(catItems[0])) === 2 && (await countReads.get(world.context, catCount.id, reviewer)).status === 'open');
+  await countScans.resetLine(world.context, catCount.id, catItems[0].id, reviewer);
+  const zeroed = await counts.post(world.context, catCount.id, { uncounted: 'zero', keep_variant_ids: [catItems[1].id] }, poster);
+  check('C5 "zero" zeroes the uncounted item (2 -> 0) except the ones kept; the out-of-scope item counted as-is', zeroed.status === 'posted' && (await onHand(catItems[0])) === 0 && (await onHand(catItems[1])) === 6 && (await onHand(other)) === 6);
+
+  // C6 cancel, and another tenant
+  const secondOpen = (await countReads.list(world.context, { page: 1, page_size: 50, status: 'open' }, reviewer)).items;
+  for (const open of secondOpen) await counts.cancel(world.context, open.id, { reason: 'cleanup' }, reviewer);
+  const toCancel = await start({ name: 'to cancel' });
+  const cancelled = await counts.cancel(world.context, toCancel.id, { reason: 'test' }, reviewer);
+  check('C6 an open count can be cancelled and then frees the warehouse', cancelled.status === 'cancelled' && (await start({ name: 'after cancel' })).status === 'open');
+  const foreign = await createTenantWorld('count-other');
+  const foreignGet = await rejection(countReads.get(foreign.context, toCancel.id, actorOf(foreign)));
+  const foreignScan = await rejection(countScans.record(foreign.context, toCancel.id, { entries: [entry({ variant_id: x.id })] }, actorOf(foreign)));
+  const foreignStart = await rejection(counts.start(foreign.context, { branch_id: world.branch.id, scope: { type: 'all' } }, actorOf(foreign)));
+  check('C6 another tenant cannot read, scan or start a count on this branch', foreignGet?.getStatus?.() === 404 && foreignScan?.getStatus?.() === 404 && foreignStart?.getStatus?.() === 404);
+  const foreignCategory = await prisma.category.create({ data: { tenant_id: foreign.tenant.id, name_ar: 'x' } });
+  const foreignScope = await rejection(start({ scope: { type: 'category', id: foreignCategory.id } }));
+  check('C6 another tenant\'s category is not a valid scope', codeOf(foreignScope) === 'STOCK_COUNT_SCOPE_NOT_FOUND');
+  const list = await countReads.list(world.context, { page: 1, page_size: 50 }, reviewer);
+  check('C6 the list carries scope, progress and status counts', list.status_counts.posted === 2 && list.status_counts.open === 1 && list.items.every((item) => typeof item.items_in_scope === 'number'), show(list.status_counts));
+  const recent = await countReads.recent(world.context, count.id, { page: 1, page_size: 50 }, counter);
+  check('C6 a counter sees their own recently counted items', recent.total === 3 && recent.items.every((item) => item.counted_by_me > 0), show(recent.total));
+}
+
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyOpeningBalance, verifyAdjustments];
+  const sections = [verifyOpeningBalance, verifyAdjustments, verifyStockCounts];
   for (const section of sections) {
     try {
       await section();

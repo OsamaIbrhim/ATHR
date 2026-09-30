@@ -33,6 +33,7 @@ model Branch {
   pos_enrollment_codes     PosTerminalEnrollment[]
   assortments              Assortment[]
   stock_adjustments        StockAdjustment[]
+  stock_counts             StockCount[]
 
   @@unique([tenant_id, code])
   @@unique([tenant_id, id])
@@ -161,6 +162,7 @@ model Warehouse {
   inventory_batches        InventoryBatch[]
   inventory_serials        InventorySerial[]
   stock_adjustments        StockAdjustment[]
+  stock_counts             StockCount[]
 
   @@unique([tenant_id, id])
   @@index([branch_id])
@@ -401,6 +403,7 @@ model Category {
   name_en   String?
   parent_id String?   @db.Uuid
   products  Product[]
+  stock_counts StockCount[]
   tenant_id String    @db.Uuid
 
   @@unique([tenant_id, id])
@@ -537,6 +540,8 @@ model ProductVariant {
   // product/brand/category, so there is no polymorphism to preserve.
   bundle_components          BundleComponent[]
   stock_adjustment_items     StockAdjustmentItem[]
+  stock_count_lines          StockCountLine[]
+  stock_count_entries        StockCountEntry[]
   tenant_id                  String                    @db.Uuid
 
   @@unique([tenant_id, sku])
@@ -563,6 +568,7 @@ model ProductType {
   created_at DateTime  @default(now())
   updated_at DateTime  @updatedAt
   products   Product[]
+  stock_counts StockCount[]
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, name_en])
@@ -2354,4 +2360,102 @@ model StockAdjustmentItem {
   @@unique([tenant_id, adjustment_id, variant_id])
   @@unique([tenant_id, id])
   @@index([tenant_id, variant_id])
+}
+
+// L1: a stock count session of one warehouse, optionally limited to a category
+// or product type. Nothing is snapshotted at the start: an item's expected
+// quantity is the on-hand quantity at the moment it is first counted (stored on
+// its line), so sales made before and after it is counted are both preserved.
+// Posting applies `counted - expected` of every line as one engine command.
+enum StockCountStatus {
+  open
+  posted
+  cancelled
+}
+
+enum StockCountScope {
+  all
+  category
+  product_type
+}
+
+model StockCount {
+  id                String           @id @default(uuid()) @db.Uuid
+  tenant_id         String           @db.Uuid
+  branch_id         String           @db.Uuid
+  branch            Branch           @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse_id      String           @db.Uuid
+  warehouse         Warehouse        @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  count_number      String           @db.VarChar(40)
+  name              String           @db.VarChar(200)
+  status            StockCountStatus @default(open)
+  scope_type        StockCountScope  @default(all)
+  category_id       String?          @db.Uuid
+  category          Category?        @relation(fields: [tenant_id, category_id], references: [tenant_id, id], onDelete: Restrict)
+  product_type_id   String?          @db.Uuid
+  product_type      ProductType?     @relation(fields: [tenant_id, product_type_id], references: [tenant_id, id], onDelete: Restrict)
+  // 'all', or the id of the category / product type: what the one-open-count index keys on.
+  scope_key         String           @db.VarChar(40)
+  idempotency_key   String?          @db.VarChar(191)
+  // 'ignore' | 'zero': what posting did with items nobody counted.
+  uncounted_choice  String?          @db.VarChar(10)
+  started_by        String?          @db.Uuid
+  posted_by         String?          @db.Uuid
+  posted_at         DateTime?
+  cancelled_by      String?          @db.Uuid
+  cancelled_at      DateTime?
+  created_at        DateTime         @default(now())
+  updated_at        DateTime         @default(now())
+  lines             StockCountLine[]
+  entries           StockCountEntry[]
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, count_number])
+  @@unique([tenant_id, idempotency_key])
+  @@index([tenant_id, status, created_at(sort: Desc)])
+  @@index([tenant_id, warehouse_id, status])
+}
+
+model StockCountLine {
+  id               String         @id @default(uuid()) @db.Uuid
+  tenant_id        String         @db.Uuid
+  count_id         String         @db.Uuid
+  count            StockCount     @relation(fields: [tenant_id, count_id], references: [tenant_id, id], onDelete: Cascade)
+  variant_id       String         @db.Uuid
+  variant          ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  // On-hand quantity when this item was first counted in the session.
+  expected_qty     Decimal        @db.Decimal(14, 3)
+  // Running sum of the entries of every counter.
+  counted_qty      Decimal        @default(0) @db.Decimal(14, 3)
+  // Added at posting as "counted as zero" (nobody counted it).
+  zeroed           Boolean        @default(false)
+  // Stamped at posting: the change applied to stock and the average cost it was valued at.
+  applied_delta    Decimal?       @db.Decimal(14, 3)
+  unit_cost        Decimal?       @db.Decimal(14, 4)
+  first_counted_at DateTime       @default(now())
+  updated_at       DateTime       @default(now())
+
+  @@unique([tenant_id, count_id, variant_id])
+  @@index([tenant_id, variant_id])
+}
+
+// One scan or typed quantity of one counter. `entry_key` is chosen by the
+// client, so a retried request adds nothing twice. Unknown barcodes are kept
+// (variant_id null) for the review.
+model StockCountEntry {
+  id         String          @id @default(uuid()) @db.Uuid
+  tenant_id  String          @db.Uuid
+  count_id   String          @db.Uuid
+  count      StockCount      @relation(fields: [tenant_id, count_id], references: [tenant_id, id], onDelete: Cascade)
+  entry_key  String          @db.VarChar(100)
+  variant_id String?         @db.Uuid
+  variant    ProductVariant? @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  barcode    String?         @db.VarChar(64)
+  qty_delta  Decimal         @db.Decimal(14, 3)
+  counted_by String?         @db.Uuid
+  created_at DateTime        @default(now())
+
+  @@unique([tenant_id, count_id, entry_key])
+  @@index([tenant_id, count_id, variant_id])
+  @@index([tenant_id, count_id, counted_by, created_at])
 }

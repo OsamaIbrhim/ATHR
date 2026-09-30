@@ -14,6 +14,7 @@ import { PromotionsModule } from './promotions/promotions.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { OpeningBalanceModule } from './opening-balance/opening-balance.module';
 import { AdjustmentsModule } from './adjustments/adjustments.module';
+import { StockCountsModule } from './stock-counts/stock-counts.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
 import { CustomersModule } from './customers/customers.module';
@@ -55,6 +56,7 @@ import { EntitlementGuard } from './entitlements/entitlement.guard';
     InventoryModule,
     OpeningBalanceModule,
     AdjustmentsModule,
+    StockCountsModule,
     SuppliersModule,
     PurchasingModule,
     CustomersModule,
