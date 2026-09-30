@@ -17,6 +17,7 @@
 //   E9  a real sale: constant statements for 1 vs 30 lines, service item, negative stock
 //   E10 transfer ship / partial receive with damaged units, in-transit ledger
 //   E11 reconciliation: clean after all of the above, and it detects a tampered row
+//   E17 enabling tracking: plan feature, zero stock, precision-0 unit, sync change
 //   E12-E16 serial / batch tracking (docs/design/W2b-tracking.md): serial receive/sale/return,
 //       FEFO, unallocated shortfall + settlement, replay, reconcile invariants, concurrency
 'use strict';
@@ -28,7 +29,8 @@ const { PrismaClient, Prisma } = require('@prisma/client');
 const dist = (...segments) => path.join(__dirname, '..', 'dist', 'src', ...segments);
 
 let InventoryService, InventoryRepository, PurchasingService, SalesService, TransfersService, BranchesRepository,
-  PricingService, TaxResolutionService, SalesTaxSnapshotService;
+  PricingService, TaxResolutionService, SalesTaxSnapshotService, ProductsService, ProductsRepository, BrandsRepository,
+  TaxCodeService, TaxCodeRepository, LimitService, EntitlementService, ProductTypesService;
 try {
   ({ InventoryService } = require(dist('inventory', 'inventory.service.js')));
   ({ InventoryRepository } = require(dist('inventory', 'inventory.repository.js')));
@@ -39,6 +41,14 @@ try {
   ({ PricingService } = require(dist('pricing', 'pricing.service.js')));
   ({ TaxResolutionService } = require(dist('tax', 'tax-resolution.service.js')));
   ({ SalesTaxSnapshotService } = require(dist('tax', 'sales-tax-snapshot.service.js')));
+  ({ ProductsService } = require(dist('products', 'products.service.js')));
+  ({ ProductsRepository } = require(dist('products', 'products.repository.js')));
+  ({ BrandsRepository } = require(dist('brands', 'brands.repository.js')));
+  ({ TaxCodeService } = require(dist('tax', 'tax-code.service.js')));
+  ({ TaxCodeRepository } = require(dist('tax', 'tax-code.repository.js')));
+  ({ LimitService } = require(dist('entitlements', 'limit.service.js')));
+  ({ EntitlementService } = require(dist('entitlements', 'entitlement.service.js')));
+  ({ ProductTypesService } = require(dist('catalog', 'product-types.service.js')));
 } catch (error) {
   console.error(
     `Could not load compiled services from dist/. This script asserts on the actual shipped code, ` +
@@ -840,6 +850,64 @@ async function verifyTrackingReplayAndConcurrency() {
   check('E16 reconciliation is clean after all of it (unallocated aside)', report.tracking_mismatches.length === 0 && report.items.length === 0, show(report.tracking_mismatches));
 }
 
+// --- E17: enabling tracking (docs/design/W2b-tracking.md section 2) ---------------
+
+async function verifyEnablingTracking() {
+  const world = await createTenantWorld('e17');
+  const run = randomUUID().slice(0, 8);
+  const plan = await prisma.plan.create({
+    data: { code: `e17-${run}`, name_ar: 'خطة', name_en: 'E17', price_monthly: 1, limits: {}, features: ['tracking.serial'] },
+  });
+  await prisma.subscription.create({ data: { tenant_id: world.tenant.id, plan_id: plan.id, status: 'active' } });
+  const entitlements = new EntitlementService(prisma);
+  const products = new ProductsService(
+    new ProductsRepository(prisma), new BrandsRepository(prisma), new TaxCodeService(new TaxCodeRepository(prisma)),
+    new LimitService(prisma, entitlements), new ProductTypesService(prisma), entitlements,
+  );
+  const updateTracking = (variant, tracking, extra = {}) => products.updateVariant(world.context, variant.id, { tracking, ...extra });
+  const trackingOf = async (variant) => (await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } })).tracking;
+  const syncChanges = (variant) => prisma.syncChange.count({ where: { tenant_id: world.tenant.id, kind: 'variant', entity_key: variant.id } });
+
+  const variant = await createVariant(world);
+  const before = await syncChanges(variant);
+  await updateTracking(variant, 'serial');
+  check('E17 tracking turns on for a variant with no stock when the plan has the feature', (await trackingOf(variant)) === 'serial');
+  check('E17 changing tracking emits the usual variant sync change', (await syncChanges(variant)) > before);
+
+  const noBatch = await rejection(updateTracking(await createVariant(world), 'batch'));
+  check('E17 batch tracking is refused when the plan lacks tracking.batch', noBatch?.code === 'ENTITLEMENT_FEATURE_NOT_IN_PLAN', noBatch?.message);
+
+  const kg = await prisma.unitOfMeasure.create({ data: { tenant_id: world.tenant.id, code: 'KG', name_en: 'Kilogram', precision: 3 } });
+  const kgVariant = await createVariant(world, { base_uom_id: kg.id });
+  const fractional = await rejection(updateTracking(kgVariant, 'serial'));
+  check('E17 serial tracking needs a unit with precision 0', fractional?.code === 'REQUEST_FIELD_VALUE_INVALID' && (await trackingOf(kgVariant)) === 'none', fractional?.message);
+
+  const stocked = await createVariant(world);
+  await apply((tx) => inventory.apply(tx, command(world, { type: 'opening_balance', lines: [{ variantId: stocked.id, qtyDelta: 2 }] })));
+  const withStock = await rejection(updateTracking(stocked, 'serial'));
+  check('E17 tracking cannot change while a warehouse holds stock', withStock?.response?.code === 'CATALOG_TRACKING_CHANGE_RESTRICTED' && (await trackingOf(stocked)) === 'none', withStock?.message);
+  await apply((tx) => inventory.apply(tx, command(world, { type: 'sale', allowNegative: true, lines: [{ variantId: stocked.id, qtyDelta: -2 }] })));
+  await updateTracking(stocked, 'serial');
+  check('E17 ...but can once the stock is back to zero', (await trackingOf(stocked)) === 'serial');
+
+  // Units on the road count: their receipt would arrive untracked.
+  const otherBranch = await world.branches.save(world.context, { code: `E17B-${run}`, name_ar: 'فرع' });
+  const shipped = await createVariant(world);
+  await apply((tx) => inventory.apply(tx, command(world, { type: 'opening_balance', lines: [{ variantId: shipped.id, qtyDelta: 1 }] })));
+  const transfers = new TransfersService(prisma, inventory);
+  const created = await transfers.create(world.context, { from_branch_id: world.branch.id, to_branch_id: otherBranch.id, command_id: randomUUID(), items: [{ variant_id: shipped.id, qty: 1 }] }, ownerActor(world));
+  await transfers.ship(world.context, created.id, { command_id: randomUUID() }, ownerActor(world));
+  const onTheRoad = await rejection(updateTracking(shipped, 'serial'));
+  check('E17 tracking cannot change while a transfer still has units in transit', onTheRoad?.response?.code === 'CATALOG_TRACKING_CHANGE_RESTRICTED', onTheRoad?.message);
+
+  // A plan downgrade never traps a tracked variant: turning tracking off and edits stay possible.
+  await prisma.plan.update({ where: { id: plan.id }, data: { features: [] } });
+  entitlements.invalidate();
+  await products.updateVariant(world.context, variant.id, { sku: `RENAMED-${run}` });
+  await updateTracking(variant, 'none');
+  check('E17 after a downgrade an existing tracked variant can still be edited and switched off', (await trackingOf(variant)) === 'none');
+}
+
 async function main() {
   await verifySiteModel();
   await verifyConstantStatements();
@@ -857,6 +925,7 @@ async function main() {
   await verifyUnallocatedBatches();
   await verifySerialReconciliation();
   await verifyTrackingReplayAndConcurrency();
+  await verifyEnablingTracking();
 
   process.stdout.write(failed ? `\n${failed} check(s) FAILED\n` : '\nAll inventory engine checks passed\n');
   if (failed) process.exitCode = 1;

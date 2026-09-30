@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma, type Product, type ProductBarcode, type ProductVariant } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -152,8 +152,20 @@ export class ProductsRepository {
   async findVariantWithType(context: TenantScope, id: string) {
     return this.prisma.productVariant.findFirst({
       where: { id, tenant_id: context.tenantId },
-      include: { product: { select: { product_type: { select: { attributes: true } } } } },
+      include: {
+        product: { select: { product_type: { select: { attributes: true } } } },
+        base_uom: { select: { precision: true } },
+      },
     });
+  }
+
+  /** The decimals a unit of this tenant allows; null when there is no such unit. */
+  async uomPrecision(context: TenantScope, id: string): Promise<number | null> {
+    const uom = await this.prisma.unitOfMeasure.findFirst({
+      where: { id, tenant_id: context.tenantId },
+      select: { precision: true },
+    });
+    return uom?.precision ?? null;
   }
 
   async findBarcodeById(context: TenantScope, id: string): Promise<ProductBarcode | null> {
@@ -236,6 +248,42 @@ export class ProductsRepository {
   ): Promise<ProductVariant> {
     await this.assertVariantInTenant(context, id);
     return this.prisma.productVariant.update({ where: { id }, data });
+  }
+
+  /**
+   * Updates a variant that changes its tracking mode. Tracking can change only
+   * while nothing of the variant exists anywhere: the stock rows are locked (a
+   * sale cannot slip in) and must all be zero, and no transfer may still have
+   * units on the road (their receipt would arrive untracked).
+   */
+  async updateVariantTracking(
+    context: TenantScope,
+    id: string,
+    data: Prisma.ProductVariantUncheckedUpdateInput,
+  ): Promise<ProductVariant> {
+    await this.assertVariantInTenant(context, id);
+    return this.prisma.$transaction(async (tx) => {
+      const stock = await tx.$queryRaw<Array<{ qty_on_hand: Prisma.Decimal }>>`
+        SELECT "qty_on_hand" FROM "InventoryStock"
+        WHERE "tenant_id" = ${context.tenantId}::uuid AND "variant_id" = ${id}::uuid
+        ORDER BY "warehouse_id"
+        FOR UPDATE
+      `;
+      const [onTheRoad] = await tx.$queryRaw<Array<{ found: number }>>`
+        SELECT 1 AS "found" FROM "TransferItem"
+        WHERE "tenant_id" = ${context.tenantId}::uuid AND "variant_id" = ${id}::uuid
+          AND "shipped_qty" > "received_qty" + "damaged_qty" + "missing_qty"
+        LIMIT 1
+      `;
+      if (stock.some((row) => !row.qty_on_hand.isZero()) || onTheRoad) {
+        throw new ConflictException({
+          code: 'CATALOG_TRACKING_CHANGE_RESTRICTED',
+          message: 'Tracking can only change while no warehouse holds any of this variant (on hand or in transit).',
+          message_ar: 'لا يمكن تغيير نوع التتبع إلا عندما يكون رصيد الصنف صفرًا في كل المخازن ولا توجد تحويلات في الطريق.',
+        });
+      }
+      return tx.productVariant.update({ where: { id }, data });
+    });
   }
 
   async addBarcode(context: TenantScope, variantId: string, data: NewBarcode): Promise<ProductBarcode> {

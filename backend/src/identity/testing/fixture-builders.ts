@@ -216,6 +216,7 @@ export interface ProductVariantRow {
   qa_flag: boolean;
   is_active: boolean;
   item_type: string;
+  tracking: string;
   base_uom_id: string | null;
   /**
    * WP-008 Phase C (OD-CAT-014): the variant-level tax OVERRIDE. Defaults to
@@ -245,6 +246,7 @@ export function aProductVariant(
       qa_flag: false,
       is_active: true,
       item_type: 'stocked',
+      tracking: 'none',
       base_uom_id: null,
       created_at: new Date(),
     },
