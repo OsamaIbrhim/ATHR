@@ -77,7 +77,8 @@ function Done({ tally, failedRows, excluded, branchName, withoutQty, onDownload,
         : problems > 0
           ? <Banner tone="warn">تم استيراد <bdi dir="ltr">{tally.created}</bdi> صنف، و<bdi dir="ltr">{problems}</bdi> صف لم يُستورد بسبب أخطاء</Banner>
           : <Banner tone="ok">تم الاستيراد بنجاح</Banner>}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <StatCard label="إجمالي الصفوف" value={tally.created + tally.skipped + problems} />
         <StatCard label="تمت إضافته" value={tally.created} tone="ok" />
         <StatCard label="تم تخطيه — SKU موجود" value={tally.skipped} />
         {problems > 0 && <StatCard label="لم يُستورد (أخطاء)" value={problems} tone="danger" />}

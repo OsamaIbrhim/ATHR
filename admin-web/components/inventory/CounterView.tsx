@@ -1,4 +1,7 @@
 'use client'
+import { useRouter } from 'next/navigation'
+import { setLeaveGuard } from '@/lib/leave-guard'
+import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useCounter } from '@/lib/use-counter'
 import { variantName, type MineRow, type VariantLite } from '@/lib/counts'
@@ -28,6 +31,8 @@ export default function CounterView({ countId, count, canReview, canAddOutOfScop
 }) {
   const open = count.status === 'open'
   const c = useCounter(countId, open)
+  const router = useRouter()
+  const [leaveTo, setLeaveTo] = useState<string | null>(null)
   const picker = useRef<ItemPickerHandle>(null)
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
@@ -59,6 +64,11 @@ export default function CounterView({ countId, count, canReview, canAddOutOfScop
     const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
+  }, [c.pending])
+  useEffect(() => {
+    if (!c.pending) return
+    setLeaveGuard(href => setLeaveTo(href))
+    return () => setLeaveGuard(null)
   }, [c.pending])
 
   // +/- adjust the last item while the field is empty; Ctrl+Z undoes the last scan; Escape returns to the field.
@@ -162,6 +172,9 @@ export default function CounterView({ countId, count, canReview, canAddOutOfScop
           {shown.length ? <ul>{shown.map(row)}</ul> : <div className="py-8 text-center text-sm text-gray-600"><div className="font-medium text-gray-800">لم تعدّ شيئًا بعد</div>امسح أول صنف لتبدأ.</div>}
         </section>
       </div>
+      <ConfirmDialog open={!!leaveTo} title="تغادر الجرد؟" confirmLabel="مغادرة" cancelLabel="البقاء" tone="danger" onClose={() => setLeaveTo(null)} onConfirm={() => { const to = leaveTo; setLeaveTo(null); if (to) router.push(to) }}>
+        فيه مسحات لم تُرسل بعد للخادم. لو غادرت الآن قد تضيع.
+      </ConfirmDialog>
       <StickyActionBar>
         {finished ? <p className="font-medium text-green-800">تم حفظ عدّك. أبلغ المسؤول ليراجع الجرد.</p>
           : <button type="button" className="btn btn-lg w-full md:w-auto" disabled={!open} onClick={() => (canReview ? onReview() : setFinished(true))}>{canReview ? 'انتهيت — مراجعة الفروق' : 'انتهيت من عدّي'}</button>}

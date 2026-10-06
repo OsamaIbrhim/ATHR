@@ -8,7 +8,9 @@ import BarcodeChips from '@/components/products/BarcodeChips'
 import DataTable, { type Column } from '@/components/ui/DataTable'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import PageHeader from '@/components/ui/PageHeader'
+import Num from '@/components/ui/Num'
 import StatusBadge from '@/components/ui/StatusBadge'
+import { loadUoms, type UomInfo } from '@/lib/items'
 import { hasPermission } from '@/lib/permissions'
 
 type ProductResponse = { items: any[]; page: number; page_size: number; total: number; total_pages: number; suggestions?: { value: string; label: string }[] }
@@ -26,6 +28,10 @@ export default function ProductsPage() {
   const [error, setError] = useState('')
   const [target, setTarget] = useState<string | null>(null)
   const [deactivating, setDeactivating] = useState(false)
+  const [uoms, setUoms] = useState<Map<string, UomInfo>>(new Map())
+  useEffect(() => { void loadUoms().then(setUoms) }, [])
+  const unitOf = (row: any) => uoms.get(String(row.product?.base_uom_id ?? row.base_uom_id ?? ''))
+  const stockOf = (row: any) => (row.stock_by_branch || []).reduce((sum: number, x: any) => sum + Number(x.qty_on_hand), 0)
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -59,7 +65,7 @@ export default function ProductsPage() {
     { header: 'الصنف', cell: row => row.label ? <StatusBadge tone="neutral" icon={false}>{row.label}</StatusBadge> : <span className="text-gray-400">—</span> },
     { header: 'الباركود', cell: row => <BarcodeChips barcodes={row.barcodes} /> },
     { header: 'التكلفة', cell: row => row.cost_price !== undefined ? `${Number(row.cost_price)} ج` : '—' },
-    { header: 'المخزون', cell: row => (row.stock_by_branch || []).reduce((sum: number, x: any) => sum + Number(x.qty_on_hand), 0) },
+    { header: 'المخزون', cell: row => <Num value={stockOf(row)} kind="qty" precision={unitOf(row)?.precision ?? 0} unit={unitOf(row)?.name} /> },
     {
       header: '',
       cell: row => (
@@ -98,10 +104,10 @@ export default function ProductsPage() {
               <bdi dir="ltr" className="block font-mono text-xs text-gray-600">{row.sku}</bdi>
               <BarcodeChips barcodes={row.barcodes} />
               <div className="flex items-center justify-between text-sm">
-                <span>المخزون: <bdi dir="ltr">{(row.stock_by_branch || []).reduce((sum: number, x: any) => sum + Number(x.qty_on_hand), 0)}</bdi></span>
-                <span className="flex gap-3">
-                  {canEdit && <Link href={`/products/${row.product_id}`} className="btn-link">تعديل</Link>}
-                  {canArchive && <button type="button" className="btn-link text-red-700" onClick={() => setTarget(row.id)}>تعطيل</button>}
+                <span>المخزون: <Num value={stockOf(row)} kind="qty" precision={unitOf(row)?.precision ?? 0} unit={unitOf(row)?.name} /></span>
+                <span className="flex items-center gap-2">
+                  {canEdit && <Link href={`/products/${row.product_id}`} className="btn-secondary min-h-11">تعديل</Link>}
+                  {canArchive && <button type="button" className="btn-secondary ms-4 min-h-11 border-red-300 text-red-700" onClick={() => setTarget(row.id)}>تعطيل</button>}
                 </span>
               </div>
             </div>

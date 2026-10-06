@@ -110,7 +110,7 @@ export default function ImportPage() {
   const another = () => { setFileNo(n => n + 1); reset() }
 
   const failed = [...flow.results.filter(r => r.status !== 'ready').map(r => flow.runResults.get(r.row_ref) ?? r), ...[...flow.runResults.values()].filter(r => r.status === 'failed')]
-  const failedRows = [...new Map(failed.filter(r => r.status === 'failed').map(r => [r.row_ref, r])).values()].sort((a, b) => a.row_ref - b.row_ref)
+  const failedRows = [...new Map(failed.filter(r => r.status === 'failed' || r.status === 'out_of_plan').map(r => [r.row_ref, r])).values()].sort((a, b) => a.row_ref - b.row_ref)
   const withoutQty = rows.filter(r => !r.opening_qty && flow.runResults.get(r.row_ref)?.status === 'created').length
   const download = () => downloadErrorsFile(table, hasHeader, [...new Map([...flow.results, ...flow.runResults.values()].map(r => [r.row_ref, r])).values()])
   const setMap = (key: FieldKey, column: number | null) => setMapping(m => ({ ...m, [key]: column }))
