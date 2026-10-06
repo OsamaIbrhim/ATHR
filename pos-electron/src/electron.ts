@@ -1,3 +1,4 @@
+import type { ReceiptData } from '../electron/receipt-html'
 import type { PosSettings } from '../electron/sale-settings'
 import type { ScanResult } from '../electron/scan-types'
 import {
@@ -121,7 +122,7 @@ export type AthrBridge = {
   }>
 
   print(
-    invoice: unknown,
+    receipt: ReceiptData,
     lang: 'ar' | 'en',
   ): Promise<{
     ok: boolean
