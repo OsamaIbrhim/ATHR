@@ -73,6 +73,14 @@ export class ShiftsRepository {
     });
   }
 
+  /** Cash taken against customers' debts at this shift's till (ledger payments, stored negative). */
+  async sumCashCollections(context: TenantScope, shiftId: string) {
+    return this.prisma.customerLedgerEntry.aggregate({
+      where: { tenant_id: context.tenantId, shift_id: shiftId, type: 'payment', method: 'cash' },
+      _sum: { amount: true },
+    });
+  }
+
   async sumCashReturns(context: TenantScope, shiftId: string) {
     return this.prisma.return.aggregate({
       where: {

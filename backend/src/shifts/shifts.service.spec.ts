@@ -59,6 +59,7 @@ describe('ShiftsService', () => {
         updateMany: shiftUpdateMany,
       },
       salesPayment: { aggregate: salesAggregate },
+      customerLedgerEntry: { aggregate: jest.fn().mockResolvedValue({ _sum: { amount: -20 } }) },
       return: { aggregate: returnAggregate },
     };
     const service = serviceOver(prisma);
@@ -80,8 +81,8 @@ describe('ShiftsService', () => {
       }),
     );
     const data = shiftUpdateMany.mock.calls[0][0].data;
-    expect(Number(data.expected_cash)).toBe(450);
-    expect(Number(data.difference)).toBe(-10);
+    expect(Number(data.expected_cash)).toBe(470);
+    expect(Number(data.difference)).toBe(-30);
     expect(data.closed_by).toBe(actor.sub);
   });
 

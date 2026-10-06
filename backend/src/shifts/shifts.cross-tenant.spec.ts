@@ -52,6 +52,7 @@ function setup() {
       aSalesPayment({ tenant_id: TENANT_B, sales_invoice_id: INVOICE_B, method: 'cash', amount: new Prisma.Decimal(9999) }),
     ],
     return: [],
+    customerLedgerEntry: [],
   }, { salesPayment: { invoice: { table: 'salesInvoice', localKey: 'sales_invoice_id' } } });
   // WP-T2/F4 audit: this file's only raw-SQL-reaching test ("stamps a new
   // shift with the calling tenant") exercises open()'s advisory lock

@@ -187,6 +187,7 @@ function setupSale(options: {
       create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'sale-1', ...data })),
     },
     salesPayment: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    customerLedgerEntry: { create: jest.fn().mockResolvedValue({}) },
     salesInvoiceItem: {
       createManyAndReturn: jest.fn().mockImplementation(({ data }) =>
         Promise.resolve(data.map((item: any) => ({ ...item }))),
@@ -603,6 +604,57 @@ describe('SalesService acceptance-first sale synchronization', () => {
     const result = await service.createSale(saleDto({ payments: [{ method: 'bank_transfer', amount: 100 }] }), terminal);
     expect(result.warning_codes).toEqual(expect.arrayContaining(['PAYMENT_TOTAL_MISMATCH', 'PAYMENT_METHOD_DISABLED']));
     expect(tx.salesPayment.createMany).toHaveBeenCalled();
+  });
+
+  describe('sales on credit', () => {
+    const creditSale = (extra: Record<string, unknown> = {}) =>
+      saleDto({ customer_phone: '01012345678', payments: [{ method: 'cash', amount: 142 }, { method: 'credit', amount: 200 }], ...extra });
+    /** The claim statement answers first, the customer upsert second. */
+    const withCustomer = (setup: ReturnType<typeof setupSale>, customer: { balance: number; credit_limit: number | null }) => {
+      const claim = {
+        branch_id: branchId, branch_code: 'BOLD-01', terminal_code: 'POS1', settings: {}, previous_sequence: 0n,
+      };
+      setup.tx.$queryRaw.mockReset();
+      setup.tx.$queryRaw.mockResolvedValueOnce([claim]).mockResolvedValueOnce([{ id: 'customer-1', ...customer }]);
+    };
+
+    it('books the credit part on the customer and writes one ledger entry with the balance it produced', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 200, credit_limit: null });
+      const result = await setup.service.createSale(creditSale(), terminal);
+      const upsert = setup.tx.$queryRaw.mock.calls[1];
+      expect(upsert[0].join('?')).toContain('"balance" = "Customer"."balance" + EXCLUDED."balance"');
+      expect(upsert.slice(1).map((value: unknown) => String(value))).toContain('200');
+      expect(setup.tx.customerLedgerEntry.create).toHaveBeenCalledTimes(1);
+      const entry = setup.tx.customerLedgerEntry.create.mock.calls[0][0].data;
+      expect([entry.type, entry.amount.toString(), entry.balance_after.toString(), entry.customer_id, entry.sales_invoice_id]).toEqual([
+        'sale_credit', '200', '200', 'customer-1', result.id,
+      ]);
+      expect(result.warning_codes).not.toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+    });
+
+    it('accepts a credit sale beyond the credit limit, with a warning', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 600, credit_limit: 500 });
+      const result = await setup.service.createSale(creditSale(), terminal);
+      expect(result.warning_codes).toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+      expect(setup.tx.customerLedgerEntry.create).toHaveBeenCalled();
+    });
+
+    it('accepts credit without a customer, with a warning and no ledger entry', async () => {
+      const { service, tx } = setupSale();
+      const result = await service.createSale(creditSale({ customer_phone: undefined }), terminal);
+      expect(result.warning_codes).toContain('CREDIT_WITHOUT_CUSTOMER');
+      expect(tx.customerLedgerEntry.create).not.toHaveBeenCalled();
+    });
+
+    it('writes no ledger entry for a sale without credit', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 0, credit_limit: 10 });
+      const result = await setup.service.createSale(saleDto({ customer_phone: '01012345678' }), terminal);
+      expect(setup.tx.customerLedgerEntry.create).not.toHaveBeenCalled();
+      expect(result.warning_codes).not.toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+    });
   });
 
   describe('discounts', () => {

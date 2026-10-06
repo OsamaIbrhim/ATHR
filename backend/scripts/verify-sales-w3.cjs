@@ -9,6 +9,7 @@
 //   D6      transfers numbered TR-000001 per tenant, no global sequence
 //   P1-P4   payments: split rows, warnings, 17 statements, shift cash from payments
 //   X1-X6   discounts: line + invoice, tax after discount, snapshot, limit warning, merge, fingerprint
+//   C1-C8   credit: balance + ledger, limit warning, collections, shift cash, append-only, debtors, statement
 //   N1-N3   a POS sale is never refused: reused terminal sequence, mismatching total, no number
 'use strict';
 
@@ -264,10 +265,87 @@ async function verifyDiscounts() {
   check('X6 a replay is idempotent and the same sync_id with another discount is a context conflict', replay.id === first.id && changed?.response?.code === 'SALE_IDEMPOTENCY_CONTEXT_CONFLICT', changed?.message);
 }
 
+// --- C ------------------------------------------------------------------------
+
+async function verifyCredit() {
+  const world = await createSalesWorld(prisma, 'c');
+  const other = await createSalesWorld(prisma, 'c-other');
+  const [variant] = [await world.createVariant()];
+  await world.sell(world.saleDto([variant])); // warm caches
+  const CustomerAccountsService = load('customers', 'customer-accounts.service.js', 'CustomerAccountsService');
+  const accounts = new CustomerAccountsService(prisma);
+  const actor = { sub: world.cashier.id, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
+  const phone = '01077777001';
+  const creditSale = (extra = {}) => world.saleDto([variant], { customer_phone: phone, local_total: 114, payments: [{ method: 'credit', amount: 114 }], ...extra });
+
+  const [first, statements] = await counted(() => world.sell(creditSale()));
+  const customer = await prisma.customer.findFirstOrThrow({ where: { tenant_id: world.tenant.id, phone } });
+  const entries = await prisma.customerLedgerEntry.findMany({ where: { customer_id: customer.id } });
+  check('C1 a credit sale puts its amount on the customer and one ledger entry explains it',
+    customer.balance.equals(114) && entries.length === 1 && entries[0].type === 'sale_credit' && entries[0].amount.equals(114) && entries[0].balance_after.equals(114) && entries[0].sales_invoice_id === first.id,
+    `balance=${customer.balance} entries=${entries.length}`);
+  check(`C1 a credit sale for a customer costs ${SALE_STATEMENTS + 2} statements (17 + customer + ledger)`, statements === SALE_STATEMENTS + 2, `got ${statements}`);
+  const [, plainWithCustomer] = await counted(() => world.sell(world.saleDto([variant], { customer_phone: phone })));
+  check('C1 a sale to the same customer without credit costs 18: no ledger statement', plainWithCustomer === SALE_STATEMENTS + 1, `got ${plainWithCustomer}`);
+  const replayDto = creditSale();
+  await world.sell(replayDto);
+  await world.sell(replayDto);
+  const afterReplay = await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } });
+  check('C1 replaying a credit sale does not book it twice', afterReplay.balance.equals(228), `balance=${afterReplay.balance}`);
+
+  await accounts.setCreditLimit(world.context, customer.id, 300);
+  const over = await world.sell(creditSale());
+  check('C2 a credit sale beyond the limit is accepted with CUSTOMER_CREDIT_LIMIT_EXCEEDED', over.warning_codes.includes('CUSTOMER_CREDIT_LIMIT_EXCEEDED') && over.total.equals(114), show(over.warning_codes));
+  const noCustomer = await world.sell(world.saleDto([variant], { local_total: 114, payments: [{ method: 'credit', amount: 114 }] }));
+  check('C2 credit without a customer is accepted with CREDIT_WITHOUT_CUSTOMER', noCustomer.warning_codes.includes('CREDIT_WITHOUT_CUSTOMER'));
+
+  // Collecting a debt.
+  const collect = (extra = {}) => accounts.collectPayment(world.context, customer.id, { amount: 100, method: 'cash', idempotency_key: randomUUID(), shift_id: world.shift.id, ...extra }, actor);
+  const key = randomUUID();
+  const paid = await collect({ idempotency_key: key });
+  const again = await collect({ idempotency_key: key });
+  const reused = await rejection(collect({ idempotency_key: key, amount: 50 }));
+  const owed = await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } });
+  check('C3 a collection lowers the balance once; the same key replays, another amount is a conflict',
+    paid.balance_after === '242' && again.replayed === true && again.id === paid.id && reused?.response?.code === 'IDEMPOTENCY_KEY_REUSED' && owed.balance.equals(242), `${paid.balance_after} ${again.replayed} ${owed.balance}`);
+  await collect({ amount: 40, method: 'card', shift_id: undefined });
+
+  const sum = (await prisma.customerLedgerEntry.aggregate({ where: { customer_id: customer.id }, _sum: { amount: true } }))._sum.amount;
+  const afterAll = await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } });
+  check('C4 the balance always equals the sum of the ledger', afterAll.balance.equals(sum), `${afterAll.balance} vs ${sum}`);
+
+  await Promise.all(Array.from({ length: 10 }, () => collect({ amount: 1, method: 'cash' })));
+  const concurrent = await prisma.customerLedgerEntry.findMany({ where: { customer_id: customer.id, type: 'payment' } });
+  const balances = new Set(concurrent.map((entry) => String(entry.balance_after)));
+  const final = await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } });
+  check('C4 ten concurrent collections each record the balance they produced (no lost update)', balances.size === concurrent.length && final.balance.equals(afterAll.balance.minus(10)), `${balances.size}/${concurrent.length} final=${final.balance}`);
+
+  // The shift: cash collected at its till (100 + 10 x 1) counts, the card payment does not.
+  const ShiftsService = load('shifts', 'shifts.service.js', 'ShiftsService');
+  const ShiftsRepository = load('shifts', 'shifts.repository.js', 'ShiftsRepository');
+  const cashSales = (await prisma.salesPayment.aggregate({ where: { tenant_id: world.tenant.id, method: 'cash' }, _sum: { amount: true } }))._sum.amount ?? D(0);
+  await new ShiftsService(prisma, new ShiftsRepository(prisma)).close(world.context, world.shift.id, actor, 0);
+  const closed = await prisma.shift.findUniqueOrThrow({ where: { id: world.shift.id } });
+  check('C5 cash collected in a shift is part of its expected cash (card is not)', closed.expected_cash.equals(cashSales.plus(110)), `expected=${closed.expected_cash} cashSales=${cashSales}`);
+
+  const rewrite = await rejection(prisma.$executeRaw`UPDATE "CustomerLedgerEntry" SET "note" = 'x' WHERE "customer_id" = ${customer.id}::uuid`);
+  const wipe = await rejection(prisma.$executeRaw`DELETE FROM "CustomerLedgerEntry" WHERE "customer_id" = ${customer.id}::uuid`);
+  check('C6 the ledger is append-only', rewrite !== null && wipe !== null);
+
+  const debtors = await accounts.debtors(world.context);
+  check('C7 the debtors list shows who owes and the total', debtors.items.some((row) => row.id === customer.id) && debtors.total_owed.equals(final.balance), `total_owed=${debtors.total_owed}`);
+  const ledgerCount = await prisma.customerLedgerEntry.count({ where: { customer_id: customer.id } });
+  const page = await accounts.statement(world.context, customer.id, { page: 1, page_size: 5 });
+  check('C7 the statement pages the ledger newest first with the customer balance', page.items.length === 5 && page.total === ledgerCount && page.customer.balance.equals(final.balance), `total=${page.total}/${ledgerCount}`);
+  const stranger = await rejection(accounts.collectPayment(other.context, customer.id, { amount: 1, method: 'cash', idempotency_key: randomUUID() }, actor));
+  const noStatement = await rejection(accounts.statement(other.context, customer.id));
+  check('C8 another tenant cannot collect from or read this customer', stranger?.status === 404 && noStatement?.status === 404);
+}
+
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments, verifyDiscounts];
+  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments, verifyDiscounts, verifyCredit];
   for (const section of sections) {
     try {
       await section();

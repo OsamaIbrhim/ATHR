@@ -109,13 +109,15 @@ export class ShiftsService {
     // Both cash aggregates are tenant-scoped: an unscoped sum would fold
     // another tenant's cash sales into this shift's expected drawer total and
     // report the difference as a till discrepancy.
-    const [cashSales, cashReturns] = await Promise.all([
+    const [cashSales, cashReturns, cashCollections] = await Promise.all([
       this.repository.sumCashSales(context, shift.id),
       this.repository.sumCashReturns(context, shift.id),
+      this.repository.sumCashCollections(context, shift.id),
     ]);
 
     const expectedCash = new Prisma.Decimal(shift.opening_cash)
       .plus(cashSales._sum.amount ?? 0)
+      .minus(cashCollections._sum.amount ?? 0)
       .minus(cashReturns._sum.refund_total ?? 0)
       .toDecimalPlaces(2);
     const difference = new Prisma.Decimal(closing_cash)

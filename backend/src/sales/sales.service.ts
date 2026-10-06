@@ -511,20 +511,28 @@ export class SalesService {
       const costOf = (variantId: string) =>
         unitCost(stockAfter.get(variantId)?.avgCost ?? variantsById.get(variantId).cost_price);
 
-      // Find-or-create the customer and book this sale on it in one statement.
+      // Find-or-create the customer and book this sale on it in one statement
+      // (the part paid on credit raises the balance in the same row update).
       // The (tenant_id, phone) unique key makes concurrent first sales safe.
       let customerId: string | undefined;
+      let balanceAfter: Prisma.Decimal | undefined;
       if (dto.customer_phone) {
-        const [customer] = await tx.$queryRaw<Array<{ id: string }>>`
-          INSERT INTO "Customer" ("id", "tenant_id", "phone", "whatsapp", "total_invoices", "total_spent")
-          VALUES (${randomUUID()}::uuid, ${context.tenantId}::uuid, ${dto.customer_phone}, ${dto.customer_phone}, 1, ${total})
+        const [customer] = await tx.$queryRaw<Array<{ id: string; balance: Prisma.Decimal; credit_limit: Prisma.Decimal | null }>>`
+          INSERT INTO "Customer" ("id", "tenant_id", "phone", "whatsapp", "total_invoices", "total_spent", "balance")
+          VALUES (${randomUUID()}::uuid, ${context.tenantId}::uuid, ${dto.customer_phone}, ${dto.customer_phone}, 1, ${total}, ${paymentPlan.credit})
           ON CONFLICT ("tenant_id", "phone") DO UPDATE SET
             "total_invoices" = "Customer"."total_invoices" + 1,
-            "total_spent" = "Customer"."total_spent" + EXCLUDED."total_spent"
-          RETURNING "id"
+            "total_spent" = "Customer"."total_spent" + EXCLUDED."total_spent",
+            "balance" = "Customer"."balance" + EXCLUDED."balance"
+          RETURNING "id", "balance", "credit_limit"
         `;
         customerId = customer.id;
+        balanceAfter = new Prisma.Decimal(customer.balance);
+        if (paymentPlan.credit.greaterThan(0) && customer.credit_limit !== null && balanceAfter.greaterThan(customer.credit_limit)) {
+          warningCodes.add('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+        }
       }
+      if (paymentPlan.credit.greaterThan(0) && !customerId) warningCodes.add('CREDIT_WITHOUT_CUSTOMER');
 
       const invoice = await tx.salesInvoice.create({
         data: {
@@ -558,6 +566,20 @@ export class SalesService {
       await tx.salesPayment.createMany({
         data: paymentPlan.rows.map((row) => ({ ...row, tenant_id: context.tenantId, sales_invoice_id: invoice.id })),
       });
+      // The ledger entry of the credit part (the balance itself moved with the customer row above).
+      if (customerId && balanceAfter && paymentPlan.credit.greaterThan(0)) {
+        await tx.customerLedgerEntry.create({
+          data: {
+            tenant_id: context.tenantId,
+            customer_id: customerId,
+            type: 'sale_credit',
+            amount: paymentPlan.credit,
+            balance_after: balanceAfter,
+            sales_invoice_id: invoice.id,
+            created_by: linkedCashier?.id ?? null,
+          },
+        });
+      }
       const items = await tx.salesInvoiceItem.createManyAndReturn({
         data: saleItems.map((item) => ({
           id: itemIds.get(item.variant_id),
