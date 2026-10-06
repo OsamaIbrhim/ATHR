@@ -1,3 +1,4 @@
+import { normalizeLines, saleCommandFingerprint } from './sale-command';
 import {
   BadRequestException,
   ConflictException,
@@ -245,11 +246,11 @@ function setupSale(options: {
 }
 
 function fingerprint(service: SalesService, dto: any) {
-  return (service as any).saleCommandFingerprint(
+  return saleCommandFingerprint(
     dto,
     terminal.id,
     new Date(occurredAt),
-    (service as any).normalizeLines(dto.items),
+    normalizeLines(dto.items),
   );
 }
 

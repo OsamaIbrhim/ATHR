@@ -1,12 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { deviceTenantContext } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -14,18 +6,18 @@ import { PosTerminal, Prisma } from '@prisma/client';
 import { PricingService } from '../pricing/pricing.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
-import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
+import { CreateSaleDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { randomUUID } from 'crypto';
-import { assertBranchAccess, hasBranchAccess, toScopeSet } from '../auth/branch-access';
-import {
-  getErrorMessage,
-  getPrismaErrorCode,
-  getSaleTransactionOptions,
-  isExpiredSaleTransactionError,
-} from './sale-transaction';
+import { runSaleTransaction } from './sale-transaction-runner';
+import { loadInvoiceView } from './sale-invoice-view';
+import { claimTerminalSequence } from './sale-terminal-claim';
+import { bookCustomerSale } from './sale-customer';
+import { loadSaleVariants } from './sale-variants';
+import { resolveSaleActors } from './sale-actors';
+import { assertSameSaleContext } from './sale-replay';
+import { reconcileLateShiftSale } from './sale-late-shift';
 import { money, sameMoney, unitCost } from '../common/money';
-import { assertQuantityPrecision, quantity, variantQuantityPrecision } from '../common/quantity';
 import { InventoryService } from '../inventory/inventory.service';
 import { stockLots } from './sale-lots';
 import { planPayments } from './sale-payments';
@@ -34,7 +26,7 @@ import { isDiscountAboveLimit } from '@athr/domain-core';
 import { priceSaleCommand } from './sale-command-pricing';
 import { effectivePermissions } from '../identity/permission-catalog';
 import { readTenantSettings } from '../catalog/tenant-settings';
-import { normalizeLines, saleCommandFingerprint, type NormalizedLines } from './sale-command';
+import { normalizeLines, saleCommandFingerprint } from './sale-command';
 import { derivedInvoiceNumber, invoiceNumberCandidates, pickInvoiceNumber } from './invoice-number';
 
 @Injectable()
@@ -49,115 +41,8 @@ export class SalesService {
     private inventory: InventoryService,
   ) {}
 
-  async getInvoice(context: TenantContext, id: string, actor: AuthenticatedUser) {
-    const invoice = await this.prisma.salesInvoice.findFirst({
-      where: { id, tenant_id: context.tenantId },
-      include: {
-        items: { include: { variant: { include: { product: true } }, return_items: { where: { return_record: { status: 'completed' } } } } },
-        payments: { orderBy: { sequence: 'asc' } },
-        branch: true, customer: true,
-        cashier: { select: { id: true, name: true } },
-        seller: { select: { id: true, name: true } },
-        receiver: { select: { id: true, name: true } },
-        shift: true,
-        terminal: { select: { id: true, terminal_code: true, name: true } },
-        original_returns: { include: { items: true }, orderBy: { created_at: 'desc' } },
-      },
-    });
-    if (!invoice) throw new NotFoundException('Invoice not found');
-    assertBranchAccess(actor, invoice.branch_id);
-    // BR-CST-101 / Matrix §17 §51: this row discloses exact cost four ways —
-    // `items[].unit_cost` (cost at the moment of sale), the joined
-    // `items[].variant.cost_price` (cost today), and the same sale-line cost
-    // carried onto the return through *either* join, `items[].return_items[]`
-    // and `original_returns[].items[]`. Both return joins matter: they reach
-    // the same `ReturnItem` rows from opposite ends, so masking one leaves the
-    // figure reachable through the other. `cashier` clears this endpoint on
-    // `sales.sale.view` and does not hold `sales.sale.view-cost-margin`, so
-    // all four are stripped for the till. Only the response is projected; the
-    // stored rows keep the true values, and the margin reports that need them
-    // read those rows directly behind their own `reports.*.view-cost-margin`
-    // guard.
-    if (await this.costVisibility.canViewSaleCostMargin(actor)) return invoice;
-    const withoutLineCost = <T extends { unit_cost?: unknown }>({ unit_cost: _unitCost, ...line }: T) =>
-      line;
-    return {
-      ...invoice,
-      items: invoice.items.map(({ unit_cost: _unitCost, variant, return_items, ...item }) => {
-        const { cost_price: _costPrice, ...visibleVariant } = variant;
-        return { ...item, variant: visibleVariant, return_items: return_items.map(withoutLineCost) };
-      }),
-      original_returns: invoice.original_returns.map((record) => ({
-        ...record,
-        items: record.items.map(withoutLineCost),
-      })),
-    };
-  }
-
-  private saleCommandFingerprint(dto: CreateSaleDto, terminalId: string, occurredAt: Date, normalized: NormalizedLines) {
-    return saleCommandFingerprint(dto, terminalId, occurredAt, normalized);
-  }
-
-  private normalizeLines(items: CreateSaleItemDto[]) {
-    return normalizeLines(items);
-  }
-
-  private async runSaleTransaction<T>(
-    dto: CreateSaleDto,
-    terminal: Pick<PosTerminal, 'id'>,
-    operation: (tx: Prisma.TransactionClient) => Promise<T>,
-  ): Promise<T> {
-    const options = getSaleTransactionOptions();
-    const startedAt = Date.now();
-
-    try {
-      return await this.prisma.$transaction(operation, options);
-    } catch (error: unknown) {
-      const prismaCode = getPrismaErrorCode(error);
-      const expired = isExpiredSaleTransactionError(error);
-
-      if (expired || prismaCode) {
-        this.logger.error(
-          JSON.stringify({
-            level: 'error',
-            errorCode: expired
-              ? 'SALE_TRANSACTION_EXPIRED'
-              : 'SALE_DATABASE_OPERATION_FAILED',
-            component: 'database',
-            status: 'rolled_back',
-            operation: 'create_sale',
-            syncId: dto.sync_id,
-            branchId: dto.branch_id,
-            terminalId: terminal.id,
-            terminalSequence: dto.terminal_sequence,
-            itemCount: dto.items.length,
-            prismaCode,
-            elapsedMs: Date.now() - startedAt,
-            maxWaitMs: options.maxWait,
-            timeoutMs: options.timeout,
-            message: expired
-              ? 'The sale transaction expired before completion and was rolled back.'
-              : 'The sale transaction failed during a database operation and was rolled back.',
-            originalMessage: getErrorMessage(error),
-          }),
-          error instanceof Error ? error.stack : undefined,
-        );
-      }
-
-      if (expired) {
-        throw new ServiceUnavailableException({
-          code: 'SALE_TRANSACTION_EXPIRED',
-          retryable: true,
-          retry_after_ms: 2_000,
-          message_ar:
-            'تعذر إتمام عملية البيع داخل مهلة قاعدة البيانات. أعد المحاولة بنفس رقم المزامنة.',
-          message:
-            'The sale transaction exceeded the database timeout and was rolled back. Retry using the same sync_id.',
-        });
-      }
-
-      throw error;
-    }
+  getInvoice(context: TenantContext, id: string, actor: AuthenticatedUser) {
+    return loadInvoiceView(this.prisma, this.costVisibility, context, id, actor);
   }
 
   /** The checks and the values a sale needs before any statement runs. */
@@ -179,8 +64,8 @@ export class SalesService {
     if (terminalSequence < 1n || terminalSequence > 9_223_372_036_854_775_807n) {
       throw new BadRequestException('terminal_sequence exceeds PostgreSQL BIGINT range');
     }
-    const normalized = this.normalizeLines(dto.items);
-    const commandFingerprint = this.saleCommandFingerprint(
+    const normalized = normalizeLines(dto.items);
+    const commandFingerprint = saleCommandFingerprint(
       dto,
       terminal.id,
       occurredAt,
@@ -192,7 +77,7 @@ export class SalesService {
 
   async createSale(dto: CreateSaleDto, terminal: Pick<PosTerminal, 'id' | 'branch_id' | 'tenant_id'>) {
     const prepared = this.prepareSale(dto, terminal);
-    const result = await this.runSaleTransaction(dto, terminal, (tx) => this.bookSale(tx, dto, terminal, prepared));
+    const result = await runSaleTransaction(this.prisma, this.logger, dto, terminal, (tx) => this.bookSale(tx, dto, terminal, prepared));
     // Unconditional, unlike `getInvoice`: this response goes to a POS terminal
     // authenticated by device token, so there is no membership to resolve a
     // permission against and no actor the gate could answer for. The till has
@@ -217,32 +102,7 @@ export class SalesService {
     terminal: Pick<PosTerminal, 'id' | 'branch_id' | 'tenant_id'>,
     { context, receivedAt, occurredAt, terminalSequence, normalized, commandFingerprint }: ReturnType<SalesService['prepareSale']>,
   ) {
-    // One statement locks the terminal row, advances its sale sequence and
-    // reads the branch code. Advancing up front is safe: it is monotonic
-    // (a replay or an older sequence changes nothing) and a failed sale
-    // rolls the whole transaction back. The CTE reads the row after the lock
-    // is granted, so `previous_sequence` is what the last committed sale left.
-    const [claimed] = await tx.$queryRaw<Array<{
-      branch_id: string;
-      branch_code: string | null;
-      terminal_code: string;
-      settings: Prisma.JsonValue;
-      previous_sequence: bigint;
-    }>>`
-      WITH locked AS (
-        SELECT "id", "last_sale_sequence" FROM "PosTerminal"
-        WHERE "id" = ${terminal.id}::uuid AND "tenant_id" = ${context.tenantId}::uuid
-        FOR UPDATE
-      )
-      UPDATE "PosTerminal" t
-      SET "last_sale_sequence" = GREATEST(t."last_sale_sequence", ${terminalSequence}), "updated_at" = now()
-      FROM locked
-      WHERE t."id" = locked."id"
-      RETURNING t."branch_id", t."terminal_code",
-        (SELECT te."settings" FROM "Tenant" te WHERE te."id" = t."tenant_id") AS "settings",
-        (SELECT b."code" FROM "Branch" b WHERE b."id" = t."branch_id" AND b."tenant_id" = t."tenant_id") AS "branch_code",
-        locked."last_sale_sequence" AS "previous_sequence"
-    `;
+    const claimed = await claimTerminalSequence(tx, terminal.id, context.tenantId, terminalSequence);
     if (!claimed || claimed.branch_id !== dto.branch_id) {
       throw new ForbiddenException('The terminal is not assigned to the sale branch');
     }
@@ -259,58 +119,13 @@ export class SalesService {
     });
     const existing = matches.find((invoice) => invoice.sync_id === dto.sync_id);
     if (existing) {
-      if (
-        existing.branch_id !== dto.branch_id ||
-        existing.terminal_id !== terminal.id ||
-        existing.offline_session_id !== dto.offline_session_id ||
-        existing.terminal_sequence !== terminalSequence ||
-        existing.command_fingerprint !== commandFingerprint
-      ) {
-        throw new ConflictException({
-          code: 'SALE_IDEMPOTENCY_CONTEXT_CONFLICT',
-          message_ar: 'رقم المزامنة مستخدم لعملية مختلفة في الهوية أو الوردية أو الجهاز.',
-          message: 'sync_id already belongs to a different accounting context',
-        });
-      }
+      assertSameSaleContext(existing, dto, terminal.id, terminalSequence, commandFingerprint);
       return existing;
     }
 
-    const warningCodes = new Set<string>();
-    const [shift, staff] = await Promise.all([
-      tx.shift.findFirst({ where: { id: dto.shift_id, tenant_id: context.tenantId } }),
-      // Staff are resolved through their Membership — `User` has no tenant data.
-      tx.membership.findMany({
-        where: {
-          tenant_id: context.tenantId,
-          user_id: { in: [dto.origin_cashier_id, dto.seller_id] },
-        },
-        select: { user_id: true, role: true, access_scope_assignments: true, granted_permissions: true, revoked_permissions: true },
-      }),
-    ]);
     if (claimed.branch_code === null) throw new NotFoundException('Branch not found');
-    const originCashier = staff.find((m) => m.user_id === dto.origin_cashier_id);
-    const seller = staff.find((m) => m.user_id === dto.seller_id);
-    const worksInBranch = (m: typeof originCashier) =>
-      !!m && hasBranchAccess({ scope_set: toScopeSet(m.access_scope_assignments) }, dto.branch_id);
-    const linkedCashier = originCashier && worksInBranch(originCashier) ? { id: originCashier.user_id } : null;
-    if (!linkedCashier) {
-      warningCodes.add('CASHIER_REFERENCE_MISSING');
-    }
-    const linkedSeller =
-      seller && seller.role === 'seller' && worksInBranch(seller) ? { id: seller.user_id } : null;
-    if (!linkedSeller) {
-      warningCodes.add('SELLER_REFERENCE_MISSING');
-    }
-    const linkedShift = shift?.branch_id === dto.branch_id ? shift : null;
-    if (!linkedShift) {
-      warningCodes.add('SHIFT_REFERENCE_MISSING');
-    } else if (
-      linkedShift.status === 'closed' ||
-      occurredAt < linkedShift.opened_at ||
-      (linkedShift.closed_at && occurredAt > linkedShift.closed_at)
-    ) {
-      warningCodes.add('LATE_SYNC');
-    }
+    const { originCashier, linkedCashier, linkedSeller, linkedShift, warnings } = await resolveSaleActors(tx, context.tenantId, dto, occurredAt);
+    const warningCodes = new Set<string>(warnings);
     // The printed number is stored verbatim; a till that restarted its numbering
     // gets a suffix and a warning, never a refusal.
     const invoiceNumber = pickInvoiceNumber(printedNumber, new Set(matches.map((invoice) => invoice.invoice_number)));
@@ -322,27 +137,7 @@ export class SalesService {
       warningCodes.add('OUT_OF_ORDER_SEQUENCE');
     }
 
-    const variantIds = normalized.lines.map((item) => item.variant_id);
-    const variants = await tx.productVariant.findMany({
-      where: {
-        id: { in: variantIds },
-        tenant_id: context.tenantId,
-        product: { tenant_id: context.tenantId },
-      },
-      include: { product: true, base_uom: { select: { precision: true } } },
-    });
-    if (variants.length !== variantIds.length) {
-      const found = new Set(variants.map((variant) => variant.id));
-      const missing = variantIds.find((id) => !found.has(id));
-      throw new NotFoundException(`Variant not found: ${missing}`);
-    }
-    const variantsById = new Map<string, any>(
-      variants.map((variant: any) => [variant.id, variant]),
-    );
-    for (const line of normalized.lines) {
-      const variant = variantsById.get(line.variant_id)!;
-      assertQuantityPrecision(line.qty, variantQuantityPrecision(variant), line.sku_snapshot);
-    }
+    const variantsById = await loadSaleVariants(tx, context.tenantId, normalized.lines);
     // WP-008 Phase B: `calculateMany` now prices per (variant, qty) pair
     // (BR-PSL-104 quantity breaks) -- `normalized.lines` already merges
     // duplicate variant_ids into one line with a summed qty
@@ -442,27 +237,12 @@ export class SalesService {
     const costOf = (variantId: string) =>
       unitCost(stockAfter.get(variantId)?.avgCost ?? variantsById.get(variantId).cost_price);
 
-    // Find-or-create the customer and book this sale on it in one statement
-    // (the part paid on credit raises the balance in the same row update).
-    // The (tenant_id, phone) unique key makes concurrent first sales safe.
-    let customerId: string | undefined;
-    let balanceAfter: Prisma.Decimal | undefined;
-    if (dto.customer_phone) {
-      const [customer] = await tx.$queryRaw<Array<{ id: string; balance: Prisma.Decimal; credit_limit: Prisma.Decimal | null }>>`
-        INSERT INTO "Customer" ("id", "tenant_id", "phone", "whatsapp", "total_invoices", "total_spent", "balance")
-        VALUES (${randomUUID()}::uuid, ${context.tenantId}::uuid, ${dto.customer_phone}, ${dto.customer_phone}, 1, ${total}, ${paymentPlan.credit})
-        ON CONFLICT ("tenant_id", "phone") DO UPDATE SET
-          "total_invoices" = "Customer"."total_invoices" + 1,
-          "total_spent" = "Customer"."total_spent" + EXCLUDED."total_spent",
-          "balance" = "Customer"."balance" + EXCLUDED."balance"
-        RETURNING "id", "balance", "credit_limit"
-      `;
-      customerId = customer.id;
-      balanceAfter = new Prisma.Decimal(customer.balance);
-      if (paymentPlan.credit.greaterThan(0) && customer.credit_limit !== null && balanceAfter.greaterThan(customer.credit_limit)) {
-        warningCodes.add('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
-      }
-    }
+    const bookedCustomer = dto.customer_phone
+      ? await bookCustomerSale(tx, context.tenantId, dto.customer_phone, total, paymentPlan.credit)
+      : undefined;
+    const customerId = bookedCustomer?.customerId;
+    const balanceAfter = bookedCustomer?.balanceAfter;
+    if (bookedCustomer?.creditLimitExceeded) warningCodes.add('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
     if (paymentPlan.credit.greaterThan(0) && !customerId) warningCodes.add('CREDIT_WITHOUT_CUSTOMER');
 
     const invoice = await tx.salesInvoice.create({
@@ -595,42 +375,14 @@ export class SalesService {
       },
     });
 
-    // A sale may legitimately arrive after its shift was closed because the
-    // till was offline. Keep the immutable close count, but reconcile the
-    // stored expected cash and variance so the closed shift remains
-    // financially correct instead of silently omitting the late command.
-    if (
-      linkedShift?.status === 'closed' &&
-      paymentPlan.cash.greaterThan(0) &&
-      linkedShift.expected_cash !== null &&
-      linkedShift.difference !== null
-    ) {
-      // Atomic Decimal updates prevent two late tills from overwriting each
-      // other's shift reconciliation when they reconnect concurrently.
-      await tx.shift.update({
-        where: { id: linkedShift.id },
-        data: {
-          expected_cash: { increment: paymentPlan.cash },
-          difference: { decrement: paymentPlan.cash },
-        },
-      });
-      await tx.auditLog.create({
-        data: {
-          tenant_id: context.tenantId,
-          user_id: linkedCashier?.id || null,
-          action: 'shift.late_offline_sale.reconciled',
-          entity: 'Shift',
-          entity_id: linkedShift.id,
-          meta: {
-            invoice_id: invoice.id,
-            sync_id: dto.sync_id,
-            terminal_sequence: dto.terminal_sequence,
-            expected_cash_increment: paymentPlan.cash,
-            difference_decrement: paymentPlan.cash,
-          },
-        },
-      });
-    }
+    await reconcileLateShiftSale(tx, linkedShift, {
+      tenantId: context.tenantId,
+      actorId: linkedCashier?.id || null,
+      invoiceId: invoice.id,
+      syncId: dto.sync_id,
+      terminalSequence: dto.terminal_sequence,
+      cash: paymentPlan.cash,
+    });
 
     return { ...invoice, items, payments: paymentPlan.rows };
   }

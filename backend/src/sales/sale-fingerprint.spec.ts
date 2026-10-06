@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
-import { SalesService } from './sales.service';
+import { normalizeLines, saleCommandFingerprint } from './sale-command';
 import { CreateSaleDto } from './dto/create-sale.dto';
 
 // A POS 1.6.0 payload has no tracking fields. Its fingerprint is stored on
@@ -40,12 +40,11 @@ const dto = {
 } as any;
 
 function fingerprintOf(payload: any) {
-  const service = new SalesService(null as any, null as any, null as any, null as any, null as any) as any;
-  return service.saleCommandFingerprint(
+  return saleCommandFingerprint(
     payload,
     '22222222-2222-4222-8222-222222222222',
     new Date(payload.occurred_at),
-    service.normalizeLines(payload.items),
+    normalizeLines(payload.items),
   ) as string;
 }
 
