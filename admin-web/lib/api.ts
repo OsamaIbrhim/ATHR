@@ -10,6 +10,7 @@ export type ApiErrorPayload = {
   message_ar?: string
   field?: string
   details?: string[]
+  data?: any
   request_id?: string
 }
 
@@ -33,6 +34,8 @@ export class ApiError extends Error {
   code: string
   field?: string
   details: string[]
+  /** Structured extras of a domain error (per-row results, `line_index`, `count_id`...). */
+  data?: any
   requestId?: string
 
   constructor(payload: ApiErrorPayload, status?: number) {
@@ -43,6 +46,7 @@ export class ApiError extends Error {
     this.code = payload.code || 'REQUEST_FAILED'
     this.field = payload.field
     this.details = payload.details || []
+    this.data = payload.data
     this.requestId = payload.request_id
   }
 }

@@ -6,7 +6,11 @@ import { apiDelete, apiGet } from '@/lib/api'
 import { useSessionUser } from '@/components/AuthGate'
 import BarcodeChips from '@/components/products/BarcodeChips'
 import DataTable, { type Column } from '@/components/ui/DataTable'
+import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import PageHeader from '@/components/ui/PageHeader'
+import Num from '@/components/ui/Num'
+import StatusBadge from '@/components/ui/StatusBadge'
+import { loadUoms, type UomInfo } from '@/lib/items'
 import { hasPermission } from '@/lib/permissions'
 
 type ProductResponse = { items: any[]; page: number; page_size: number; total: number; total_pages: number; suggestions?: { value: string; label: string }[] }
@@ -22,6 +26,12 @@ export default function ProductsPage() {
   const [data, setData] = useState<ProductResponse>({ items: [], page: 1, page_size: 20, total: 0, total_pages: 1 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [target, setTarget] = useState<string | null>(null)
+  const [deactivating, setDeactivating] = useState(false)
+  const [uoms, setUoms] = useState<Map<string, UomInfo>>(new Map())
+  useEffect(() => { void loadUoms().then(setUoms) }, [])
+  const unitOf = (row: any) => uoms.get(String(row.product?.base_uom_id ?? row.base_uom_id ?? ''))
+  const stockOf = (row: any) => (row.stock_by_branch || []).reduce((sum: number, x: any) => sum + Number(x.qty_on_hand), 0)
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -31,14 +41,17 @@ export default function ProductsPage() {
   }, [appliedQuery, page])
   useEffect(() => { load() }, [load])
 
-  const deactivate = async (id: string) => {
-    if (!confirm('تعطيل هذا الصنف؟ لن يظهر في البيع.')) return
-    try { await apiDelete(`/products/variants/${id}`); toast.success('تم تعطيل الصنف'); load() }
+  const deactivate = async () => {
+    if (!target) return
+    setDeactivating(true)
+    try { await apiDelete(`/products/variants/${target}`); toast.success('تم تعطيل الصنف'); setTarget(null); load() }
     catch (e: any) { toast.error('فشل التعطيل: ' + e.message) }
+    finally { setDeactivating(false) }
   }
   const search = () => { setPage(1); setAppliedQuery(query.trim()) }
   const applySuggestion = (value: string) => { setQuery(value); setAppliedQuery(value); setPage(1) }
 
+  const noProductsAtAll = !loading && !error && !appliedQuery && data.total === 0
   const columns: Column<any>[] = [
     { header: 'SKU', cell: row => <span className="font-mono text-xs" dir="ltr">{row.sku}</span> },
     {
@@ -49,16 +62,16 @@ export default function ProductsPage() {
         </Link>
       ),
     },
-    { header: 'الصنف', cell: row => row.label ? <span className="badge bg-gray-100 text-gray-800 text-sm">{row.label}</span> : <span className="text-gray-400">—</span> },
+    { header: 'الصنف', cell: row => row.label ? <StatusBadge tone="neutral" icon={false}>{row.label}</StatusBadge> : <span className="text-gray-400">—</span> },
     { header: 'الباركود', cell: row => <BarcodeChips barcodes={row.barcodes} /> },
     { header: 'التكلفة', cell: row => row.cost_price !== undefined ? `${Number(row.cost_price)} ج` : '—' },
-    { header: 'المخزون', cell: row => (row.stock_by_branch || []).reduce((sum: number, x: any) => sum + Number(x.qty_on_hand), 0) },
+    { header: 'المخزون', cell: row => <Num value={stockOf(row)} kind="qty" precision={unitOf(row)?.precision ?? 0} unit={unitOf(row)?.name} /> },
     {
       header: '',
       cell: row => (
         <div className="flex justify-end gap-3 text-sm">
           {canEdit && <Link href={`/products/${row.product_id}`} className="text-blue-700 hover:underline">تعديل</Link>}
-          {canArchive && <button className="text-red-600" onClick={() => deactivate(row.id)}>تعطيل</button>}
+          {canArchive && <button className="text-red-600" onClick={() => setTarget(row.id)}>تعطيل</button>}
         </div>
       ),
     },
@@ -69,7 +82,7 @@ export default function ProductsPage() {
       <PageHeader
         title="المنتجات"
         subtitle={`${data.total} صنف`}
-        actions={canCreate && <Link href="/products/new" className="btn">+ منتج جديد</Link>}
+        actions={canCreate && <><Link href="/products/import" className="btn-secondary">استيراد من Excel</Link><Link href="/products/new" className="btn">+ منتج جديد</Link></>}
       />
       <div className="card">
         <form className="flex gap-2" onSubmit={e => { e.preventDefault(); search() }}>
@@ -82,7 +95,28 @@ export default function ProductsPage() {
         {error && <div className="p-3 text-red-700">{error} <button className="underline" onClick={load}>إعادة المحاولة</button></div>}
         <DataTable
           columns={columns} rows={data.items} rowKey={row => row.id} loading={loading}
-          empty={{
+          mobileCard={row => (
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <Link href={`/products/${row.product_id}`} className="font-medium text-gray-900">{row.product?.name_ar || row.product?.name_en}</Link>
+                {row.label && <StatusBadge tone="neutral" icon={false}>{row.label}</StatusBadge>}
+              </div>
+              <bdi dir="ltr" className="block font-mono text-xs text-gray-600">{row.sku}</bdi>
+              <BarcodeChips barcodes={row.barcodes} />
+              <div className="flex items-center justify-between text-sm">
+                <span>المخزون: <Num value={stockOf(row)} kind="qty" precision={unitOf(row)?.precision ?? 0} unit={unitOf(row)?.name} /></span>
+                <span className="flex items-center gap-2">
+                  {canEdit && <Link href={`/products/${row.product_id}`} className="btn-secondary min-h-11">تعديل</Link>}
+                  {canArchive && <button type="button" className="btn-secondary ms-4 min-h-11 border-red-300 text-red-700" onClick={() => setTarget(row.id)}>تعطيل</button>}
+                </span>
+              </div>
+            </div>
+          )}
+          empty={noProductsAtAll ? {
+            title: 'لا توجد منتجات بعد',
+            hint: 'ابدأ بملف Excel لتوفير الوقت.',
+            action: canCreate ? <div className="flex flex-wrap justify-center gap-2"><Link href="/products/import" className="btn">استيراد من Excel</Link><Link href="/products/new" className="btn-secondary">إضافة منتج</Link></div> : undefined,
+          } : {
             title: 'لا توجد منتجات مطابقة',
             hint: 'راجع الاسم أو SKU أو الباركود.',
             action: data.suggestions?.length ? (
@@ -98,6 +132,8 @@ export default function ProductsPage() {
           <button className="btn-secondary" disabled={page >= data.total_pages || loading} onClick={() => setPage(p => p + 1)}>التالي</button>
         </div>
       </div>
+      <ConfirmDialog open={!!target} title="تعطيل هذا الصنف؟" tone="danger" confirmLabel="تعطيل" loading={deactivating}
+        onClose={() => setTarget(null)} onConfirm={deactivate}>لن يظهر في البيع.</ConfirmDialog>
     </div>
   )
 }

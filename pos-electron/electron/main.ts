@@ -4,8 +4,12 @@ import { apiConfiguration } from './deployment-config'
 import { openLocalDatabase } from './db-startup'
 import { cleanupFactoryResetArtifacts } from './factory-reset-runtime'
 import { registerAllIpc } from './ipc'
+import { pinDataDirectory } from './paths'
 import { ensureAutoUpdates } from './updates'
 import { createWindow } from './window'
+
+// Before anything touches userData: the data folder must not follow the brand name.
+pinDataDirectory()
 
 app.whenReady().then(() => {
   apiConfiguration()

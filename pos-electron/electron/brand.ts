@@ -3,6 +3,11 @@
  * package names (`@athr/*`, `athr-*`), env var prefixes and the installer
  * fields in package.json are code identifiers and stay as they are
  * (`brand.test.ts` fails if the installer name drifts from this file).
+ *
+ * Safe to rename after launch: the local data folder is pinned in `paths.ts`
+ * (`DATA_DIRECTORY_NAME`) and does not follow this name. Never change `appId`
+ * in package.json on a rename - Windows and auto-update identify the
+ * installed app by it.
  */
 export const BRAND_NAME = 'ATHR'
 

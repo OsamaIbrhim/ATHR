@@ -5,6 +5,9 @@ import { useSessionUser } from '@/components/AuthGate'
 import { loadDashboardData } from '@/lib/dashboard'
 import { hasPermission, type Permission } from '@/lib/permissions'
 import { businessDate } from '@/lib/business-time'
+import GetStartedChecklist from '@/components/ui/GetStartedChecklist'
+import StatCard from '@/components/ui/StatCard'
+import { useChecklist } from '@/lib/use-checklist'
 import { ADMIN_APP_NAME, BRAND_NAME } from '@/lib/brand'
 
 export default function Dashboard(){
@@ -15,6 +18,7 @@ export default function Dashboard(){
     { href: '/reports', label: 'التقارير', permission: 'reports.sales.view', className: 'btn-accent' },
     { href: '/offers', label: 'العروض المقترحة', permission: 'promotion.view', className: 'btn' },
   ]
+  const checklist = useChecklist(user)
   const [stats, setStats] = useState({ total_sales:0, profit:0, count:0 })
   const [productCount, setProductCount] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -43,11 +47,14 @@ export default function Dashboard(){
           <button className="underline" onClick={load}>إعادة المحاولة</button>
         </div>
       )}
+      {!checklist.hidden && (checklist.loading || checklist.steps) && (
+        <GetStartedChecklist steps={checklist.steps ?? []} user={user} loading={checklist.loading} onHide={checklist.hide} />
+      )}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="card"><div className="text-sm text-gray-500">مبيعات اليوم</div><div className="text-2xl font-bold">{loading || error ? '—' : `${stats.total_sales} ج`}</div></div>
-        <div className="card"><div className="text-sm text-gray-500">الربح</div><div className="text-2xl font-bold">{loading || error ? '—' : `${stats.profit} ج`}</div></div>
-        <div className="card"><div className="text-sm text-gray-500">عدد الفواتير</div><div className="text-2xl font-bold">{loading || error ? '—' : stats.count}</div></div>
-        <div className="card"><div className="text-sm text-gray-500">منتجات الكتالوج</div><div className="text-2xl font-bold">{loading || error ? '—' : productCount}</div></div>
+        <StatCard label="مبيعات اليوم" value={loading || error ? '—' : `${stats.total_sales} ج`} />
+        <StatCard label="الربح" value={loading || error ? '—' : `${stats.profit} ج`} />
+        <StatCard label="عدد الفواتير" value={loading || error ? '—' : stats.count} />
+        <StatCard label="منتجات الكتالوج" value={loading || error ? '—' : productCount} />
       </div>
       <div className="card">
         <h2 className="font-bold mb-3">روابط سريعة</h2>
