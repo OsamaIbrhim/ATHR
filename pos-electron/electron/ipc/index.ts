@@ -14,6 +14,7 @@ import { registerCatalogIpc } from './catalog'
 import { registerHeldSalesIpc } from './held-sales'
 import { registerPrintingIpc } from './printing'
 import { registerSalesIpc } from './sales'
+import { registerSettingsIpc } from './settings'
 import { registerSyncIpc } from './sync'
 
 /** Registers every renderer-facing IPC handler. The database must be open. */
@@ -22,6 +23,7 @@ export function registerAllIpc() {
   registerAuthIpc()
   registerCatalogIpc()
   registerSalesIpc()
+  registerSettingsIpc()
   registerHeldSalesIpc()
   registerSyncIpc()
   registerPrintingIpc()

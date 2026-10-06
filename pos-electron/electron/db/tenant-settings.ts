@@ -1,4 +1,5 @@
 import { DEFAULT_SCALE_BARCODE_CONFIG, type ScaleBarcodeConfig } from '@athr/domain-core'
+import { parsePosSettings, type PosSettings } from '../sale-settings'
 import { getMeta } from './queries'
 
 /** The tenant settings the server sends (first snapshot page, and deltas when they change). */
@@ -37,4 +38,21 @@ export function scaleBarcodeConfig(): ScaleBarcodeConfig {
   const config = isValidScaleBarcodeConfig(merged) ? merged : DEFAULT_SCALE_BARCODE_CONFIG
   cached = { raw, config }
   return config
+}
+
+let cachedPos: { raw: string; settings: PosSettings } | null = null
+
+/** The stored sale and receipt settings (defaults when nothing usable is stored). Cached per stored value. */
+export function posSettings(): PosSettings {
+  const raw = getMeta(TENANT_SETTINGS_KEY)
+  if (cachedPos?.raw === raw) return cachedPos.settings
+  let stored: unknown = null
+  try {
+    stored = raw ? JSON.parse(raw) : null
+  } catch {
+    stored = null
+  }
+  const settings = parsePosSettings(stored)
+  cachedPos = { raw, settings }
+  return settings
 }

@@ -1,3 +1,4 @@
+import type { PosSettings } from '../electron/sale-settings'
 import type { ScanResult } from '../electron/scan-types'
 import {
   Customer,
@@ -108,6 +109,7 @@ export type AthrBridge = {
   scan(term: string): Promise<ScanResult>
   stock(variantId: string): Promise<number>
   sellers(): Promise<Seller[]>
+  settings(): Promise<PosSettings>
 
   sale(payload: unknown): Promise<{
     sync_id: string
