@@ -12,6 +12,9 @@
 | W1b | `InventoryService` الكاتب الوحيد للمخزون (3 statements لأي عدد سطور)، مخزون بمفتاح المخزن، كميات Decimal(14,3)، حذف Location |
 | W4a | الـPOS على better-sqlite3 + WAL، migrations بإصدار، بحث مفهرس، main.ts مقسم لموديولات |
 | W5a | Plans/Subscription/Entitlements/Limits، signup عام، APIs لوحة المنصة، `npm run platform:admin -- <email|phone>` |
+| L1 (2026-10-06) | شاشات الإدارة: استيراد Excel/CSV، رصيد أول المدة، تسويات، جرد، النواقص، قائمة "ابدأ" — دُمج `a2a21ce` |
+| W3 (2026-10-06) | البيع كامل backend+POS: دفع مقسم (`SalesPayment`)، خصومات سطر/فاتورة، آجل + `CustomerLedgerEntry` + تحصيل/كشف حساب، مرتجع بـ`refund_method` ونافذة من الإعدادات، استبدال online، رقم فاتورة الجهاز `POS1-000123`، اسم المحل على الإيصال + "بواسطة أثر" (`receipt.show_branding`)، كل فحوص W3 warnings لا رفض — دُمج `063b071`. العقد: `docs/design/W3-api.md` |
+| أدوات | تشغيل محلي بأمر واحد: `scripts/try-local.ps1` (`docs/TRY_LOCAL.md`) |
 
 ## W2a — دُمج بالكامل (backend + POS 1.6.0 + admin)
 
