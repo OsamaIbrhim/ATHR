@@ -6,7 +6,8 @@ import { TaxResolutionService } from '../tax/tax-resolution.service';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { InventoryService } from '../inventory/inventory.service';
 import { quantityNumber } from '../common/quantity';
-import { readTenantSettings } from '../catalog/tenant-settings';
+import { readTenantSettings, withPlanReceipt } from '../catalog/tenant-settings';
+import { EntitlementService } from '../entitlements/entitlement.service';
 import {
   compareCursors,
   formatCursor,
@@ -60,6 +61,7 @@ export class SyncService {
     private pricing: PricingService,
     private tax: TaxResolutionService,
     private inventory: InventoryService,
+    private entitlements?: EntitlementService,
   ) {}
 
   /**
@@ -71,7 +73,10 @@ export class SyncService {
       where: { id: context.tenantId },
       select: { settings: true, name: true, sync_floor: true },
     });
-    const settings = readTenantSettings(tenant.settings, tenant);
+    const stored = readTenantSettings(tenant.settings, tenant);
+    const settings = this.entitlements
+      ? withPlanReceipt(stored, (await this.entitlements.resolve(context.tenantId)).features.has('receipt.remove_branding'))
+      : stored;
     const floor = parseCursor(tenant.sync_floor);
 
     if (query.snapshot_after !== undefined) {

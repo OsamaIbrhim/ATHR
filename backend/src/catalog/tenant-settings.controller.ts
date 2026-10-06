@@ -4,11 +4,15 @@ import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { PrismaService } from '../prisma/prisma.service';
+import { EntitlementService, featureNotInPlanError } from '../entitlements/entitlement.service';
 import { applySalesSettingsUpdate, parseScaleBarcodeConfig, readTenantSettings } from './tenant-settings';
 
 @Controller('tenant-settings')
 export class TenantSettingsController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly entitlements: EntitlementService,
+  ) {}
 
   /** Every tenant setting (the POS gets the same object when it syncs). */
   @RequirePermission('catalog.product.view')
@@ -36,6 +40,11 @@ export class TenantSettingsController {
   @RequirePermission('tenant.settings.manage')
   @Put('sales')
   async setSales(@TenantCtx() ctx: TenantContext, @Body() body: Record<string, unknown>) {
+    const hiding = (body?.receipt as { show_branding?: unknown } | undefined)?.show_branding === false;
+    if (hiding) {
+      const access = await this.entitlements.resolve(ctx.tenantId);
+      if (!access.features.has('receipt.remove_branding')) throw featureNotInPlanError('receipt.remove_branding', access.planCode);
+    }
     await this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: ctx.tenantId }, select: { settings: true } });
       const { sales, receipt } = applySalesSettingsUpdate(tenant.settings, body);

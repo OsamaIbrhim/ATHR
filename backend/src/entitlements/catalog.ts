@@ -18,6 +18,7 @@ export const FEATURES = [
   { key: 'tracking.batch', label_ar: 'تتبع الدفعات', label_en: 'Batch tracking' },
   { key: 'api.access', label_ar: 'الوصول عبر API', label_en: 'API access' },
   { key: 'multi_warehouse', label_ar: 'مخازن متعددة', label_en: 'Multiple warehouses' },
+  { key: 'receipt.remove_branding', label_ar: 'إزالة شعار أثر من الإيصال', label_en: 'Remove Athar branding from receipts' },
 ] as const satisfies readonly CatalogLabel[];
 
 /** A limit is a maximum count of a resource; a missing or null value means unlimited. */

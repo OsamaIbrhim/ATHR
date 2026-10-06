@@ -1,4 +1,18 @@
-import { applySalesSettingsUpdate, parseScaleBarcodeConfig, readTenantSettings } from './tenant-settings';
+import { applySalesSettingsUpdate, parseScaleBarcodeConfig, readTenantSettings, withPlanReceipt } from './tenant-settings';
+
+describe('tenant settings: receipt branding', () => {
+  it('shows the branding unless the tenant turned it off', () => {
+    expect(readTenantSettings({}).receipt.show_branding).toBe(true);
+    expect(readTenantSettings({ receipt: { show_branding: false } }).receipt.show_branding).toBe(false);
+    expect(applySalesSettingsUpdate({}, { receipt: { show_branding: false } }).receipt.show_branding).toBe(false);
+  });
+
+  it('tells the till to show it again when the plan no longer has receipt.remove_branding', () => {
+    const off = readTenantSettings({ receipt: { show_branding: false } });
+    expect(withPlanReceipt(off, true).receipt.show_branding).toBe(false);
+    expect(withPlanReceipt(off, false).receipt.show_branding).toBe(true);
+  });
+});
 
 describe('tenant settings: scale barcode', () => {
   it('defaults price labels to tax-inclusive for settings stored before the option existed', () => {
@@ -25,7 +39,7 @@ describe('tenant settings: sales and receipt', () => {
   it('has defaults for a tenant that never set anything, with the tenant name on the receipt', () => {
     const settings = readTenantSettings({}, { name: 'Bold Store' });
     expect(settings.sales).toEqual({ payment_methods: ['cash', 'card', 'wallet', 'credit'], return_window_days: 14, max_discount_percent: 10 });
-    expect(settings.receipt).toEqual({ store_name: 'Bold Store', footer: null, show_tax_breakdown: true });
+    expect(settings.receipt).toEqual({ store_name: 'Bold Store', footer: null, show_tax_breakdown: true, show_branding: true });
   });
 
   it('keeps 0 days (no returns) and 0% (no discount without override) as real values, not defaults', () => {
@@ -43,7 +57,7 @@ describe('tenant settings: sales and receipt', () => {
     const stored = { scale_barcode: {}, sales: { return_window_days: 30 }, receipt: { footer: 'Thanks' } };
     const next = applySalesSettingsUpdate(stored, { sales: { payment_methods: ['cash', 'cash', 'wallet'], max_discount_percent: 15.5 }, receipt: { store_name: ' My Shop ' } });
     expect(next.sales).toEqual({ payment_methods: ['cash', 'wallet'], return_window_days: 30, max_discount_percent: 15.5 });
-    expect(next.receipt).toEqual({ store_name: 'My Shop', footer: 'Thanks', show_tax_breakdown: true });
+    expect(next.receipt).toEqual({ store_name: 'My Shop', footer: 'Thanks', show_tax_breakdown: true, show_branding: true });
   });
 
   it('clears a store name or footer sent empty or null', () => {
@@ -59,6 +73,7 @@ describe('tenant settings: sales and receipt', () => {
     [{ sales: { max_discount_percent: 101 } }, /max_discount_percent/],
     [{ sales: { max_discount_percent: '10' } }, /max_discount_percent/],
     [{ receipt: { show_tax_breakdown: 'yes' } }, /show_tax_breakdown/],
+    [{ receipt: { show_branding: 'no' } }, /show_branding/],
     [{ receipt: { footer: 'x'.repeat(301) } }, /footer/],
   ])('rejects %j', (body, message) => {
     expect(() => applySalesSettingsUpdate({}, body)).toThrow(message);

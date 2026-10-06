@@ -23,6 +23,8 @@ export interface ReceiptSettings {
   store_name: string;
   footer: string | null;
   show_tax_breakdown: boolean;
+  /** The "Powered by Athar" line (printed by the POS). Only a plan with `receipt.remove_branding` may turn it off. */
+  show_branding: boolean;
 }
 
 export interface TenantSettings {
@@ -69,6 +71,7 @@ export function readTenantSettings(
       store_name: typeof receipt.store_name === 'string' && receipt.store_name.trim() ? receipt.store_name.trim() : (tenant.name ?? ''),
       footer: typeof receipt.footer === 'string' && receipt.footer.trim() ? receipt.footer.trim() : null,
       show_tax_breakdown: typeof receipt.show_tax_breakdown === 'boolean' ? receipt.show_tax_breakdown : true,
+      show_branding: typeof receipt.show_branding === 'boolean' ? receipt.show_branding : true,
     },
   };
 }
@@ -105,7 +108,7 @@ export function parseScaleBarcodeConfig(input: unknown): ScaleBarcodeConfig {
 export function applySalesSettingsUpdate(
   stored: Prisma.JsonValue | null | undefined,
   input: unknown,
-): { sales: SalesSettings; receipt: { store_name: string | null; footer: string | null; show_tax_breakdown: boolean } } {
+): { sales: SalesSettings; receipt: { store_name: string | null; footer: string | null; show_tax_breakdown: boolean; show_branding: boolean } } {
   const body = asObject(input);
   const sales = asObject(body.sales);
   const receipt = asObject(body.receipt);
@@ -141,6 +144,7 @@ export function applySalesSettingsUpdate(
     store_name: typeof storedReceipt.store_name === 'string' && storedReceipt.store_name.trim() ? storedReceipt.store_name.trim() : null,
     footer: current.receipt.footer,
     show_tax_breakdown: current.receipt.show_tax_breakdown,
+    show_branding: current.receipt.show_branding,
   };
   const text = (key: 'store_name' | 'footer', max: number) => {
     const value = receipt[key];
@@ -156,5 +160,18 @@ export function applySalesSettingsUpdate(
     if (typeof receipt.show_tax_breakdown !== 'boolean') invalid('receipt.show_tax_breakdown', 'must be true or false');
     nextReceipt.show_tax_breakdown = receipt.show_tax_breakdown as boolean;
   }
+  if (receipt.show_branding !== undefined) {
+    if (typeof receipt.show_branding !== 'boolean') invalid('receipt.show_branding', 'must be true or false');
+    nextReceipt.show_branding = receipt.show_branding as boolean;
+  }
   return { sales: next, receipt: nextReceipt };
+}
+
+/**
+ * What a till is told. The stored `show_branding` is only honoured while the
+ * plan has `receipt.remove_branding`: a tenant that downgraded shows the line again.
+ */
+export function withPlanReceipt(settings: TenantSettings, canRemoveBranding: boolean): TenantSettings {
+  if (canRemoveBranding || settings.receipt.show_branding) return settings;
+  return { ...settings, receipt: { ...settings.receipt, show_branding: true } };
 }
