@@ -50,6 +50,7 @@
 - `sales.return_window_days` (افتراضي 14؛ 0 = بلا مرتجع).
 - `sales.max_discount_percent` (افتراضي 10).
 - `receipt.store_name`, `receipt.footer`, `receipt.show_tax_breakdown` — اسم المتجر على الإيصال بدل الثابت.
+- **سطر "بواسطة أثر / Powered by Athar"** أسفل الإيصال (عربي + إنجليزي) — feature في بيانات الباقة `receipt.remove_branding`: ظاهر في Starter، يقدر صاحب المحل يشيله في Pro/Business (`receipt.show_branding`). اسم المحل دائمًا على الإيصال في كل الباقات (قرار المالك 2026-10-06).
 - العملة = `Tenant.default_currency` (موجود).
 - شاشة في `/settings` في الـadmin لهذه الإعدادات.
 
