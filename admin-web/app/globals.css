@@ -1,20 +1,62 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-body { font-family: 'Cairo', 'Segoe UI', system-ui, sans-serif; }
-.rtl { direction: rtl; }
-.card { @apply bg-white rounded-2xl border border-gray-200/80 shadow-sm p-5; }
-.btn { @apply px-4 py-2 rounded-xl bg-athr text-white hover:bg-black transition-colors; }
-.btn-accent { @apply px-4 py-2 rounded-xl bg-accent text-black hover:brightness-95 transition; }
-.input { @apply border border-gray-300 rounded-xl px-3 py-2 w-full bg-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent; }
-.select { @apply border border-gray-300 rounded-xl px-3 py-2 w-full bg-white focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent; }
-.btn-secondary { @apply px-4 py-2 rounded-xl border border-gray-300 bg-white hover:bg-gray-50 transition-colors; }
-.status-dot { @apply inline-block w-2.5 h-2.5 rounded-full ml-2; }
+
+/*
+ * Design tokens in use (see docs/design/ui/design-system-audit.md):
+ * - Focus: amber-700 outline (5:1 on white). Never amber at low opacity.
+ * - Accent buttons use black text on amber (10:1), never white on amber (2.1:1).
+ * - Secondary text on the page background (#f6f6f7) is gray-600; gray-500 only on white cards.
+ * - Below `md` every interactive control is at least 44px tall.
+ * - Directional spacing uses logical utilities (ms-, me-, ps-, pe-, text-start, text-end).
+ */
+body { font-family: var(--font-cairo), 'Segoe UI', system-ui, sans-serif; }
+:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
+.on-dark:focus-visible, .on-dark :focus-visible { outline-color: #fff; }
+
+.card { @apply bg-white rounded-2xl border border-gray-200/80 shadow-sm p-4 md:p-5; }
+.card-flush { @apply p-0 overflow-hidden; }
+
+.btn, .btn-accent, .btn-secondary, .btn-danger {
+  @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 py-2 transition-colors md:min-h-0 motion-reduce:transition-none;
+}
+.btn { @apply bg-athr text-white enabled:hover:bg-black; }
+.btn-accent { @apply bg-accent text-black enabled:hover:brightness-95; }
+.btn-secondary { @apply border border-gray-300 bg-white enabled:hover:bg-gray-50; }
+.btn-danger { @apply bg-red-700 text-white enabled:hover:bg-red-800; }
+.btn-sm { @apply min-h-11 px-3 py-1.5 text-sm md:min-h-0; }
+.btn-lg { @apply min-h-12 px-5 py-3 text-base md:min-h-11; }
+.btn-icon { @apply inline-flex min-h-11 min-w-11 items-center justify-center rounded-xl text-gray-700 hover:bg-gray-100 md:min-h-9 md:min-w-9; }
+.btn-link { @apply inline-flex min-h-11 items-center px-2 text-blue-700 hover:underline underline-offset-2 md:min-h-0 md:px-1; }
+.btn-danger-link { @apply inline-flex min-h-11 items-center px-2 text-red-700 hover:underline underline-offset-2 md:min-h-0 md:px-1; }
+.btn[aria-busy="true"], .btn-secondary[aria-busy="true"], .btn-accent[aria-busy="true"], .btn-danger[aria-busy="true"] { @apply opacity-70 pointer-events-none; }
+
+.input { @apply min-h-11 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 placeholder:text-gray-500 md:min-h-0; }
+.select { @apply min-h-11 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 md:min-h-0; }
+.input, .select, .input-sm { @apply focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700; }
+.input-sm { @apply w-full rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm placeholder:text-gray-500; }
+.input[aria-invalid="true"], .select[aria-invalid="true"], .input-sm[aria-invalid="true"] { @apply border-red-600 ring-1 ring-red-600; }
+.input:disabled, .select:disabled, .input-sm:disabled { @apply bg-gray-100 text-gray-500; }
+.input-num { @apply text-start tabular-nums; direction: ltr; }
+
+.status-dot { @apply inline-block w-2.5 h-2.5 rounded-full ms-2; }
 table { @apply w-full text-sm; }
-th { @apply text-right bg-gray-50 text-gray-600 text-xs font-semibold px-3 py-2 border-b border-gray-200 whitespace-nowrap; }
-td { @apply px-3 py-2 border-b border-gray-100 align-middle; }
+th { @apply text-start bg-gray-50 text-gray-600 text-xs font-semibold px-3 py-2 border-b border-gray-200 whitespace-nowrap; }
+th.text-end { text-align: end; }
+td { @apply px-3 py-2.5 border-b border-gray-100 align-middle; }
 tbody tr:hover td { @apply bg-gray-50/60; }
 button:disabled { @apply opacity-50 cursor-not-allowed; }
-.input-sm { @apply border border-gray-300 rounded-lg px-2 py-1 w-full bg-white text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent; }
 .tag { @apply inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-800 text-xs px-2.5 py-1 border border-gray-200; }
-.badge { @apply inline-flex items-center rounded-full text-xs px-2 py-0.5 font-medium; }
+
+.badge { @apply inline-flex items-center gap-1 rounded-full text-xs px-2 py-0.5 font-medium; }
+.badge-ok { @apply badge bg-green-50 text-green-800 ring-1 ring-inset ring-green-200; }
+.badge-warn { @apply badge bg-amber-50 text-amber-900 ring-1 ring-inset ring-amber-300; }
+.badge-danger { @apply badge bg-red-50 text-red-800 ring-1 ring-inset ring-red-200; }
+.badge-info { @apply badge bg-blue-50 text-blue-800 ring-1 ring-inset ring-blue-200; }
+.badge-neutral { @apply badge bg-gray-100 text-gray-800 ring-1 ring-inset ring-gray-200; }
+
+.alert { @apply rounded-xl border p-3 text-sm; }
+.alert-danger { @apply alert border-red-200 bg-red-50 text-red-800; }
+.alert-warn { @apply alert border-amber-300 bg-amber-50 text-amber-900; }
+.alert-info { @apply alert border-blue-200 bg-blue-50 text-blue-800; }
+.alert-ok { @apply alert border-green-200 bg-green-50 text-green-800; }
