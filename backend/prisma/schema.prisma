@@ -1536,6 +1536,10 @@ model SalesInvoiceItem {
   unit_price       Decimal            @db.Decimal(14, 2)
   unit_cost        Decimal            @db.Decimal(14, 4)
   unit_tax         Decimal            @default(0) @db.Decimal(14, 2)
+  /// Tax-exclusive discount on this line: its own plus its share of the invoice discount.
+  discount_amount  Decimal            @default(0) @db.Decimal(14, 2)
+  /// Tax of the whole line after the discount (unit_tax is the quoted tax of one unit before it).
+  tax_amount       Decimal            @default(0) @db.Decimal(14, 2)
   sku_snapshot     String?            @db.VarChar(191)
   name_ar_snapshot String?            @db.VarChar(300)
   name_en_snapshot String?            @db.VarChar(300)

@@ -48,11 +48,20 @@ import type { StockLots } from '../inventory/inventory.types';
 import { addLots, lotsFingerprint, lotsOfItem, stockLots, type SaleLots } from './sale-lots';
 import { loadReturnLots } from './sale-return-lots';
 import { paymentsFingerprint, planPayments } from './sale-payments';
+import { discountFingerprint, discountLimitPercent, type SaleDiscount } from './sale-discounts';
+import { isDiscountAboveLimit } from '@athr/domain-core';
+import { priceSaleCommand } from './sale-command-pricing';
+import { effectivePermissions } from '../identity/permission-catalog';
 import { readTenantSettings } from '../catalog/tenant-settings';
 import { derivedInvoiceNumber, invoiceNumberCandidates, pickInvoiceNumber } from './invoice-number';
 
 /** A sale line after merging duplicate variants; the quantity is exact (Decimal(14,3)). */
-type SaleLine = Omit<CreateSaleItemDto, 'qty' | 'serials' | 'batch_no'> & { qty: Prisma.Decimal; lots: SaleLots };
+type SaleLine = Omit<CreateSaleItemDto, 'qty' | 'serials' | 'batch_no' | 'discount'> & {
+  qty: Prisma.Decimal;
+  lots: SaleLots;
+  /** The discounts of the duplicate lines merged into this one (each priced on its own line). */
+  discounts: SaleDiscount[];
+};
 
 @Injectable()
 export class SalesService {
@@ -133,6 +142,7 @@ export class SalesService {
       occurred_at: occurredAt.toISOString(),
       customer_phone: dto.customer_phone || null,
       payments: paymentsFingerprint(dto.payments),
+      ...(dto.discount ? { invoice_discount: discountFingerprint(dto.discount) } : {}),
       language: dto.language || 'ar',
       local_total: canonicalMoney(dto.local_total),
       items: normalized.lines
@@ -147,6 +157,9 @@ export class SalesService {
           variant_label_snapshot: item.variant_label_snapshot?.trim() || null,
           // Only when named: a POS without tracking keeps its exact fingerprint.
           ...lotsFingerprint(item.lots),
+          ...(item.discounts.length
+            ? { discounts: item.discounts.map((discount) => discountFingerprint(discount)).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) }
+            : {}),
         }))
         .sort((left, right) => left.variant_id.localeCompare(right.variant_id)),
     };
@@ -157,11 +170,13 @@ export class SalesService {
 
   private normalizeLines(items: CreateSaleItemDto[]) {
     const lines = new Map<string, SaleLine>();
-    for (const { serials, batch_no, ...item } of items) {
+    for (const { serials, batch_no, discount, ...item } of items) {
       const existing = lines.get(item.variant_id);
       const lots = lotsOfItem({ serials, batch_no }, quantity(item.qty));
-      if (!existing) lines.set(item.variant_id, { ...item, qty: quantity(item.qty), lots });
+      const discounts = discount ? [discount] : [];
+      if (!existing) lines.set(item.variant_id, { ...item, qty: quantity(item.qty), lots, discounts });
       else {
+        existing.discounts.push(...discounts);
         if (
           !sameMoney(existing.unit_price, item.unit_price) ||
           !sameMoney(existing.unit_tax, item.unit_tax) ||
@@ -338,7 +353,7 @@ export class SalesService {
             tenant_id: context.tenantId,
             user_id: { in: [dto.origin_cashier_id, dto.seller_id] },
           },
-          select: { user_id: true, role: true, access_scope_assignments: true },
+          select: { user_id: true, role: true, access_scope_assignments: true, granted_permissions: true, revoked_permissions: true },
         }),
       ]);
       if (claimed.branch_code === null) throw new NotFoundException('Branch not found');
@@ -433,18 +448,25 @@ export class SalesService {
         };
       });
 
-      const subtotal = sumMoney(
-        saleItems.map((item) => lineMoney(item.unit_price, item.qty)),
-      );
-      const taxAmount = sumMoney(
-        saleItems.map((item) => lineMoney(item.tax, item.qty)),
-      );
+      // Priced as the till prices it (shared domain-core arithmetic): line and
+      // invoice discounts, tax after discount. `server` is the same sale at the
+      // server's own quote, used only for the tax snapshot below.
+      const { till, server } = priceSaleCommand(dto.items, dto.discount, currentQuotes);
+      const subtotal = till.subtotal;
+      const taxAmount = till.taxTotal;
       // The till's total is what the customer was charged and what the receipt
       // shows, so it is the stored total. A total that does not match its own
       // lines is accepted and flagged: a finished sale is never refused (spec §0).
       const total = money(dto.local_total);
-      if (!sameMoney(total, subtotal.plus(taxAmount))) warningCodes.add('LOCAL_TOTAL_MISMATCH');
-      const paymentPlan = planPayments(dto.payments, total, readTenantSettings(claimed.settings).sales.payment_methods);
+      if (!sameMoney(total, till.total)) warningCodes.add('LOCAL_TOTAL_MISMATCH');
+      const settings = readTenantSettings(claimed.settings);
+      const originPermissions = originCashier
+        ? effectivePermissions(originCashier.role, originCashier.granted_permissions, originCashier.revoked_permissions)
+        : null;
+      if (isDiscountAboveLimit(till.lines, discountLimitPercent(originPermissions, settings.sales.max_discount_percent))) {
+        warningCodes.add('DISCOUNT_ABOVE_LIMIT');
+      }
+      const paymentPlan = planPayments(dto.payments, total, settings.sales.payment_methods);
       paymentPlan.warnings.forEach((code) => warningCodes.add(code));
 
       // Acceptance-first: the sale is recorded even when it drives stock below
@@ -526,6 +548,7 @@ export class SalesService {
           occurred_at: occurredAt,
           received_at: receivedAt,
           subtotal,
+          discount_amount: till.discountTotal,
           tax_amount: taxAmount,
           total,
           language: dto.language || 'ar',
@@ -545,6 +568,8 @@ export class SalesService {
           unit_price: item.unit_price,
           unit_cost: costOf(item.variant_id),
           unit_tax: item.tax,
+          discount_amount: till.byVariant.get(item.variant_id)!.discount,
+          tax_amount: till.byVariant.get(item.variant_id)!.tax,
           sku_snapshot: item.sku_snapshot,
           name_ar_snapshot: item.name_ar_snapshot,
           name_en_snapshot: item.name_en_snapshot,
@@ -581,13 +606,10 @@ export class SalesService {
         invoice.id,
         saleItems.map((item) => {
           const quote = currentQuotes.get(item.variant_id)!;
+          const priced = server.byVariant.get(item.variant_id)!;
           return {
             salesInvoiceItemId: itemIds.get(item.variant_id)!,
-            tax: {
-              ...quote.tax,
-              base_amount: lineMoney(quote.tax.base_amount, item.qty),
-              tax_amount: lineMoney(quote.tax.tax_amount, item.qty),
-            },
+            tax: { ...quote.tax, base_amount: priced.net, tax_amount: priced.tax },
           };
         }),
       );

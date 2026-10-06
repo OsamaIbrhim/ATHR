@@ -188,6 +188,8 @@ const SALES_PERMISSIONS = [
   'sales.sale.complete',
   'sales.sale.view-cost-margin',
   'sales.sale.reprint-receipt',
+  'sales.discount.apply',
+  'sales.discount.override',
   'returns.return.view',
   'returns.return.request',
   'returns.return.approve-standard',
@@ -331,6 +333,7 @@ const CASHIER_GRANTS: readonly BusinessPermission[] = [
   'sales.sale.create',
   'sales.sale.complete',
   'sales.sale.reprint-receipt',
+  'sales.discount.apply',
   'returns.return.view',
   'returns.return.request',
   'customer.profile.view',
@@ -464,6 +467,8 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'sales.sale.complete',
   'sales.sale.view-cost-margin',
   'sales.sale.reprint-receipt',
+  'sales.discount.apply',
+  'sales.discount.override',
   'returns.return.view',
   'returns.return.request',
   'returns.return.approve-standard',
@@ -619,8 +624,14 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
  *
  * v8 -> v9: W2a adds `catalog.product-type.manage` (owner via the blanket
  * grant, `warehouse_manager` explicitly).
+ *
+ * v9 -> v10: W3 adds `sales.discount.apply` (cashier, location_manager, owner:
+ * a discount up to the tenant's `sales.max_discount_percent`) and
+ * `sales.discount.override` (location_manager, owner: above it). A POS sale is
+ * never refused over a discount: one above the actor's limit is accepted with
+ * DISCOUNT_ABOVE_LIMIT.
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 9;
+export const PERMISSION_POLICY_CURRENT_VERSION = 10;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(

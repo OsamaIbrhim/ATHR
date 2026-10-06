@@ -605,6 +605,77 @@ describe('SalesService acceptance-first sale synchronization', () => {
     expect(tx.salesPayment.createMany).toHaveBeenCalled();
   });
 
+  describe('discounts', () => {
+    const lineWith = (discount?: unknown) => [{ ...saleDto().items[0], discount }];
+    const tenPercent = () =>
+      saleDto({ items: lineWith({ type: 'percent', value: 10 }), payments: [{ method: 'cash', amount: 307.8 }], local_total: 307.8 });
+    const halfOff = () =>
+      saleDto({ items: lineWith({ type: 'percent', value: 50 }), payments: [{ method: 'cash', amount: 171 }], local_total: 171 });
+
+    it('stores the discount and the tax after it on the line, and the discount total on the invoice', async () => {
+      const { service, tx } = setupSale();
+      const result = await service.createSale(tenPercent(), terminal);
+      const line = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data[0];
+      expect([line.unit_price.toString(), line.unit_tax.toString(), line.discount_amount.toString(), line.tax_amount.toString()]).toEqual(['150', '21', '30', '37.8']);
+      const invoice = tx.salesInvoice.create.mock.calls[0][0].data;
+      expect([invoice.subtotal.toString(), invoice.discount_amount.toString(), invoice.tax_amount.toString(), invoice.total.toString()]).toEqual(['300', '30', '37.8', '307.8']);
+      expect(result.warning_codes).not.toContain('LOCAL_TOTAL_MISMATCH');
+      expect(result.warning_codes).not.toContain('DISCOUNT_ABOVE_LIMIT');
+    });
+
+    it('records the tax snapshot over the discounted base', async () => {
+      const { service, tx } = setupSale();
+      await service.createSale(tenPercent(), terminal);
+      const snapshot = tx.salesTaxSnapshot.createMany.mock.calls[0][0].data[0];
+      expect([snapshot.base_amount.toString(), snapshot.tax_amount.toString()]).toEqual(['270', '37.8']);
+    });
+
+    it('accepts a discount above the cashier limit, flagged', async () => {
+      const { service } = setupSale();
+      expect((await service.createSale(halfOff(), terminal)).warning_codes).toContain('DISCOUNT_ABOVE_LIMIT');
+    });
+
+    it('lets a manager (override) discount beyond the limit without a flag', async () => {
+      const { service, tx } = setupSale();
+      tx.membership.findMany.mockImplementation(() =>
+        Promise.resolve([
+          {
+            user_id: cashierId,
+            role: 'location_manager',
+            granted_permissions: [],
+            revoked_permissions: [],
+            access_scope_assignments: [{ scope_type: 'location', scope_ref_id: branchId, effective_from: new Date('2020-01-01'), effective_to: null }],
+          },
+        ]),
+      );
+      expect((await service.createSale(halfOff(), terminal)).warning_codes).not.toContain('DISCOUNT_ABOVE_LIMIT');
+    });
+
+    it('merges two lines of one variant that carry different discounts instead of refusing the sale', async () => {
+      const { service, tx } = setupSale();
+      const base = saleDto().items[0];
+      await service.createSale(
+        saleDto({
+          items: [{ ...base, qty: 1, discount: { type: 'amount', value: 10 } }, { ...base, qty: 1 }],
+          payments: [{ method: 'cash', amount: 330.6 }],
+          local_total: 330.6,
+        }),
+        terminal,
+      );
+      const rows = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data;
+      expect(rows).toHaveLength(1);
+      expect([rows[0].qty.toString(), rows[0].discount_amount.toString()]).toEqual(['2', '10']);
+    });
+
+    it('fingerprints the discounts, and leaves a sale without any untouched', () => {
+      const { service } = setupSale();
+      const plain = fingerprint(service, saleDto());
+      expect(fingerprint(service, saleDto({ items: lineWith({ type: 'amount', value: 5 }) }))).not.toBe(plain);
+      expect(fingerprint(service, saleDto({ discount: { type: 'percent', value: 5 } }))).not.toBe(plain);
+      expect(fingerprint(service, saleDto({ items: lineWith(undefined) }))).toBe(plain);
+    });
+  });
+
   it('stores the printed invoice number verbatim', async () => {
     const { service } = setupSale();
     const result = await service.createSale(saleDto(), terminal);

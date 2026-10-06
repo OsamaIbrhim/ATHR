@@ -18,6 +18,7 @@ import {
 import { IsQuantity } from '../../common/quantity';
 import { cleanInvoiceNumber } from '../invoice-number';
 import { SalePaymentDto } from './sale-payment.dto';
+import { cleanDiscount, type SaleDiscount } from '../sale-discounts';
 
 const MAX_SERIALS_PER_LINE = 1000;
 
@@ -71,6 +72,14 @@ export class CreateSaleItemDto {
   @IsString()
   @MaxLength(300)
   name_en_snapshot?: string;
+
+  /**
+   * A discount on this line (`{ type: 'amount' | 'percent', value }`), taken off
+   * the price as the cashier saw it. Cleaned, not validated: an unusable discount is none.
+   */
+  @IsOptional()
+  @Transform(({ value }) => cleanDiscount(value))
+  discount?: SaleDiscount;
 
   /** "L · أسود": what the cashier saw. POS <= 1.5 sent size/color instead. */
   @IsOptional()
@@ -157,6 +166,11 @@ export class CreateSaleDto {
   @Type(() => CreateSaleItemDto)
   @ArrayMinSize(1)
   items: CreateSaleItemDto[];
+
+  /** A discount on the whole invoice, spread over the lines (same shape as a line discount). */
+  @IsOptional()
+  @Transform(({ value }) => cleanDiscount(value))
+  discount?: SaleDiscount;
 
   /** How the sale was paid; one entry per tender (split payment = several). */
   @IsArray()

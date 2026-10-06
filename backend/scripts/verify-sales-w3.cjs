@@ -8,6 +8,7 @@
 //           adjustments / counts, terminal codes
 //   D6      transfers numbered TR-000001 per tenant, no global sequence
 //   P1-P4   payments: split rows, warnings, 17 statements, shift cash from payments
+//   X1-X6   discounts: line + invoice, tax after discount, snapshot, limit warning, merge, fingerprint
 //   N1-N3   a POS sale is never refused: reused terminal sequence, mismatching total, no number
 'use strict';
 
@@ -217,10 +218,56 @@ async function verifyPayments() {
   check('P4 a late sale moves the closed shift by its cash payments only', late.warning_codes.includes('LATE_SYNC') && reconciled.expected_cash.equals(cash.plus(50)), `expected=${reconciled.expected_cash}`);
 }
 
+// --- X ------------------------------------------------------------------------
+
+async function verifyDiscounts() {
+  const world = await createSalesWorld(prisma, 'x');
+  const [a, b, c] = [await world.createVariant(), await world.createVariant(), await world.createVariant()];
+  await world.sell(world.saleDto([a])); // warm caches
+  const dto = (items, extra = {}) => {
+    const sale = world.saleDto([a], extra);
+    return { ...sale, items };
+  };
+  const item = (variant, extra = {}) => ({ variant_id: variant.id, qty: 2, unit_price: 100, unit_tax: 14, sku_snapshot: variant.sku, name_ar_snapshot: 'صنف', ...extra });
+
+  // 10% on a 2 x 100 line: net 180, tax 25.20, total 205.20.
+  const [tenth, statements] = await counted(() => world.sell(dto([item(a, { discount: { type: 'percent', value: 10 } })], { local_total: 205.2, payments: [{ method: 'cash', amount: 205.2 }] })));
+  const stored = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: tenth.id } });
+  check('X1 a line discount is stored with the tax after it (discount 20.00, tax 25.20)', stored.discount_amount.equals(20) && stored.tax_amount.equals('25.2') && stored.unit_price.equals(100) && stored.unit_tax.equals(14), `${stored.discount_amount} ${stored.tax_amount}`);
+  check('X1 the invoice totals add up (300... 200 - 20 + 25.20 = 205.20) with no mismatch warning',
+    tenth.subtotal.equals(200) && tenth.discount_amount.equals(20) && tenth.tax_amount.equals('25.2') && tenth.total.equals('205.2') && !tenth.warning_codes.includes('LOCAL_TOTAL_MISMATCH'),
+    `${tenth.subtotal} ${tenth.discount_amount} ${tenth.tax_amount} ${tenth.total} ${show(tenth.warning_codes)}`);
+  check('X1 a discount adds no statements', statements === SALE_STATEMENTS, `got ${statements}`);
+  const snapshot = await prisma.salesTaxSnapshot.findFirstOrThrow({ where: { sales_invoice_id: tenth.id } });
+  check('X2 the tax snapshot base is the discounted net (180) and its tax 25.20', snapshot.base_amount.equals(180) && snapshot.tax_amount.equals('25.2'), `${snapshot.base_amount} ${snapshot.tax_amount}`);
+  check('X3 a discount at the cashier limit is not flagged', !tenth.warning_codes.includes('DISCOUNT_ABOVE_LIMIT'));
+
+  const half = await world.sell(dto([item(a, { discount: { type: 'percent', value: 50 } })], { local_total: 114, payments: [{ method: 'cash', amount: 114 }] }));
+  check('X3 a 50% discount by a cashier is accepted with DISCOUNT_ABOVE_LIMIT', half.warning_codes.includes('DISCOUNT_ABOVE_LIMIT') && half.total.equals(114), show(half.warning_codes));
+
+  // Invoice discount of 30 over three lines of 200 net each: 10 each; the lines keep 10 + 10 + 10.
+  const spread = await world.sell(dto([item(a), item(b), item(c)], { discount: { type: 'amount', value: 30 }, local_total: 6 * 100 * 1.14 - 34.2, payments: [{ method: 'cash', amount: 6 * 100 * 1.14 - 34.2 }] }));
+  const rows = await prisma.salesInvoiceItem.findMany({ where: { sales_invoice_id: spread.id } });
+  const shares = rows.map((row) => String(row.discount_amount)).sort();
+  check('X4 an invoice discount is spread over the lines and adds up to the invoice discount',
+    shares.join() === '10,10,10' && spread.discount_amount.equals(30) && spread.total.equals('649.8'), `${shares.join()} total=${spread.total}`);
+
+  // Two lines of one variant with different discounts become one row, not a refusal.
+  const merged = await world.sell(dto([item(a, { qty: 1, discount: { type: 'amount', value: 10 } }), item(a, { qty: 1 })], { local_total: 216.6, payments: [{ method: 'cash', amount: 216.6 }] }));
+  const mergedRows = await prisma.salesInvoiceItem.findMany({ where: { sales_invoice_id: merged.id } });
+  check('X5 two lines of one variant with different discounts merge into one row', mergedRows.length === 1 && mergedRows[0].qty.equals(2) && mergedRows[0].discount_amount.equals(10), show(mergedRows.map((row) => String(row.discount_amount))));
+
+  const sale = dto([item(a, { discount: { type: 'percent', value: 10 } })], { local_total: 205.2, payments: [{ method: 'cash', amount: 205.2 }] });
+  const first = await world.sell(sale);
+  const replay = await world.sell(sale);
+  const changed = await rejection(world.sell({ ...sale, items: [item(a, { discount: { type: 'percent', value: 20 } })] }));
+  check('X6 a replay is idempotent and the same sync_id with another discount is a context conflict', replay.id === first.id && changed?.response?.code === 'SALE_IDEMPOTENCY_CONTEXT_CONFLICT', changed?.message);
+}
+
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments];
+  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments, verifyDiscounts];
   for (const section of sections) {
     try {
       await section();
