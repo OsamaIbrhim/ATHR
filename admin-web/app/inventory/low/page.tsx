@@ -45,6 +45,7 @@ export default function LowStockPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [explainerHidden, setExplainerHidden] = useState(false)
+  const [emptyCatalog, setEmptyCatalog] = useState(false)
 
   useEffect(() => {
     if (!branchId && branches.length) setBranchId(user?.branch_id && branches.some(b => b.id === user.branch_id) ? user.branch_id : branches[0].id)
@@ -61,6 +62,13 @@ export default function LowStockPage() {
     finally { setLoading(false) }
   }, [allowed, branchesLoading, branchId, tab, page, applied])
   useEffect(() => { void load() }, [load])
+
+  // An empty list is good news only when the catalog has products; with none, point to adding them.
+  const nothingListed = !!data && data.counts.all === 0 && !applied
+  useEffect(() => {
+    if (!nothingListed) { setEmptyCatalog(false); return }
+    apiGet('/products?page=1&page_size=1').then(r => setEmptyCatalog(r?.total === 0)).catch(() => setEmptyCatalog(false))
+  }, [nothingListed])
 
   if (!allowed) return <NoPermission />
   const branchName = branches.find(b => b.id === branchId)?.name ?? ''
@@ -125,7 +133,9 @@ export default function LowStockPage() {
           loading={loading}
           error={error ? { message: error, onRetry: load } : undefined}
           caption="أصناف منتهية أو بالسالب"
-          empty={{ title: emptyTitle, hint: 'كل أصنافك لها رصيد.' }}
+          empty={emptyCatalog
+            ? { title: 'لا توجد منتجات بعد', hint: 'أضف منتجاتك أولًا، ثم تظهر هنا الأصناف المنتهية.', action: <Link className="btn" href="/products/import">استيراد من Excel</Link> }
+            : { title: emptyTitle, hint: 'كل أصنافك لها رصيد.' }}
           mobileCard={r => (
             <div className="space-y-1">
               <div className="flex items-start justify-between gap-2">
