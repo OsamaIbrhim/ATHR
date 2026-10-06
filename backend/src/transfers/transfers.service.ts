@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, Transfer } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { nextDocumentNumber } from '../common/document-sequence';
 import { PrismaService } from '../prisma/prisma.service';
 import type { TenantContext, TenantScope } from '../identity/tenant-context.type';
 import {
@@ -236,7 +237,7 @@ export class TransfersService {
       }
 
       const id = randomUUID();
-      const transferNumber = await this.nextTransferNumber(tx);
+      const transferNumber = await this.nextTransferNumber(tx, context.tenantId);
       await tx.$executeRaw`
         INSERT INTO "Transfer" (
           "id", "from_branch_id", "to_branch_id", "status",
@@ -696,12 +697,8 @@ export class TransfersService {
     `;
   }
 
-  private async nextTransferNumber(tx: Prisma.TransactionClient) {
-    const [row] = await tx.$queryRaw<{ value: bigint }[]>`
-      SELECT nextval('"TransferNumberSequence"') AS value
-    `;
-    const date = new Date().toISOString().slice(0, 10).replaceAll('-', '');
-    return `TR-${date}-${row.value.toString().padStart(8, '0')}`;
+  private nextTransferNumber(tx: Prisma.TransactionClient, tenantId: string) {
+    return nextDocumentNumber(tx, tenantId, 'transfer');
   }
 
   private async lockTransfer(

@@ -6,6 +6,7 @@
 //
 //   D1-D5   per-tenant document numbers: two tenants, concurrency, rollback,
 //           adjustments / counts, terminal codes
+//   D6      transfers numbered TR-000001 per tenant, no global sequence
 //   N1-N3   a POS sale is never refused: reused terminal sequence, mismatching total
 'use strict';
 
@@ -112,6 +113,22 @@ async function verifyDocumentSequences() {
   const deviceB = `abcdef01-${randomUUID().slice(9)}`;
   const codeA = await take(a, 'terminal');
   const codeB = await take(a, 'terminal');
+  // Transfers: per-tenant TR- numbers, no global sequence left.
+  const sequences = await prisma.$queryRaw`SELECT relname FROM pg_class WHERE relkind = 'S' AND relname = 'TransferNumberSequence'`;
+  check('D6 the global transfer sequence is gone', sequences.length === 0);
+  const TransfersService = load('transfers', 'transfers.service.js', 'TransfersService');
+  const otherBranch = await b.branches.save(b.context, { code: `W-${randomUUID().slice(0, 8)}`, name_ar: 'فرع آخر' });
+  const stocked = await prisma.productVariant.create({ data: { tenant_id: b.tenant.id, product_id: product.id, sku: `TR-${randomUUID().slice(0, 8)}`, cost_price: D(10), is_active: true } });
+  await prisma.$transaction((tx) => inventory.apply(tx, {
+    tenantId: b.tenant.id, warehouseId: b.warehouse.id, occurredAt: new Date(), actorId: b.actor.id, type: 'opening_balance', costType: 'opening_balance',
+    reference: { type: 'Verify', id: randomUUID() }, idempotencyKey: `verify:${randomUUID()}`, allowNegative: false, lines: [{ variantId: stocked.id, qtyDelta: 5, unitCost: 10 }],
+  }));
+  const transfers = new TransfersService(prisma, inventory);
+  const transferDto = () => ({ from_branch_id: b.branch.id, to_branch_id: otherBranch.id, command_id: randomUUID(), items: [{ variant_id: stocked.id, qty: 1 }] });
+  const t1 = await transfers.create(b.context, transferDto(), owner);
+  const t2 = await transfers.create(b.context, transferDto(), owner);
+  check('D6 transfers are numbered TR-000001, TR-000002 from the tenant counter', t1.transfer_number === 'TR-000001' && t2.transfer_number === 'TR-000002', `${t1.transfer_number} ${t2.transfer_number}`);
+
   check('D5 terminal codes come from the tenant counter, not from the device id', codeA === 'POS1' && codeB === 'POS2' && deviceA.slice(0, 8) === deviceB.slice(0, 8));
 }
 

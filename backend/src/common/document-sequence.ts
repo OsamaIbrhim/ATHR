@@ -14,6 +14,8 @@ export const DOCUMENT_NUMBER_FORMATS = {
   adjustment: { prefix: 'ADJ-', digits: 6 },
   /** Stock counts: `CNT-000001`. */
   count: { prefix: 'CNT-', digits: 6 },
+  /** Branch-to-branch transfers: `TR-000001`. */
+  transfer: { prefix: 'TR-', digits: 6 },
   /** Invoices created on the server (online exchange); POS invoices carry their terminal's number. */
   invoice: { prefix: 'INV-', digits: 6 },
   /** POS terminal codes: `POS1`, `POS2`. Never reused, even after a terminal is retired. */
