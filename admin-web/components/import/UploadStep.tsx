@@ -25,7 +25,7 @@ export default function UploadStep({ file, parsed, error, reading, hasHeader, sh
     <div className="grid gap-4 md:grid-cols-3">
       <div className="space-y-4 md:col-span-2">
         <FileDropzone accept={ACCEPT} maxBytes={MAX_FILE_BYTES} onFile={onFile} error={error} disabled={reading}
-          hint={`الصيغ المسموحة: xlsx وcsv · الحد الأقصى ${MAX_FILE_BYTES / 1024 / 1024} ميجا و${MAX_FILE_ROWS.toLocaleString('en-US')} صف`} />
+          hint={`الصيغ المسموحة: xlsx و csv · الحد الأقصى ${MAX_FILE_BYTES / 1024 / 1024} ميجا و${MAX_FILE_ROWS.toLocaleString('en-US')} صف`} />
         <p className="text-xs text-gray-600">إذا ظهر العربي بحروف غريبة احفظ الملف بترميز UTF-8.</p>
         {file && (
           <div className="card space-y-3">

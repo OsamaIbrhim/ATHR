@@ -89,6 +89,23 @@ export default function ProductsPage() {
         {error && <div className="p-3 text-red-700">{error} <button className="underline" onClick={load}>إعادة المحاولة</button></div>}
         <DataTable
           columns={columns} rows={data.items} rowKey={row => row.id} loading={loading}
+          mobileCard={row => (
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <Link href={`/products/${row.product_id}`} className="font-medium text-gray-900">{row.product?.name_ar || row.product?.name_en}</Link>
+                {row.label && <StatusBadge tone="neutral" icon={false}>{row.label}</StatusBadge>}
+              </div>
+              <bdi dir="ltr" className="block font-mono text-xs text-gray-600">{row.sku}</bdi>
+              <BarcodeChips barcodes={row.barcodes} />
+              <div className="flex items-center justify-between text-sm">
+                <span>المخزون: <bdi dir="ltr">{(row.stock_by_branch || []).reduce((sum: number, x: any) => sum + Number(x.qty_on_hand), 0)}</bdi></span>
+                <span className="flex gap-3">
+                  {canEdit && <Link href={`/products/${row.product_id}`} className="btn-link">تعديل</Link>}
+                  {canArchive && <button type="button" className="btn-link text-red-700" onClick={() => setTarget(row.id)}>تعطيل</button>}
+                </span>
+              </div>
+            </div>
+          )}
           empty={noProductsAtAll ? {
             title: 'لا توجد منتجات بعد',
             hint: 'ابدأ بملف Excel لتوفير الوقت.',
