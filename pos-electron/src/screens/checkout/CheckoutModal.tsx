@@ -9,6 +9,10 @@ import type { CartItem, Customer, DeviceCredential, OfflineAccountingContext, Se
 import { FieldError, Modal, NumericKeypad } from '../../components/ui'
 import { cartTotals, isValidEgyptianPhone, money, normalizeEgyptianPhone, toCents } from '../../utils'
 import { PaymentRows } from './PaymentRows'
+import { buildSalePayload } from './sale-payload'
+import { saveLocalSale, submitExchange, type PreparedExchange } from './submit-sale'
+import type { ExchangeStart } from '../../exchange'
+import { paymentLabel } from '../../../electron/payment-methods'
 import './checkout.css'
 
 type Notify = (message: string, tone?: 'success' | 'error' | 'info') => void
@@ -23,6 +27,8 @@ export interface CompletedSale {
   change: number
   printed: boolean
   print_error?: string
+  /** Number of the return recorded with this sale (an exchange). */
+  return_number?: string
 }
 
 export function CheckoutModal({
@@ -37,6 +43,7 @@ export function CheckoutModal({
   accountingContext,
   settings,
   totals,
+  exchange,
   onSaleSaved,
   onClose,
   onCompleted,
@@ -53,6 +60,8 @@ export function CheckoutModal({
   accountingContext: OfflineAccountingContext | null
   settings: PosSettings
   totals: ReturnType<typeof cartTotals>
+  /** Set when this sale is the new-goods half of an exchange (sent online together with the return). */
+  exchange: ExchangeStart | null
   onSaleSaved: () => void
   onClose: () => void
   onCompleted: (value: CompletedSale) => void
@@ -65,10 +74,13 @@ export function CheckoutModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const paymentLock = useRef(false)
+  // An exchange that failed on the network keeps its numbered command: the retry replays it.
+  const preparedExchange = useRef<PreparedExchange | null>(null)
 
   useEffect(() => {
     if (!open) return
     paymentLock.current = false
+    preparedExchange.current = null
     setRows([{ method: firstMethod, amount: '', received: '' }])
     setKeypadRow(0)
     setBusy(false)
@@ -102,31 +114,24 @@ export function CheckoutModal({
     paymentLock.current = true
     setBusy(true)
     setError('')
-    const payload = {
-      sync_id: crypto.randomUUID(),
-      branch_id: device.branch_id,
-      seller_id: sellerId,
-      customer_phone: phone || undefined,
-      items: items.map((item) => ({
-        variant_id: item.variant_id,
-        qty: item.qty,
-        unit_price: item.unit_price,
-        unit_tax: item.unit_tax,
-        tax_rate: item.tax_rate ?? undefined,
-        tax_mode: item.tax_mode ?? undefined,
-        discount: item.discount ?? undefined,
-        sku: item.sku,
-        name_ar: item.name_ar || item.name,
-        name_en: item.name_en || '',
-        label: item.label || undefined,
-      })),
-      discount: invoiceDiscount ?? undefined,
+    const payload = buildSalePayload({
+      items,
+      invoiceDiscount,
       payments: split.payments,
-      language: 'ar',
-      local_total: totals.total,
-    }
+      branchId: device.branch_id,
+      sellerId,
+      customerPhone: phone || undefined,
+      total: totals.total,
+    })
     try {
-      const saved = await athr.sale(payload)
+      let saved
+      if (exchange) {
+        const done = await submitExchange(payload, exchange, preparedExchange.current)
+        preparedExchange.current = done.prepared
+        saved = done.saved
+      } else {
+        saved = await saveLocalSale(payload)
+      }
       onSaleSaved()
       const receipt = receiptFromCart({
         invoiceNumber: saved.invoice_number,
@@ -144,8 +149,9 @@ export function CheckoutModal({
         change: receipt.change ?? 0,
         printed: !!printResult?.ok,
         print_error: (printResult as { reason?: string })?.reason,
+        return_number: 'return_number' in saved ? saved.return_number : undefined,
       })
-      notify('تم حفظ البيع محليًا بأمان', 'success')
+      notify(exchange ? 'تم الاستبدال وتسجيل المرتجع' : 'تم حفظ البيع محليًا بأمان', 'success')
     } catch (err) {
       paymentLock.current = false
       setError((err as Error).message || 'تعذر حفظ البيع محليًا')
@@ -158,7 +164,7 @@ export function CheckoutModal({
   }
 
   return (
-    <Modal open={open} title="إتمام الدفع" onClose={() => { if (!busy) onClose() }} width="980px">
+    <Modal open={open} title={exchange ? 'إتمام الاستبدال' : 'إتمام الدفع'} onClose={() => { if (!busy) onClose() }} width="980px">
       <div className="checkout-layout" onKeyDown={onEnter}>
         <section>
           <div className="checkout-total">
@@ -169,6 +175,12 @@ export function CheckoutModal({
               {totals.discount > 0 && ` · خصم ${money(totals.discount)} ج`}
             </small>
           </div>
+          {exchange && (
+            <div className="exchange-note">
+              استبدال فاتورة <b>{exchange.invoice_number}</b>: يُرد للعميل <b>{money(exchange.refund_total)} ج</b>{' '}
+              ({exchange.refund_method === 'credit' ? 'على حساب العميل' : paymentLabel(exchange.refund_method)}). المدفوعات أدناه تغطي قيمة الأصناف الجديدة.
+            </div>
+          )}
           <PaymentRows rows={rows} state={split} enabled={enabled} onChange={setRows} onFocusReceived={setKeypadRow} />
           {cashIndex >= 0 && (
             <div className="cash-presets">

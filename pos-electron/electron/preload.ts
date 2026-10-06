@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('athr', {
   settings: () => ipcRenderer.invoke('pos:settings'),
   sellers: () => ipcRenderer.invoke('pos:list_sellers'),
   sale: (sale: any) => ipcRenderer.invoke('pos:sale', sale),
+  prepare_exchange_sale: (sale: any) => ipcRenderer.invoke('pos:prepare_exchange_sale', sale),
   print: (invoice: any, lang: 'ar' | 'en') =>
     ipcRenderer.invoke('pos:print', invoice, lang),
   local_sales: () => ipcRenderer.invoke('pos:list_local_sales'),

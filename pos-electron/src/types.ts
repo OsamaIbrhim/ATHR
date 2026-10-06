@@ -109,6 +109,12 @@ export type InvoiceItem = {
   }
 }
 
+export type InvoicePayment = {
+  method: string
+  amount: number | string
+  tendered?: number | string | null
+}
+
 export type Invoice = {
   id: string
   invoice_number: string
@@ -122,7 +128,8 @@ export type Invoice = {
   subtotal: number | string
   tax_amount: number | string
   total: number | string
-  payment_method: string
+  discount_amount?: number | string | null
+  payments?: InvoicePayment[]
   status: string
   event_version?: number
   warning_codes?: string[]
@@ -199,7 +206,6 @@ export type ReturnRecord = {
     id: string
     invoice_number: string
     total: number | string
-    payment_method: string
     customer?: {
       id: string
       name?: string | null

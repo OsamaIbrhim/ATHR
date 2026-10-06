@@ -15,7 +15,7 @@ describe('financial precision contract', () => {
   const source = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
 
   it('keeps POS totals in integer cents', () => {
-    const main = source('electron/ipc/sales.ts')
+    const main = source('electron/ipc/sale-prepare.ts')
     const command = source('electron/sale-command.ts')
     const math = source('electron/sale-math.ts')
     const utils = source('src/utils.ts')

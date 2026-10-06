@@ -6,6 +6,7 @@ import { CartItem, Customer, DeviceCredential, HeldSale, OfflineAccountingContex
 import { DEFAULT_POS_SETTINGS, type PosSettings } from '../../electron/sale-settings'
 import { discountLimitFor, exceedsDiscountLimit, priceCart, type Discount } from '../../electron/sale-math'
 import type { DiscountTarget } from '../discount'
+import type { ExchangeStart } from '../exchange'
 import { CheckoutModal, type CompletedSale } from './checkout/CheckoutModal'
 import { CartLine } from './register/CartLine'
 import { DiscountModal } from './register/DiscountModal'
@@ -18,8 +19,9 @@ import { cartTotals, isValidEgyptianPhone, money, normalizeEgyptianPhone } from 
 function displayName(product: Product) { return product.name_ar || product.name_en || product.sku }
 
 export function RegisterScreen({
-  session, device, shift, accountingContext, syncState, onSync, onSales, onCloseShift, onLogout, notify,
+  session, device, shift, accountingContext, syncState, exchange, onExchangeEnd, onSync, onSales, onCloseShift, onLogout, notify,
 }:{
+  exchange:ExchangeStart|null, onExchangeEnd:()=>void,
   session:Session, device:DeviceCredential, shift:Shift,
   accountingContext:OfflineAccountingContext|null, syncState:SyncState,
   onSync:()=>void, onSales:()=>void, onCloseShift:()=>void, onLogout:()=>void,
@@ -69,6 +71,11 @@ export function RegisterScreen({
   useEffect(()=>{
     void loadHeldSales()
   },[loadHeldSales])
+
+  // An exchange arrives with its customer: the new goods are sold to the same person.
+  useEffect(()=>{
+    if(exchange)setCustomer(exchange.customer)
+  },[exchange])
 
   useEffect(()=>{
     athr.settings().then(setSettings).catch(()=>setSettings(DEFAULT_POS_SETTINGS))
@@ -230,6 +237,7 @@ export function RegisterScreen({
       </section>
 
       <aside className="cart-panel">
+        {exchange&&<div className="exchange-banner"><div><b>استبدال فاتورة {exchange.invoice_number}</b><span>أضف الأصناف الجديدة ثم ادفع قيمتها. يُرد للعميل {money(exchange.refund_total)} ج عن المرتجع.</span></div><button className="text-button danger-text" onClick={onExchangeEnd}>إلغاء الاستبدال</button></div>}
         <div className="cart-heading"><div><span className="eyebrow">الفاتورة الحالية</span><h2>{totals.lines} صنف</h2></div>{cart.length>0&&<button className="text-button danger-text" onClick={()=>setConfirmClear(true)}>تفريغ</button>}</div>
         <div className="cart-items">
           {cart.map((item)=><CartLine key={item.variant_id} item={item} onQty={changeQty} onDiscount={(variantId)=>setDiscountTarget({kind:'line',variantId})}/>)}
@@ -240,7 +248,7 @@ export function RegisterScreen({
     </main>
 
     <CustomerModal open={customerOpen} value={customer} onSelect={(value)=>{setCustomer(value);setCustomerOpen(false)}} onClose={()=>setCustomerOpen(false)} notify={notify}/>
-    <CheckoutModal open={checkoutOpen} items={cart} invoiceDiscount={invoiceDiscount} customer={customer} sellerId={sellerId} session={session} device={device} shift={shift} accountingContext={accountingContext} settings={settings} totals={totals} onSaleSaved={onSync} onClose={()=>setCheckoutOpen(false)} onCompleted={(value)=>{setCheckoutOpen(false);setCart([]);setCustomer(null);setInvoiceDiscount(null);setCompleted(value)}} notify={notify}/>
+    <CheckoutModal open={checkoutOpen} items={cart} invoiceDiscount={invoiceDiscount} customer={customer} sellerId={sellerId} session={session} device={device} shift={shift} accountingContext={accountingContext} settings={settings} totals={totals} exchange={exchange} onSaleSaved={onSync} onClose={()=>setCheckoutOpen(false)} onCompleted={(value)=>{setCheckoutOpen(false);setCart([]);setCustomer(null);setInvoiceDiscount(null);setCompleted(value);if(exchange)onExchangeEnd()}} notify={notify}/>
     <DiscountModal target={discountTarget} title={discountTarget?.kind==='invoice'?'خصم على الفاتورة':'خصم على الصنف'} items={cart} invoiceDiscount={invoiceDiscount} limitPercent={discountLimit} isManager={isManager} onApply={applyDiscount} onClose={()=>setDiscountTarget(null)}/>
     <HeldSalesModal open={heldOpen} sales={heldSales} loading={heldLoading} onClose={()=>setHeldOpen(false)} onResume={(sale)=>void resumeHeldSale(sale)} onDelete={(sale)=>void deleteHeldSale(sale)}/>
     <SaleSuccessModal value={completed} onClose={()=>{setCompleted(null);searchRef.current?.focus()}}/>

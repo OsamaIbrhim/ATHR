@@ -10,3 +10,6 @@
 .discount-type button.active{border-color:#111;background:#111;color:#fff}
 .discount-form input{font-size:26px;font-weight:800;text-align:center;min-height:56px}
 .discount-limit{margin:0;font-size:13px}
+.exchange-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#fffaeb;border-bottom:1px solid #b54708;padding:10px 14px;color:#7a2e0e}
+.exchange-banner>div{display:grid;gap:2px}
+.exchange-banner span{font-size:12px}

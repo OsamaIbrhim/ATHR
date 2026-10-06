@@ -121,6 +121,14 @@ export type AthrBridge = {
     replayed?: boolean
   }>
 
+  prepare_exchange_sale(payload: unknown): Promise<{
+    command: unknown
+    invoice_number: string
+    terminal_sequence: string
+    occurred_at: string
+    total: number
+  }>
+
   print(
     receipt: ReceiptData,
     lang: 'ar' | 'en',

@@ -20,3 +20,4 @@
 .pay-summary .warn{border-color:#b54708;background:#fffaeb}
 .pay-summary .warn b{color:#b54708}
 .pay-summary .change-row{margin-top:0;display:grid;justify-content:stretch}
+.exchange-note{background:#fffaeb;border:1px solid #b54708;color:#7a2e0e;border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:13px;line-height:1.7}

@@ -465,6 +465,12 @@ export const api = {
       `/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`,
     ),
 
+  exchangeSale: (payload: any) =>
+    request<any>('/pos/exchange', {
+      method: 'POST',
+      body: payload,
+    }),
+
   returnSale: (payload: any) =>
     request<any>('/pos/return', {
       method: 'POST',
