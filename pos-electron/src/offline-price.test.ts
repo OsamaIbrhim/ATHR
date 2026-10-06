@@ -16,6 +16,7 @@ describe('historical offline sale prices', () => {
 
     expect(cartTotals([scannedItem])).toEqual({
       subtotal: 200,
+      discount: 0,
       tax: 28,
       total: 228,
       quantity: 2,

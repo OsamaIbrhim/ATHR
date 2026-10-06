@@ -1,3 +1,5 @@
+import type { Discount } from '../electron/sale-math'
+
 export type User = {
   id: string
   name: string
@@ -47,6 +49,9 @@ export type Product = {
   uom_precision?: number
   selling_price?: number | string
   unit_tax?: number | string
+  /** Percent (14 = 14%); null on a row cached before W3. */
+  tax_rate?: string | number | null
+  tax_mode?: 'inclusive' | 'exclusive' | null
   catalog_version?: number
   qty?: number | string
 }
@@ -58,6 +63,8 @@ export type CartItem = Product & {
   unit_price: number
   unit_tax: number
   available_qty: number
+  /** A discount on this line (amount in pounds, or percent). */
+  discount?: Discount | null
 }
 
 export type Customer = {
