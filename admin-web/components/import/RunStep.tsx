@@ -59,24 +59,28 @@ function Running({ progress, tally, startedAt, error, stopped, onStop, onResume,
   )
 }
 
-function Done({ tally, failedRows, branchName, withoutQty, onDownload, onAnother }: {
+function Done({ tally, failedRows, excluded, branchName, withoutQty, onDownload, onAnother }: {
   tally: Tally
   failedRows: RowResult[]
+  excluded: number
   branchName: string
   withoutQty: number
   onDownload: () => void
   onAnother: () => void
 }) {
   const nothing = tally.created === 0
+  const problems = tally.failed + excluded
   return (
     <div className="space-y-4">
       {nothing
-        ? <Banner tone="info">لم يُضف أي صنف جديد</Banner>
-        : tally.failed > 0 ? <Banner tone="warn">اكتمل الاستيراد مع <bdi dir="ltr">{tally.failed}</bdi> أخطاء</Banner> : <Banner tone="ok">تم الاستيراد بنجاح</Banner>}
+        ? <Banner tone={problems > 0 ? 'warn' : 'info'}>{problems > 0 ? <>لم يُضف أي صنف. <bdi dir="ltr">{problems}</bdi> صف به أخطاء.</> : 'لم يُضف أي صنف جديد'}</Banner>
+        : problems > 0
+          ? <Banner tone="warn">تم استيراد <bdi dir="ltr">{tally.created}</bdi> صنف، و<bdi dir="ltr">{problems}</bdi> صف لم يُستورد بسبب أخطاء</Banner>
+          : <Banner tone="ok">تم الاستيراد بنجاح</Banner>}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
         <StatCard label="تمت إضافته" value={tally.created} tone="ok" />
         <StatCard label="تم تخطيه — SKU موجود" value={tally.skipped} />
-        {tally.failed > 0 && <StatCard label="فشل" value={tally.failed} tone="danger" />}
+        {problems > 0 && <StatCard label="لم يُستورد (أخطاء)" value={problems} tone="danger" />}
       </div>
       {tally.openingQuantities > 0 && <p className="text-sm">سُجّلت كميات افتتاحية لـ <bdi dir="ltr">{tally.openingQuantities}</bdi> صنف في {branchName}.</p>}
       {failedRows.length > 0 && (
@@ -106,6 +110,7 @@ export default function RunStep(props: {
   error: { chunk: number; message: string } | null
   stopped: boolean
   failedRows: RowResult[]
+  excluded: number
   branchName: string
   withoutQty: number
   onStop: () => void

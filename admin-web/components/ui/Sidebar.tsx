@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { apiLogout, getStoredUser } from '@/lib/api'
 import { activeNavHref, NAV } from '@/lib/permissions'
+import { interceptLeave } from '@/lib/leave-guard'
 import { ADMIN_PRODUCT_LINE, BRAND_NAME } from '@/lib/brand'
 
 function useStoredPermissions() {
@@ -43,7 +44,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
               {heading && <div className="mb-1 mt-4 px-3 text-xs font-semibold text-white/60">{group}</div>}
               <Link
                 href={href}
-                onClick={onNavigate}
+                onClick={e => { if (interceptLeave(href)) { e.preventDefault(); return } onNavigate?.() }}
                 aria-current={isActive ? 'page' : undefined}
                 className={`block rounded-xl border-s-4 px-3 py-2.5 md:py-2 ${isActive ? 'border-accent bg-white/15 font-semibold' : 'border-transparent hover:bg-white/10'}`}
               >

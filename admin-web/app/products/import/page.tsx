@@ -17,6 +17,7 @@ import { autoMap, emptyMapping, type FieldKey, type Mapping } from '@/lib/import
 import { firstFilledSheet, looksLikeHeader, MAX_FILE_BYTES, MAX_FILE_ROWS, readTableFile, ReadFileError, type ParsedFile } from '@/lib/import/read-file'
 import { buildImportRows, type ImportRow } from '@/lib/import/rows'
 import { useImportFlow } from '@/lib/import/use-import-flow'
+import { setLeaveGuard } from '@/lib/leave-guard'
 import { hasPermission } from '@/lib/permissions'
 import { useBranches } from '@/lib/use-branches'
 
@@ -52,6 +53,7 @@ export default function ImportPage() {
   const [rows, setRows] = useState<ImportRow[]>([])
   const [fileNo, setFileNo] = useState(1)
   const [leaving, setLeaving] = useState(false)
+  const [leaveTo, setLeaveTo] = useState('/products')
   const registry = useRef(new DuplicateRegistry())
   const checked = useRef(new DuplicateRegistry())
   const flow = useImportFlow(taxMode, mapping.qty !== null ? branchId : undefined)
@@ -69,6 +71,12 @@ export default function ImportPage() {
     const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
+  }, [busy])
+
+  useEffect(() => {
+    if (!busy) return
+    setLeaveGuard(href => { setLeaveTo(href); setLeaving(true) })
+    return () => setLeaveGuard(null)
   }, [busy])
 
   if (!hasPermission(user, 'catalog.product.create')) return <NoPermission />
@@ -111,7 +119,7 @@ export default function ImportPage() {
     <div className="mx-auto max-w-5xl space-y-4">
       <PageHeader title="استيراد المنتجات من Excel" subtitle="ارفع ملفك، راجع الأخطاء، ثم استورد." />
       {busy
-        ? <button type="button" className="btn-link min-h-11 md:min-h-0" onClick={() => setLeaving(true)}>→ المنتجات</button>
+        ? <button type="button" className="btn-link min-h-11 md:min-h-0" onClick={() => { setLeaveTo('/products'); setLeaving(true) }}>→ المنتجات</button>
         : <Link href="/products" className="btn-link inline-flex min-h-11 items-center md:min-h-0">→ المنتجات</Link>}
       <Stepper steps={STEPS} current={step} />
       {step === 0 && (
@@ -128,11 +136,11 @@ export default function ImportPage() {
       )}
       {step === 3 && (
         <RunStep running={flow.phase !== 'done'} progress={flow.progress} tally={flow.tally} startedAt={flow.startedAt} error={flow.runError} stopped={flow.stopped}
-          failedRows={failedRows} branchName={branches.find(b => b.id === branchId)?.name ?? ''} withoutQty={withoutQty}
+          failedRows={failedRows} excluded={flow.results.filter(r => r.status === 'failed' || r.status === 'out_of_plan').length} branchName={branches.find(b => b.id === branchId)?.name ?? ''} withoutQty={withoutQty}
           onStop={flow.stop} onResume={() => void flow.resume()} onFinish={flow.finish} onDownload={download} onAnother={another} />
       )}
       <ConfirmDialog open={leaving} title="تغادر الصفحة؟" confirmLabel="مغادرة" cancelLabel="البقاء" tone="danger"
-        onClose={() => setLeaving(false)} onConfirm={() => router.push('/products')}>
+        onClose={() => setLeaving(false)} onConfirm={() => router.push(leaveTo)}>
         {step === 3 ? 'الاستيراد لم ينتهِ؛ ما استُورد حتى الآن باقٍ ويمكنك إكمال الباقي لاحقًا.' : 'لم يُستورد شيء بعد.'}
       </ConfirmDialog>
     </div>
