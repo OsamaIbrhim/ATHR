@@ -11,6 +11,7 @@
 //   X1-X6   discounts: line + invoice, tax after discount, snapshot, limit warning, merge, fingerprint
 //   C1-C8   credit: balance + ledger, limit warning, collections, shift cash, append-only, debtors, statement
 //   R1-R4   returns: refund of what was paid, refund method + credit, shift cash, window
+//   Y1-Y4   exchange: return + sale in one transaction, replay, atomic refusal, on the account
 //   N1-N3   a POS sale is never refused: reused terminal sequence, mismatching total, no number
 'use strict';
 
@@ -416,10 +417,73 @@ async function verifyReturns() {
   check('R4 a window of 0 switches returns off', off?.response?.code === 'RETURNS_NOT_ACCEPTED', off?.message);
 }
 
+// --- Y ------------------------------------------------------------------------
+
+async function verifyExchange() {
+  const world = await createSalesWorld(prisma, 'y');
+  const oldGoods = await world.createVariant();
+  const newGoods = await world.createVariant();
+  await prisma.$transaction((tx) => world.inventory.apply(tx, {
+    tenantId: world.tenant.id, warehouseId: world.warehouse.id, occurredAt: new Date(), actorId: world.cashier.id, type: 'opening_balance', costType: 'opening_balance',
+    reference: { type: 'Verify', id: randomUUID() }, idempotencyKey: `verify:${randomUUID()}`, allowNegative: false,
+    lines: [oldGoods, newGoods].map((variant) => ({ variantId: variant.id, qtyDelta: 50, unitCost: 60 })),
+  }));
+  const ExchangeService = load('sales', 'exchange.service.js', 'ExchangeService');
+  const ReturnsService = load('sales', 'returns.service.js', 'ReturnsService');
+  const returns = new ReturnsService(prisma, { canViewSaleCostMargin: async () => false }, world.inventory);
+  const exchanges = new ExchangeService(prisma, world.sales, returns);
+  const actor = { sub: world.cashier.id, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
+  const stockOf = async (variant) => Number((await prisma.inventoryStock.findFirstOrThrow({ where: { tenant_id: world.tenant.id, variant_id: variant.id } })).qty_on_hand);
+
+  const original = await world.sell(world.saleDto([oldGoods], { local_total: 114 }));
+  const originalItem = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: original.id } });
+  const command = (extra = {}) => ({
+    original_invoice_id: original.id,
+    items: [{ sales_invoice_item_id: originalItem.id, qty: 1 }],
+    refund_method: 'cash',
+    sale: world.saleDto([newGoods, newGoods].slice(0, 1), { local_total: 114 }),
+    ...extra,
+  });
+
+  const dto = command();
+  const done = await exchanges.exchange(world.context, dto, actor, world.terminalRow);
+  const link = await prisma.return.findUniqueOrThrow({ where: { id: done.return.id } });
+  check('Y1 an exchange books the new sale and the return together, linked by new_invoice_id',
+    link.new_invoice_id === done.sale.id && link.original_invoice_id === original.id && done.return.refund_total.equals(114) && done.sale.total.equals(114), `${link.new_invoice_id} ${done.sale.id}`);
+  check('Y1 stock moved both ways: the returned item is back, the new one is out', (await stockOf(oldGoods)) === 50 - 1 + 1 && (await stockOf(newGoods)) === 49, `${await stockOf(oldGoods)} ${await stockOf(newGoods)}`);
+  check('Y1 the response keeps unit_cost off the sale', !('unit_cost' in done.sale.items[0]));
+
+  const replay = await exchanges.exchange(world.context, dto, actor, world.terminalRow);
+  check('Y2 replaying the exchange returns the same sale and the same return (nothing is booked twice)',
+    replay.sale.id === done.sale.id && replay.return.id === done.return.id && (await prisma.return.count({ where: { tenant_id: world.tenant.id } })) === 1 && (await stockOf(newGoods)) === 49);
+
+  // Atomic: a return that cannot be booked takes the new sale down with it.
+  const invoicesBefore = await prisma.salesInvoice.count({ where: { tenant_id: world.tenant.id } });
+  const overReturn = command({ items: [{ sales_invoice_item_id: originalItem.id, qty: 5 }], sale: world.saleDto([newGoods], { local_total: 114 }) });
+  const refused = await rejection(exchanges.exchange(world.context, overReturn, actor, world.terminalRow));
+  check('Y3 a refused return books no new sale and moves no stock',
+    refused?.status === 409 && (await prisma.salesInvoice.count({ where: { tenant_id: world.tenant.id } })) === invoicesBefore && (await prisma.salesInvoice.count({ where: { sync_id: overReturn.sale.sync_id } })) === 0 && (await stockOf(newGoods)) === 49,
+    refused?.message);
+
+  // Exchange against the customer account: refund to credit, new sale on credit.
+  const phone = '01077777003';
+  const credit = await world.sell(world.saleDto([oldGoods], { customer_phone: phone, local_total: 114, payments: [{ method: 'credit', amount: 114 }] }));
+  const creditItem = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: credit.id } });
+  const customer = await prisma.customer.findFirstOrThrow({ where: { tenant_id: world.tenant.id, phone } });
+  const viaCredit = await exchanges.exchange(world.context, {
+    original_invoice_id: credit.id, items: [{ sales_invoice_item_id: creditItem.id, qty: 1 }], refund_method: 'credit',
+    sale: world.saleDto([newGoods], { customer_phone: phone, local_total: 114, payments: [{ method: 'credit', amount: 114 }] }),
+  }, actor, world.terminalRow);
+  const account = await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } });
+  const types = (await prisma.customerLedgerEntry.findMany({ where: { customer_id: customer.id }, orderBy: { occurred_at: 'asc' } })).map((entry) => entry.type);
+  check('Y4 an exchange on the account nets out: the balance is the new sale (114) after refund and credit sale',
+    account.balance.equals(114) && [...types].sort().join() === 'refund_credit,sale_credit,sale_credit' && viaCredit.return.refund_method === 'credit', `${account.balance} ${types}`);
+}
+
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments, verifyDiscounts, verifyCredit, verifyReturns];
+  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments, verifyDiscounts, verifyCredit, verifyReturns, verifyExchange];
   for (const section of sections) {
     try {
       await section();

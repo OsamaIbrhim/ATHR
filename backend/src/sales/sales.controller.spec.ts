@@ -42,6 +42,7 @@ describe('SalesController POS terminal enforcement', () => {
         sales,
         returns,
         returnsRead,
+        {} as any,
         reads,
         {} as any,
         terminals,
