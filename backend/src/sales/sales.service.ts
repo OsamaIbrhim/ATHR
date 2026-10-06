@@ -6,9 +6,7 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
-  UnprocessableEntityException,
 } from '@nestjs/common';
-import { nextDocumentNumber } from '../common/document-sequence';
 import { PrismaService } from '../prisma/prisma.service';
 import { deviceTenantContext } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -18,50 +16,26 @@ import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { CreateSaleDto, CreateSaleItemDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
-import { createHash, randomUUID } from 'crypto';
-import { assertBranchAccess, canAccessAllBranches, hasBranchAccess, toScopeSet } from '../auth/branch-access';
-import { CreateReturnDto } from './dto/create-return.dto';
-import { ListReturnsDto } from './dto/list-returns.dto';
+import { randomUUID } from 'crypto';
+import { assertBranchAccess, hasBranchAccess, toScopeSet } from '../auth/branch-access';
 import {
   getErrorMessage,
   getPrismaErrorCode,
   getSaleTransactionOptions,
   isExpiredSaleTransactionError,
 } from './sale-transaction';
-import {
-  decimal,
-  lineMoney,
-  money,
-  moneyString,
-  sameMoney,
-  sumMoney,
-  unitCost,
-} from '../common/money';
-import {
-  assertQuantityPrecision,
-  quantity,
-  quantityNumber,
-  variantQuantityPrecision,
-} from '../common/quantity';
+import { money, sameMoney, unitCost } from '../common/money';
+import { assertQuantityPrecision, quantity, variantQuantityPrecision } from '../common/quantity';
 import { InventoryService } from '../inventory/inventory.service';
-import type { StockLots } from '../inventory/inventory.types';
-import { addLots, lotsFingerprint, lotsOfItem, stockLots, type SaleLots } from './sale-lots';
-import { loadReturnLots } from './sale-return-lots';
-import { paymentsFingerprint, planPayments } from './sale-payments';
-import { discountFingerprint, discountLimitPercent, type SaleDiscount } from './sale-discounts';
+import { stockLots } from './sale-lots';
+import { planPayments } from './sale-payments';
+import { discountLimitPercent } from './sale-discounts';
 import { isDiscountAboveLimit } from '@athr/domain-core';
 import { priceSaleCommand } from './sale-command-pricing';
 import { effectivePermissions } from '../identity/permission-catalog';
 import { readTenantSettings } from '../catalog/tenant-settings';
+import { normalizeLines, saleCommandFingerprint, type NormalizedLines } from './sale-command';
 import { derivedInvoiceNumber, invoiceNumberCandidates, pickInvoiceNumber } from './invoice-number';
-
-/** A sale line after merging duplicate variants; the quantity is exact (Decimal(14,3)). */
-type SaleLine = Omit<CreateSaleItemDto, 'qty' | 'serials' | 'batch_no' | 'discount'> & {
-  qty: Prisma.Decimal;
-  lots: SaleLots;
-  /** The discounts of the duplicate lines merged into this one (each priced on its own line). */
-  discounts: SaleDiscount[];
-};
 
 @Injectable()
 export class SalesService {
@@ -120,82 +94,12 @@ export class SalesService {
     };
   }
 
-  private saleCommandFingerprint(
-    dto: CreateSaleDto,
-    terminalId: string,
-    occurredAt: Date,
-    normalized: ReturnType<SalesService['normalizeLines']>,
-  ) {
-    const canonicalMoney = (value: number) => moneyString(value);
-    const payload = {
-      v: dto.event_version,
-      branch_id: dto.branch_id,
-      terminal_id: terminalId,
-      shift_id: dto.shift_id,
-      origin_cashier_id: dto.origin_cashier_id,
-      cashier_name_snapshot: dto.cashier_name_snapshot.trim(),
-      seller_id: dto.seller_id,
-      seller_name_snapshot: dto.seller_name_snapshot.trim(),
-      offline_session_id: dto.offline_session_id,
-      terminal_sequence: dto.terminal_sequence,
-      invoice_number: dto.invoice_number ?? null,
-      occurred_at: occurredAt.toISOString(),
-      customer_phone: dto.customer_phone || null,
-      payments: paymentsFingerprint(dto.payments),
-      ...(dto.discount ? { invoice_discount: discountFingerprint(dto.discount) } : {}),
-      language: dto.language || 'ar',
-      local_total: canonicalMoney(dto.local_total),
-      items: normalized.lines
-        .map((item) => ({
-          variant_id: item.variant_id,
-          qty: quantityNumber(item.qty),
-          unit_price: canonicalMoney(item.unit_price),
-          unit_tax: canonicalMoney(item.unit_tax),
-          sku_snapshot: item.sku_snapshot.trim(),
-          name_ar_snapshot: item.name_ar_snapshot.trim(),
-          name_en_snapshot: item.name_en_snapshot?.trim() || null,
-          variant_label_snapshot: item.variant_label_snapshot?.trim() || null,
-          // Only when named: a POS without tracking keeps its exact fingerprint.
-          ...lotsFingerprint(item.lots),
-          ...(item.discounts.length
-            ? { discounts: item.discounts.map((discount) => discountFingerprint(discount)).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) }
-            : {}),
-        }))
-        .sort((left, right) => left.variant_id.localeCompare(right.variant_id)),
-    };
-    return createHash('sha256')
-      .update(JSON.stringify(payload))
-      .digest('hex');
+  private saleCommandFingerprint(dto: CreateSaleDto, terminalId: string, occurredAt: Date, normalized: NormalizedLines) {
+    return saleCommandFingerprint(dto, terminalId, occurredAt, normalized);
   }
 
   private normalizeLines(items: CreateSaleItemDto[]) {
-    const lines = new Map<string, SaleLine>();
-    for (const { serials, batch_no, discount, ...item } of items) {
-      const existing = lines.get(item.variant_id);
-      const lots = lotsOfItem({ serials, batch_no }, quantity(item.qty));
-      const discounts = discount ? [discount] : [];
-      if (!existing) lines.set(item.variant_id, { ...item, qty: quantity(item.qty), lots, discounts });
-      else {
-        existing.discounts.push(...discounts);
-        if (
-          !sameMoney(existing.unit_price, item.unit_price) ||
-          !sameMoney(existing.unit_tax, item.unit_tax) ||
-          existing.sku_snapshot.trim() !== item.sku_snapshot.trim() ||
-          existing.name_ar_snapshot.trim() !== item.name_ar_snapshot.trim() ||
-          (existing.name_en_snapshot?.trim() || '') !== (item.name_en_snapshot?.trim() || '') ||
-          (existing.variant_label_snapshot?.trim() || '') !== (item.variant_label_snapshot?.trim() || '')
-        ) {
-          throw new UnprocessableEntityException({
-            code: 'CONFLICTING_ITEM_SNAPSHOTS',
-            message_ar: 'الصنف نفسه يحمل بيانات تاريخية مختلفة داخل الفاتورة.',
-            message: 'The same variant has conflicting historical snapshots',
-          });
-        }
-        existing.qty = existing.qty.plus(quantity(item.qty));
-        addLots(existing.lots, lots);
-      }
-    }
-    return { lines: [...lines.values()] };
+    return normalizeLines(items);
   }
 
   private async runSaleTransaction<T>(
