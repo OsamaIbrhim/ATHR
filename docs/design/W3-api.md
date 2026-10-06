@@ -64,4 +64,9 @@ Per-tenant `DocumentSequence` (no gaps; a rolled-back document gives its number 
 ## Known limits
 - **`TaxRoundingPolicy = 'document'` is not honoured.** Tax is rounded per line for every sale, whatever the tax code says: a document-level rounding would make a line's stored tax depend on the other lines, which breaks returns of single lines. The value is kept in the tax snapshot as written; no W3 behaviour depends on it. Revisit only if a customer needs invoice-level rounding.
 - `GET /sales` still filters with the query param `payment_method` (it now matches any payment of the invoice) and returns `payments[]` instead of the column.
-- The admin screens and the POS still use `payment_method` until W3-admin / W3-POS.
+- The admin screens still use `payment_method` until W3-admin. The POS (W3-POS) sends `payments[]`, `invoice_number`, discounts and uses `/pos/exchange` and `refund_method`.
+
+## POS notes (W3-POS)
+- Local schema v2 (migration, outbox kept): `products.tax_rate/tax_mode`, `sales_local.payments_json/discount_minor_units`. Unsent v1 outbox sales are rewritten to `payments[]` (instapay->bank_transfer, vodafone_cash->wallet, installment->other) with their printed number, so none is lost. Catalog format bumped (`offline-sales-v4`): one full refresh fills tax rate/mode.
+- Till-side checks before a sale is stored (the cashier is still present): total = shared `priceSale`, payments = total, methods enabled, credit needs a customer, discount <= limit (cashier: `sales.max_discount_percent`; branch_manager: override). The server still never refuses.
+- Exchange: the main process numbers the sale (sequence persisted, retry replays the same command); the register sends return + sale to `/pos/exchange` online.
