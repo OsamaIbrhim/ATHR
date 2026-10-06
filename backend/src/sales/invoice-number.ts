@@ -5,6 +5,17 @@ export const INVOICE_NUMBER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const MAX_SUFFIX = 9;
 
+/** The printed number when it is usable, otherwise undefined (see CreateSaleDto). */
+export function cleanInvoiceNumber(value: unknown): string | undefined {
+  const printed = typeof value === 'string' ? value.trim() : '';
+  return INVOICE_NUMBER_PATTERN.test(printed) ? printed : undefined;
+}
+
+/** What the server prints when the till sent no usable number: `{terminal_code}-{sequence, 6 digits}`. */
+export function derivedInvoiceNumber(terminalCode: string, sequence: bigint): string {
+  return `${terminalCode}-${String(sequence).padStart(6, '0')}`;
+}
+
 /**
  * The numbers a sale may be stored under, in order of preference: the number
  * the till printed, then the same number with `-2` .. `-9`.

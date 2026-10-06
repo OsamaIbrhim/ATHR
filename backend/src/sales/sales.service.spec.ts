@@ -82,7 +82,7 @@ function saleDto(overrides: Record<string, unknown> = {}) {
         variant_label_snapshot: 'M · Blue',
       },
     ],
-    payment_method: 'cash',
+    payments: [{ method: 'cash', amount: 342 }],
     language: 'ar',
     local_total: 342,
     ...overrides,
@@ -137,6 +137,7 @@ function setupSale(options: {
         {
           branch_id: branchId,
           branch_code: 'BOLD-01',
+          terminal_code: 'POS1',
           previous_sequence: options.lastSequence ?? 0n,
         },
       ]),
@@ -185,6 +186,7 @@ function setupSale(options: {
       ),
       create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'sale-1', ...data })),
     },
+    salesPayment: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
     salesInvoiceItem: {
       createManyAndReturn: jest.fn().mockImplementation(({ data }) =>
         Promise.resolve(data.map((item: any) => ({ ...item }))),
@@ -527,7 +529,7 @@ describe('SalesService acceptance-first sale synchronization', () => {
     ]);
 
     await expect(
-      service.createSale(saleDto({ payment_method: 'card' }), terminal),
+      service.createSale(saleDto({ payments: [{ method: 'card', amount: 342 }] }), terminal),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
@@ -563,6 +565,16 @@ describe('SalesService acceptance-first sale synchronization', () => {
     });
   });
 
+  it('reconciles a closed shift by the cash tendered only, not by the whole total', async () => {
+    const { service, tx } = setupSale({ closedShift: true });
+    await service.createSale(saleDto({ payments: [{ method: 'cash', amount: 100 }, { method: 'card', amount: 242 }] }), terminal);
+    expect(tx.shift.update.mock.calls[0][0].data.expected_cash.increment.toString()).toBe('100');
+
+    const cardOnly = setupSale({ closedShift: true });
+    await cardOnly.service.createSale(saleDto({ payments: [{ method: 'card', amount: 342 }] }), terminal);
+    expect(cardOnly.tx.shift.update).not.toHaveBeenCalled();
+  });
+
   it('accepts a total that does not match its lines: the till total is stored, with a warning', async () => {
     const { service, tx } = setupSale();
     const result = await service.createSale(saleDto({ local_total: 999 }), terminal);
@@ -571,11 +583,40 @@ describe('SalesService acceptance-first sale synchronization', () => {
     expect(tx.salesInvoice.create.mock.calls[0][0].data.subtotal.toString()).toBe('300');
   });
 
+  it('stores one row per tender, in order, with the cash handed over', async () => {
+    const { service, tx } = setupSale();
+    const result = await service.createSale(
+      saleDto({ payments: [{ method: 'cash', amount: 300, tendered: 500 }, { method: 'card', amount: 42, reference: 'R1' }] }),
+      terminal,
+    );
+    const rows = tx.salesPayment.createMany.mock.calls[0][0].data;
+    expect(rows.map((row: any) => [row.sequence, row.method, row.amount.toString(), row.tendered?.toString() ?? null])).toEqual([
+      [1, 'cash', '300', '500'],
+      [2, 'card', '42', null],
+    ]);
+    expect(rows.every((row: any) => row.sales_invoice_id === result.id && row.tenant_id === tenantId)).toBe(true);
+    expect(result.warning_codes).not.toContain('PAYMENT_TOTAL_MISMATCH');
+  });
+
+  it('accepts payments that do not add up, and a method the tenant disabled, with warnings', async () => {
+    const { service, tx } = setupSale();
+    const result = await service.createSale(saleDto({ payments: [{ method: 'bank_transfer', amount: 100 }] }), terminal);
+    expect(result.warning_codes).toEqual(expect.arrayContaining(['PAYMENT_TOTAL_MISMATCH', 'PAYMENT_METHOD_DISABLED']));
+    expect(tx.salesPayment.createMany).toHaveBeenCalled();
+  });
+
   it('stores the printed invoice number verbatim', async () => {
     const { service } = setupSale();
     const result = await service.createSale(saleDto(), terminal);
     expect(result.invoice_number).toBe('POS1-000001');
     expect(result.warning_codes).not.toContain('INVOICE_NUMBER_REASSIGNED');
+  });
+
+  it('prints {terminal_code}-{sequence} when the till sent no usable number', async () => {
+    const { service } = setupSale();
+    const result = await service.createSale(saleDto({ invoice_number: undefined, terminal_sequence: '7' }), terminal);
+    expect(result.invoice_number).toBe('POS1-000007');
+    expect(result.warning_codes).toContain('INVOICE_NUMBER_REASSIGNED');
   });
 
   it('stores a sale whose number is already taken under a suffix and warns, never refuses', async () => {

@@ -461,7 +461,7 @@ async function verifyCostAccounting() {
   const sold = await prisma.salesInvoice.create({
     data: {
       tenant_id: world.tenant.id, invoice_number: `E8-${randomUUID()}`, branch_id: world.branch.id, status: 'completed',
-      subtotal: 120, tax_amount: 0, total: 120, payment_method: 'cash', language: 'ar',
+      subtotal: 120, tax_amount: 0, total: 120, language: 'ar',
       items: { create: [{ variant_id: second.id, qty: 1, unit_price: 120, unit_cost: 80, unit_tax: 0 }] },
     },
     include: { items: true },
@@ -536,8 +536,8 @@ async function verifySale() {
     return {
       event_version: 2, sync_id: randomUUID(), branch_id: world.branch.id, shift_id: shift.id, origin_cashier_id: cashier.id,
       cashier_name_snapshot: 'Cashier', seller_id: seller.id, seller_name_snapshot: 'Seller', offline_session_id: randomUUID(),
-      terminal_sequence: String(sequence), occurred_at: new Date().toISOString(), items, payment_method: 'cash', language: 'ar',
-      local_total: Number(total.toFixed(2)),
+      terminal_sequence: String(sequence), occurred_at: new Date().toISOString(), items, language: 'ar',
+      payments: [{ method: 'cash', amount: Number(total.toFixed(2)) }], local_total: Number(total.toFixed(2)),
     };
   };
   const sell = (variants, qtyOf) => sales.createSale(saleDto(variants, qtyOf), { id: terminal.id, branch_id: world.branch.id, tenant_id: world.tenant.id });
@@ -549,7 +549,7 @@ async function verifySale() {
   if (process.env.INVENTORY_ENGINE_PRINT_SQL) lastStatements.forEach((sql, index) => process.stdout.write(`SQL ${index + 1}: ${sql.replace(/\s+/g, ' ').slice(0, 110)}\n`));
   check('E9 a sale issues the same number of statements for 1 line and for 30 lines', statementsOne === statementsMany, `1 line=${statementsOne}, 30 lines=${statementsMany}`);
   // Ceiling, so the hot path cannot quietly regain round trips (docs/design/W1-W2-data-core.md section 8).
-  const SALE_STATEMENT_CEILING = 16;
+  const SALE_STATEMENT_CEILING = 17; // 16 + the payment rows (docs/design/W3-sales.md section 7)
   check(`E9 a sale stays within ${SALE_STATEMENT_CEILING} statements`, statementsMany <= SALE_STATEMENT_CEILING, `1 line=${statementsOne}, 30 lines=${statementsMany}`);
   const [withCustomer, statementsCustomer] = await counted(() => sales.createSale({ ...saleDto(stockedVariants.slice(6, 7)), customer_phone: '01099999999' }, { id: terminal.id, branch_id: world.branch.id, tenant_id: world.tenant.id }));
   check(`E9 a sale with a customer costs one extra statement (${statementsCustomer})`, statementsCustomer <= SALE_STATEMENT_CEILING + 1 && !!withCustomer.customer_id);
@@ -950,7 +950,8 @@ async function verifyTrackedDocuments() {
     return {
       event_version: 2, sync_id: randomUUID(), branch_id: world.branch.id, shift_id: shift.id, origin_cashier_id: cashier.id,
       cashier_name_snapshot: 'Cashier', seller_id: seller.id, seller_name_snapshot: 'Seller', offline_session_id: randomUUID(),
-      terminal_sequence: String(sequence), occurred_at: new Date().toISOString(), payment_method: 'cash', language: 'ar',
+      terminal_sequence: String(sequence), occurred_at: new Date().toISOString(), language: 'ar',
+      payments: [{ method: 'cash', amount: Number(D(qty).mul(114).toFixed(2)) }],
       items: [{ variant_id: variant.id, qty, unit_price: 100, unit_tax: 14, sku_snapshot: variant.sku, name_ar_snapshot: 'صنف', name_en_snapshot: 'Item', ...lots }],
       local_total: Number(D(qty).mul(114).toFixed(2)),
     };

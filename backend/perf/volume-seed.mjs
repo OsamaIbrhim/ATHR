@@ -142,7 +142,7 @@ for (let offset = 0; offset < invoiceCount; offset += batchSize) {
     return {
       id: stableUuid('invoice', index), tenant_id: branch.tenant_id, invoice_number: `PERF-INV-${String(index).padStart(10, '0')}`,
       branch_id: branch.id, subtotal: 100, tax_amount: 14, total: 114,
-      payment_method: index % 2 ? 'cash' : 'card', status: 'completed', language: 'ar',
+      status: 'completed', language: 'ar',
       created_at: new Date(Date.now() - (index % 365) * 86_400_000),
     }
   })
@@ -162,6 +162,14 @@ for (let offset = 0; offset < invoiceCount; offset += batchSize) {
   await prisma.$transaction([
     prisma.salesInvoice.createMany({ data: invoices, skipDuplicates: true }),
     prisma.salesInvoiceItem.createMany({ data: items, skipDuplicates: true }),
+    prisma.salesPayment.createMany({
+      data: invoices.map((invoice, position) => ({
+        id: stableUuid('invoice-payment', Number(invoice.invoice_number.slice('PERF-INV-'.length))),
+        tenant_id: invoice.tenant_id, sales_invoice_id: invoice.id, sequence: 1,
+        method: position % 2 ? 'cash' : 'card', amount: invoice.total,
+      })),
+      skipDuplicates: true,
+    }),
   ])
   process.stdout.write(`\rinvoices ${Math.min(offset + size, invoiceCount)}/${invoiceCount}`)
 }

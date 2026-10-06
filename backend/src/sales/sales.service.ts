@@ -47,7 +47,9 @@ import { InventoryService } from '../inventory/inventory.service';
 import type { StockLots } from '../inventory/inventory.types';
 import { addLots, lotsFingerprint, lotsOfItem, stockLots, type SaleLots } from './sale-lots';
 import { loadReturnLots } from './sale-return-lots';
-import { invoiceNumberCandidates, pickInvoiceNumber } from './invoice-number';
+import { paymentsFingerprint, planPayments } from './sale-payments';
+import { readTenantSettings } from '../catalog/tenant-settings';
+import { derivedInvoiceNumber, invoiceNumberCandidates, pickInvoiceNumber } from './invoice-number';
 
 /** A sale line after merging duplicate variants; the quantity is exact (Decimal(14,3)). */
 type SaleLine = Omit<CreateSaleItemDto, 'qty' | 'serials' | 'batch_no'> & { qty: Prisma.Decimal; lots: SaleLots };
@@ -69,6 +71,7 @@ export class SalesService {
       where: { id, tenant_id: context.tenantId },
       include: {
         items: { include: { variant: { include: { product: true } }, return_items: { where: { return_record: { status: 'completed' } } } } },
+        payments: { orderBy: { sequence: 'asc' } },
         branch: true, customer: true,
         cashier: { select: { id: true, name: true } },
         seller: { select: { id: true, name: true } },
@@ -126,10 +129,10 @@ export class SalesService {
       seller_name_snapshot: dto.seller_name_snapshot.trim(),
       offline_session_id: dto.offline_session_id,
       terminal_sequence: dto.terminal_sequence,
-      invoice_number: dto.invoice_number,
+      invoice_number: dto.invoice_number ?? null,
       occurred_at: occurredAt.toISOString(),
       customer_phone: dto.customer_phone || null,
-      payment_method: dto.payment_method,
+      payments: paymentsFingerprint(dto.payments),
       language: dto.language || 'ar',
       local_total: canonicalMoney(dto.local_total),
       items: normalized.lines
@@ -276,6 +279,8 @@ export class SalesService {
       const [claimed] = await tx.$queryRaw<Array<{
         branch_id: string;
         branch_code: string | null;
+        terminal_code: string;
+        settings: Prisma.JsonValue;
         previous_sequence: bigint;
       }>>`
         WITH locked AS (
@@ -287,7 +292,8 @@ export class SalesService {
         SET "last_sale_sequence" = GREATEST(t."last_sale_sequence", ${terminalSequence}), "updated_at" = now()
         FROM locked
         WHERE t."id" = locked."id"
-        RETURNING t."branch_id",
+        RETURNING t."branch_id", t."terminal_code",
+          (SELECT te."settings" FROM "Tenant" te WHERE te."id" = t."tenant_id") AS "settings",
           (SELECT b."code" FROM "Branch" b WHERE b."id" = t."branch_id" AND b."tenant_id" = t."tenant_id") AS "branch_code",
           locked."last_sale_sequence" AS "previous_sequence"
       `;
@@ -295,14 +301,15 @@ export class SalesService {
         throw new ForbiddenException('The terminal is not assigned to the sale branch');
       }
 
+      const printedNumber = dto.invoice_number ?? derivedInvoiceNumber(claimed.terminal_code, terminalSequence);
       // The replay (same sync_id) and the invoices already holding the printed
       // number or one of its suffixed variants are found by one query.
       const matches = await tx.salesInvoice.findMany({
         where: {
           tenant_id: context.tenantId,
-          OR: [{ sync_id: dto.sync_id }, { invoice_number: { in: invoiceNumberCandidates(dto.invoice_number) } }],
+          OR: [{ sync_id: dto.sync_id }, { invoice_number: { in: invoiceNumberCandidates(printedNumber) } }],
         },
-        include: { items: true },
+        include: { items: true, payments: { orderBy: { sequence: 'asc' } } },
       });
       const existing = matches.find((invoice) => invoice.sync_id === dto.sync_id);
       if (existing) {
@@ -360,10 +367,7 @@ export class SalesService {
       }
       // The printed number is stored verbatim; a till that restarted its numbering
       // gets a suffix and a warning, never a refusal.
-      const invoiceNumber = pickInvoiceNumber(
-        dto.invoice_number,
-        new Set(matches.map((invoice) => invoice.invoice_number)),
-      );
+      const invoiceNumber = pickInvoiceNumber(printedNumber, new Set(matches.map((invoice) => invoice.invoice_number)));
       if (invoiceNumber !== dto.invoice_number) warningCodes.add('INVOICE_NUMBER_REASSIGNED');
 
       if (terminalSequence > claimed.previous_sequence + 1n) {
@@ -440,6 +444,8 @@ export class SalesService {
       // lines is accepted and flagged: a finished sale is never refused (spec §0).
       const total = money(dto.local_total);
       if (!sameMoney(total, subtotal.plus(taxAmount))) warningCodes.add('LOCAL_TOTAL_MISMATCH');
+      const paymentPlan = planPayments(dto.payments, total, readTenantSettings(claimed.settings).sales.payment_methods);
+      paymentPlan.warnings.forEach((code) => warningCodes.add(code));
 
       // Acceptance-first: the sale is recorded even when it drives stock below
       // zero (NEGATIVE_STOCK). Only `stocked` variants move stock; the writer
@@ -522,10 +528,12 @@ export class SalesService {
           subtotal,
           tax_amount: taxAmount,
           total,
-          payment_method: dto.payment_method,
           language: dto.language || 'ar',
           sync_id: dto.sync_id,
         },
+      });
+      await tx.salesPayment.createMany({
+        data: paymentPlan.rows.map((row) => ({ ...row, tenant_id: context.tenantId, sales_invoice_id: invoice.id })),
       });
       const items = await tx.salesInvoiceItem.createManyAndReturn({
         data: saleItems.map((item) => ({
@@ -618,7 +626,7 @@ export class SalesService {
       // financially correct instead of silently omitting the late command.
       if (
         linkedShift?.status === 'closed' &&
-        dto.payment_method === 'cash' &&
+        paymentPlan.cash.greaterThan(0) &&
         linkedShift.expected_cash !== null &&
         linkedShift.difference !== null
       ) {
@@ -627,8 +635,8 @@ export class SalesService {
         await tx.shift.update({
           where: { id: linkedShift.id },
           data: {
-            expected_cash: { increment: total },
-            difference: { decrement: total },
+            expected_cash: { increment: paymentPlan.cash },
+            difference: { decrement: paymentPlan.cash },
           },
         });
         await tx.auditLog.create({
@@ -642,14 +650,14 @@ export class SalesService {
               invoice_id: invoice.id,
               sync_id: dto.sync_id,
               terminal_sequence: dto.terminal_sequence,
-              expected_cash_increment: total,
-              difference_decrement: total,
+              expected_cash_increment: paymentPlan.cash,
+              difference_decrement: paymentPlan.cash,
             },
           },
         });
       }
 
-      return { ...invoice, items };
+      return { ...invoice, items, payments: paymentPlan.rows };
     });
     // Unconditional, unlike `getInvoice`: this response goes to a POS terminal
     // authenticated by device token, so there is no membership to resolve a
@@ -1005,6 +1013,7 @@ export class SalesService {
           refund_subtotal: true,
           refund_tax: true,
           refund_total: true,
+          refund_method: true,
           status: true,
           created_at: true,
           _count: { select: { items: true } },
@@ -1013,7 +1022,7 @@ export class SalesService {
               id: true,
               invoice_number: true,
               total: true,
-              payment_method: true,
+              payments: { select: { method: true, amount: true }, orderBy: { sequence: 'asc' } },
               customer: {
                 select: { id: true, name: true, phone: true },
               },

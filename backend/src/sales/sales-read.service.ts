@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common'
-import { Prisma } from '@prisma/client'
+import { Prisma, type PaymentMethod } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import type { TenantContext, TenantScope } from '../identity/tenant-context.type'
 import { ListSalesDto } from './dto/list-sales.dto'
@@ -13,7 +13,7 @@ export class SalesReadService {
     const where: Prisma.SalesInvoiceWhereInput = {
       tenant_id: context.tenantId,
       ...(branchId ? { branch_id: branchId } : {}),
-      ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
+      ...(dto.payment_method ? { payments: { some: { method: dto.payment_method as PaymentMethod } } } : {}),
       ...(dto.status ? { status: dto.status } : {}),
       ...(dto.has_warnings === 'true'
         ? { warning_codes: { isEmpty: false } }
@@ -53,7 +53,7 @@ export class SalesReadService {
           discount_amount: true,
           tax_amount: true,
           total: true,
-          payment_method: true,
+          payments: { select: { method: true, amount: true, tendered: true, reference: true }, orderBy: { sequence: 'asc' } },
           language: true,
           sync_id: true,
           event_version: true,

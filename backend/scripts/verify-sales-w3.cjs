@@ -7,7 +7,8 @@
 //   D1-D5   per-tenant document numbers: two tenants, concurrency, rollback,
 //           adjustments / counts, terminal codes
 //   D6      transfers numbered TR-000001 per tenant, no global sequence
-//   N1-N3   a POS sale is never refused: reused terminal sequence, mismatching total
+//   P1-P4   payments: split rows, warnings, 17 statements, shift cash from payments
+//   N1-N3   a POS sale is never refused: reused terminal sequence, mismatching total, no number
 'use strict';
 
 const path = require('node:path');
@@ -158,14 +159,68 @@ async function verifyNeverRefused() {
     `${mismatch.total} ${show(mismatch.warning_codes)}`);
   const exact = await world.sell(world.saleDto([variant]));
   check('N2 a matching total carries no mismatch warning', !exact.warning_codes.includes('LOCAL_TOTAL_MISMATCH'));
-  check('N3 the terminal sequence is no longer unique per terminal, the sync_id is',
-    (await rejection(prisma.salesInvoice.create({ data: { ...{ id: randomUUID(), tenant_id: world.tenant.id, invoice_number: 'X-1', branch_id: world.branch.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash', sync_id: first.sync_id } } }))) !== null);
+  const bare = world.saleDto([variant]);
+  delete bare.invoice_number;
+  const derived = await world.sell(bare);
+  check('N3 a sale without a printed number gets {terminal_code}-{sequence} and a warning',
+    derived.invoice_number === 'POS1-' + String(bare.terminal_sequence).padStart(6, '0') && derived.warning_codes.includes('INVOICE_NUMBER_REASSIGNED'), derived.invoice_number);
+}
+
+// --- P ------------------------------------------------------------------------
+
+const SALE_STATEMENTS = 17;
+
+async function verifyPayments() {
+  const world = await createSalesWorld(prisma, 'p');
+  const variants = [];
+  for (let i = 0; i < 30; i += 1) variants.push(await world.createVariant());
+  await prisma.$transaction((tx) => world.inventory.apply(tx, {
+    tenantId: world.tenant.id, warehouseId: world.warehouse.id, occurredAt: new Date(), actorId: world.cashier.id, type: 'opening_balance', costType: 'opening_balance',
+    reference: { type: 'Verify', id: randomUUID() }, idempotencyKey: `verify:${randomUUID()}`, allowNegative: false,
+    lines: variants.map((variant) => ({ variantId: variant.id, qtyDelta: 100, unitCost: 60 })),
+  }));
+  await world.sell(world.saleDto(variants.slice(0, 1))); // warm caches
+
+  const split = await world.sell(world.saleDto(variants.slice(1, 2), { payments: [
+    { method: 'cash', amount: 100, tendered: 200 }, { method: 'card', amount: 14, reference: '****4242' },
+  ] }));
+  const stored = await prisma.salesPayment.findMany({ where: { sales_invoice_id: split.id }, orderBy: { sequence: 'asc' } });
+  check('P1 a split payment is stored as one row per tender, in order',
+    stored.length === 2 && stored[0].method === 'cash' && stored[0].amount.equals(100) && stored[0].tendered.equals(200) && stored[1].method === 'card' && stored[1].reference === '****4242',
+    show(stored.map((row) => [row.sequence, row.method, String(row.amount)])));
+  check('P1 the sale response carries its payments and no mismatch warning', split.payments.length === 2 && !split.warning_codes.includes('PAYMENT_TOTAL_MISMATCH'));
+
+  const off = await world.sell(world.saleDto(variants.slice(2, 3), { payments: [{ method: 'bank_transfer', amount: 100 }] }));
+  check('P2 payments that do not add up and a disabled method are accepted with warnings',
+    off.warning_codes.includes('PAYMENT_TOTAL_MISMATCH') && off.warning_codes.includes('PAYMENT_METHOD_DISABLED'), show(off.warning_codes));
+
+  const [one, one_n] = await counted(() => world.sell(world.saleDto(variants.slice(3, 4))));
+  const [many, many_n] = await counted(() => world.sell(world.saleDto(variants)));
+  check(`P3 a sale costs ${SALE_STATEMENTS} statements for 1 line and for 30 lines`, one_n === SALE_STATEMENTS && many_n === SALE_STATEMENTS, `1 line=${one_n}, 30 lines=${many_n}`);
+  const [withCustomer, customer_n] = await counted(() => world.sell(world.saleDto(variants.slice(4, 5), { customer_phone: '01099999999' })));
+  check(`P3 a sale with a customer costs ${SALE_STATEMENTS + 1}`, customer_n === SALE_STATEMENTS + 1 && !!withCustomer.customer_id, `got ${customer_n}`);
+
+  // The shift counts cash payments only: 100 cash from the split sale, plus 114 + 3420 cash from the one/many sales, plus the others.
+  const ShiftsService = load('shifts', 'shifts.service.js', 'ShiftsService');
+  const ShiftsRepository = load('shifts', 'shifts.repository.js', 'ShiftsRepository');
+  const cashRows = await prisma.salesPayment.findMany({ where: { tenant_id: world.tenant.id, method: 'cash' } });
+  const cash = cashRows.reduce((sum, row) => sum.plus(row.amount), D(0));
+  const shifts = new ShiftsService(prisma, new ShiftsRepository(prisma));
+  const actor = { sub: world.cashier.id, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
+  await shifts.close(world.context, world.shift.id, actor, Number(cash));
+  const closed = await prisma.shift.findUniqueOrThrow({ where: { id: world.shift.id } });
+  check('P4 expected cash at shift close = opening + cash payments only (card and transfer excluded)',
+    closed.expected_cash.equals(cash) && closed.difference.equals(0), `expected=${closed.expected_cash} cash=${cash}`);
+
+  const late = await world.sell(world.saleDto(variants.slice(5, 6), { occurred_at: new Date(Date.now() + 1000).toISOString(), payments: [{ method: 'cash', amount: 50 }, { method: 'card', amount: 64 }] }));
+  const reconciled = await prisma.shift.findUniqueOrThrow({ where: { id: world.shift.id } });
+  check('P4 a late sale moves the closed shift by its cash payments only', late.warning_codes.includes('LATE_SYNC') && reconciled.expected_cash.equals(cash.plus(50)), `expected=${reconciled.expected_cash}`);
 }
 
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyDocumentSequences, verifyNeverRefused];
+  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments];
   for (const section of sections) {
     try {
       await section();

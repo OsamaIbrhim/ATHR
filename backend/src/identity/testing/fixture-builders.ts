@@ -363,12 +363,40 @@ export interface SalesInvoiceRow {
   discount_amount: Prisma.Decimal;
   tax_amount: Prisma.Decimal;
   total: Prisma.Decimal;
-  payment_method: string;
   language: string;
   sync_id: string | null;
   occurred_at: Date;
   received_at: Date;
   created_at: Date;
+}
+
+export interface SalesPaymentRow {
+  id: string;
+  tenant_id: string;
+  sales_invoice_id: string;
+  sequence: number;
+  method: string;
+  amount: Prisma.Decimal;
+  tendered: Prisma.Decimal | null;
+  reference: string | null;
+}
+
+export function aSalesPayment(
+  overrides: FixtureOverrides<SalesPaymentRow> = {},
+): BuiltRow<SalesPaymentRow> {
+  return withOverrides<SalesPaymentRow>(
+    {
+      id: randomUUID(),
+      tenant_id: TENANT_A,
+      sales_invoice_id: randomUUID(),
+      sequence: 1,
+      method: 'cash',
+      amount: zero(),
+      tendered: null,
+      reference: null,
+    },
+    overrides,
+  );
 }
 
 export function aSalesInvoice(
@@ -399,7 +427,6 @@ export function aSalesInvoice(
       discount_amount: zero(),
       tax_amount: zero(),
       total: zero(),
-      payment_method: 'cash',
       language: 'ar',
       sync_id: null,
       occurred_at: now,

@@ -106,14 +106,15 @@ async function createSalesWorld(prisma, label, options = {}) {
       variant_id: variant.id, qty: 1, unit_price: 100, unit_tax: 14,
       sku_snapshot: variant.sku, name_ar_snapshot: 'صنف', name_en_snapshot: 'Item',
     }));
-    return {
+    const dto = {
       event_version: 2, sync_id: randomUUID(), branch_id: branch.id, shift_id: shift.id, origin_cashier_id: cashier.id,
       cashier_name_snapshot: 'Cashier', seller_id: seller.id, seller_name_snapshot: 'Seller', offline_session_id: randomUUID(),
       terminal_sequence: String(world.sequence), invoice_number: `POS${options.terminalNumber ?? 1}-${String(world.sequence).padStart(6, '0')}`,
       occurred_at: new Date().toISOString(), items, language: 'ar',
-      payment_method: 'cash', local_total: 114 * items.length,
+      local_total: 114 * items.length,
       ...overrides,
     };
+    return { payments: [{ method: 'cash', amount: dto.local_total }], ...dto };
   };
   world.sell = (dto) => sales.createSale(dto, world.terminalRow);
   return world;

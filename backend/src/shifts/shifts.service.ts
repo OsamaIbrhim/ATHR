@@ -115,7 +115,7 @@ export class ShiftsService {
     ]);
 
     const expectedCash = new Prisma.Decimal(shift.opening_cash)
-      .plus(cashSales._sum.total ?? 0)
+      .plus(cashSales._sum.amount ?? 0)
       .minus(cashReturns._sum.refund_total ?? 0)
       .toDecimalPlaces(2);
     const difference = new Prisma.Decimal(closing_cash)

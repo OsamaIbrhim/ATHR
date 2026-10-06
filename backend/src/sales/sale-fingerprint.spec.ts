@@ -7,7 +7,7 @@ import { CreateSaleDto } from './dto/create-sale.dto';
 // every accepted invoice, so a replay of an old outbox item after an upgrade
 // must hash to the same value. The hex below was computed by the code as it
 // was before tracking existed; it changes only when the command shape does (D9: invoice_number, payments).
-const GOLDEN = 'd990b6242d218ebde245b048b672edc7e8b777d66631590a65a7e5d70a997bfa';
+const GOLDEN = 'bcd1737c268fc3af8de2eff6e4f71a4eff59c2e0cbf22b5406f3dd60e970e8d0';
 
 const dto = {
   event_version: 2,
@@ -34,7 +34,7 @@ const dto = {
       variant_label_snapshot: 'M · Blue',
     },
   ],
-  payment_method: 'cash',
+  payments: [{ method: 'cash', amount: 342 }],
   language: 'ar',
   local_total: 342,
 } as any;

@@ -28,7 +28,7 @@ describe('financial precision contract', () => {
   it('keeps sale and return reconciliation off binary cent comparisons', () => {
     const sales = source('src/sales/sales.service.ts');
 
-    expect(sales).toContain('sameMoney(dto.local_total, total)');
+    expect(sales).toContain('sameMoney(total, subtotal.plus(taxAmount))');
     expect(sales).not.toMatch(/Math\.round\s*\(\s*dto\.local_total\s*\*\s*100/);
     expect(sales).not.toContain('Number(variant.cost_price)');
     expect(sales).not.toContain('Number(soldItem.unit_price)');

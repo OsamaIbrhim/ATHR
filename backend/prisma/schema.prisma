@@ -1394,7 +1394,7 @@ model SalesInvoice {
   discount_amount       Decimal            @default(0) @db.Decimal(14, 2)
   tax_amount            Decimal            @db.Decimal(14, 2)
   total                 Decimal            @db.Decimal(14, 2)
-  payment_method        String
+  payments              SalesPayment[]
   language              String             @default("ar")
   sync_id               String?            @unique @db.Uuid
   occurred_at           DateTime           @default(now())
@@ -1411,7 +1411,7 @@ model SalesInvoice {
   @@index([terminal_id, terminal_sequence])
   @@index([tenant_id, branch_id, occurred_at])
   @@index([tenant_id, occurred_at(sort: Desc), id(sort: Desc)])
-  @@index([branch_id, payment_method, occurred_at])
+
   @@index([branch_id, status, occurred_at])
   @@index([terminal_id, occurred_at])
   @@index([shift_id, occurred_at])
@@ -1420,6 +1420,44 @@ model SalesInvoice {
   @@index([customer_id, occurred_at(sort: Desc), id(sort: Desc)])
   @@index([received_at])
   @@index([invoice_number(ops: raw("gin_trgm_ops"))], type: Gin, map: "SalesInvoice_invoice_number_trgm_idx")
+}
+
+/// How a sale is paid. `credit` puts the amount on the customer's account.
+enum PaymentMethod {
+  cash
+  card
+  wallet
+  bank_transfer
+  credit
+  other
+}
+
+/// How a return is refunded. `credit` reduces what the customer owes.
+enum RefundMethod {
+  cash
+  credit
+  card
+  wallet
+  other
+}
+
+/// One tender of a sale (split payment = several rows). The amounts sum to the
+/// invoice total unless the sale was accepted with PAYMENT_TOTAL_MISMATCH.
+model SalesPayment {
+  id               String        @id @default(uuid()) @db.Uuid
+  tenant_id        String        @db.Uuid
+  sales_invoice_id String        @db.Uuid
+  invoice          SalesInvoice  @relation(fields: [tenant_id, sales_invoice_id], references: [tenant_id, id], onDelete: Cascade)
+  sequence         Int
+  method           PaymentMethod
+  amount           Decimal       @db.Decimal(14, 2)
+  /// Cash handed over, for the receipt only; `amount` is what stayed in the till.
+  tendered         Decimal?      @db.Decimal(14, 2)
+  reference        String?       @db.VarChar(100)
+
+  @@unique([sales_invoice_id, sequence])
+  @@index([tenant_id, sales_invoice_id])
+  @@index([tenant_id, method])
 }
 
 model PosTerminal {
@@ -1528,6 +1566,7 @@ model Return {
   refund_subtotal       Decimal       @default(0) @db.Decimal(14, 2)
   refund_tax            Decimal       @default(0) @db.Decimal(14, 2)
   refund_total          Decimal       @default(0) @db.Decimal(14, 2)
+  refund_method         RefundMethod  @default(cash)
   status                ReturnStatus  @default(completed)
   created_at            DateTime      @default(now())
   items                 ReturnItem[]

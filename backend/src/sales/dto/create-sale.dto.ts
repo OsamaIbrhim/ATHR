@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsDateString,
@@ -15,7 +16,8 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { IsQuantity } from '../../common/quantity';
-import { INVOICE_NUMBER_PATTERN } from '../invoice-number';
+import { cleanInvoiceNumber } from '../invoice-number';
+import { SalePaymentDto } from './sale-payment.dto';
 
 const MAX_SERIALS_PER_LINE = 1000;
 
@@ -132,10 +134,15 @@ export class CreateSaleDto {
   })
   terminal_sequence: string;
 
-  /** The number the till printed on the receipt (`POS1-000123`); stored verbatim unless it collides. */
+  /**
+   * The number the till printed on the receipt (`POS1-000123`); stored verbatim
+   * unless it collides. Cleaned, not validated: a missing or malformed number
+   * never refuses a finished sale, the server derives one from terminal + sequence.
+   */
+  @IsOptional()
+  @Transform(({ value }) => cleanInvoiceNumber(value))
   @IsString()
-  @Matches(INVOICE_NUMBER_PATTERN, { message: 'invoice_number must be 1-64 letters, digits, dot, dash or underscore' })
-  invoice_number: string;
+  invoice_number?: string;
 
   @IsDateString()
   occurred_at: string;
@@ -151,9 +158,13 @@ export class CreateSaleDto {
   @ArrayMinSize(1)
   items: CreateSaleItemDto[];
 
-  @IsString()
-  @IsIn(['cash', 'card', 'instapay', 'vodafone_cash', 'installment'])
-  payment_method: string;
+  /** How the sale was paid; one entry per tender (split payment = several). */
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => SalePaymentDto)
+  payments: SalePaymentDto[];
 
   @IsOptional()
   @IsIn(['ar', 'en'])

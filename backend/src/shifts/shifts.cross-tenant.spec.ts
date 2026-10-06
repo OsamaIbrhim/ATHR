@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { ShiftsRepository } from './shifts.repository';
 import { ShiftsService } from './shifts.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
-import { aBranch, aSalesInvoice } from '../identity/testing/fixture-builders';
+import { aBranch, aSalesInvoice, aSalesPayment } from '../identity/testing/fixture-builders';
 
 /** WP-007 Phase A §A.3.6 — cross-tenant isolation for the `shifts` module. */
 
@@ -12,6 +12,8 @@ const SHIFT_A = randomUUID();
 const SHIFT_B = randomUUID();
 const BRANCH_A = randomUUID();
 const BRANCH_B = randomUUID();
+const INVOICE_A = randomUUID();
+const INVOICE_B = randomUUID();
 
 function setup() {
   const prisma = fakePrisma({
@@ -42,11 +44,15 @@ function setup() {
     salesInvoice: [
       // Same shift_id in both tenants: an unscoped aggregate would fold
       // tenant B's cash into tenant A's expected drawer total.
-      aSalesInvoice({ tenant_id: TENANT_A, shift_id: SHIFT_A, payment_method: 'cash', total: new Prisma.Decimal(50) }),
-      aSalesInvoice({ tenant_id: TENANT_B, shift_id: SHIFT_A, payment_method: 'cash', total: new Prisma.Decimal(9999) }),
+      aSalesInvoice({ id: INVOICE_A, tenant_id: TENANT_A, shift_id: SHIFT_A, total: new Prisma.Decimal(50) }),
+      aSalesInvoice({ id: INVOICE_B, tenant_id: TENANT_B, shift_id: SHIFT_A, total: new Prisma.Decimal(9999) }),
+    ],
+    salesPayment: [
+      aSalesPayment({ tenant_id: TENANT_A, sales_invoice_id: INVOICE_A, method: 'cash', amount: new Prisma.Decimal(50) }),
+      aSalesPayment({ tenant_id: TENANT_B, sales_invoice_id: INVOICE_B, method: 'cash', amount: new Prisma.Decimal(9999) }),
     ],
     return: [],
-  });
+  }, { salesPayment: { invoice: { table: 'salesInvoice', localKey: 'sales_invoice_id' } } });
   // WP-T2/F4 audit: this file's only raw-SQL-reaching test ("stamps a new
   // shift with the calling tenant") exercises open()'s advisory lock
   // (shifts.service.ts:31). That call site is now centrally allowlisted in
