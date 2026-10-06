@@ -68,6 +68,7 @@ function saleDto(overrides: Record<string, unknown> = {}) {
     seller_name_snapshot: 'Seller One',
     offline_session_id: sessionId,
     terminal_sequence: '1',
+    invoice_number: 'POS1-000001',
     occurred_at: occurredAt,
     items: [
       {
@@ -562,12 +563,30 @@ describe('SalesService acceptance-first sale synchronization', () => {
     });
   });
 
-  it('rejects only an internally inconsistent immutable local total', async () => {
+  it('accepts a total that does not match its lines: the till total is stored, with a warning', async () => {
     const { service, tx } = setupSale();
-    await expect(
-      service.createSale(saleDto({ local_total: 999 }), terminal),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(tx.salesInvoice.create).not.toHaveBeenCalled();
+    const result = await service.createSale(saleDto({ local_total: 999 }), terminal);
+    expect(result.warning_codes).toContain('LOCAL_TOTAL_MISMATCH');
+    expect(tx.salesInvoice.create.mock.calls[0][0].data.total.toString()).toBe('999');
+    expect(tx.salesInvoice.create.mock.calls[0][0].data.subtotal.toString()).toBe('300');
+  });
+
+  it('stores the printed invoice number verbatim', async () => {
+    const { service } = setupSale();
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.invoice_number).toBe('POS1-000001');
+    expect(result.warning_codes).not.toContain('INVOICE_NUMBER_REASSIGNED');
+  });
+
+  it('stores a sale whose number is already taken under a suffix and warns, never refuses', async () => {
+    const { service, tx } = setupSale();
+    tx.salesInvoice.findMany.mockResolvedValue([
+      { sync_id: 'another-sync', invoice_number: 'POS1-000001' },
+      { sync_id: 'third-sync', invoice_number: 'POS1-000001-2' },
+    ]);
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.invoice_number).toBe('POS1-000001-3');
+    expect(result.warning_codes).toContain('INVOICE_NUMBER_REASSIGNED');
   });
 });
 

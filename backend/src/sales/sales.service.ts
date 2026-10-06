@@ -32,7 +32,6 @@ import {
   decimal,
   lineMoney,
   money,
-  moneyNumber,
   moneyString,
   sameMoney,
   sumMoney,
@@ -48,6 +47,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import type { StockLots } from '../inventory/inventory.types';
 import { addLots, lotsFingerprint, lotsOfItem, stockLots, type SaleLots } from './sale-lots';
 import { loadReturnLots } from './sale-return-lots';
+import { invoiceNumberCandidates, pickInvoiceNumber } from './invoice-number';
 
 /** A sale line after merging duplicate variants; the quantity is exact (Decimal(14,3)). */
 type SaleLine = Omit<CreateSaleItemDto, 'qty' | 'serials' | 'batch_no'> & { qty: Prisma.Decimal; lots: SaleLots };
@@ -126,6 +126,7 @@ export class SalesService {
       seller_name_snapshot: dto.seller_name_snapshot.trim(),
       offline_session_id: dto.offline_session_id,
       terminal_sequence: dto.terminal_sequence,
+      invoice_number: dto.invoice_number,
       occurred_at: occurredAt.toISOString(),
       customer_phone: dto.customer_phone || null,
       payment_method: dto.payment_method,
@@ -294,20 +295,16 @@ export class SalesService {
         throw new ForbiddenException('The terminal is not assigned to the sale branch');
       }
 
-      // The replay (same sync_id) and the terminal-sequence owner (same
-      // terminal + sequence, different sync_id) are found by one query.
+      // The replay (same sync_id) and the invoices already holding the printed
+      // number or one of its suffixed variants are found by one query.
       const matches = await tx.salesInvoice.findMany({
         where: {
           tenant_id: context.tenantId,
-          OR: [
-            { sync_id: dto.sync_id },
-            { terminal_id: terminal.id, terminal_sequence: terminalSequence },
-          ],
+          OR: [{ sync_id: dto.sync_id }, { invoice_number: { in: invoiceNumberCandidates(dto.invoice_number) } }],
         },
         include: { items: true },
       });
       const existing = matches.find((invoice) => invoice.sync_id === dto.sync_id);
-      const sequenceOwner = matches.find((invoice) => invoice.sync_id !== dto.sync_id);
       if (existing) {
         if (
           existing.branch_id !== dto.branch_id ||
@@ -361,13 +358,13 @@ export class SalesService {
       ) {
         warningCodes.add('LATE_SYNC');
       }
-      if (sequenceOwner) {
-        throw new ConflictException({
-          code: 'TERMINAL_SEQUENCE_CONFLICT',
-          message_ar: 'رقم ترتيب العملية مستخدم بالفعل لعملية أخرى على هذا الجهاز.',
-          message: 'Terminal sequence already belongs to another sale',
-        });
-      }
+      // The printed number is stored verbatim; a till that restarted its numbering
+      // gets a suffix and a warning, never a refusal.
+      const invoiceNumber = pickInvoiceNumber(
+        dto.invoice_number,
+        new Set(matches.map((invoice) => invoice.invoice_number)),
+      );
+      if (invoiceNumber !== dto.invoice_number) warningCodes.add('INVOICE_NUMBER_REASSIGNED');
 
       if (terminalSequence > claimed.previous_sequence + 1n) {
         warningCodes.add('SEQUENCE_GAP');
@@ -438,19 +435,11 @@ export class SalesService {
       const taxAmount = sumMoney(
         saleItems.map((item) => lineMoney(item.tax, item.qty)),
       );
-      const total = money(subtotal.plus(taxAmount));
-
-      if (
-        !sameMoney(dto.local_total, total)
-      ) {
-        throw new UnprocessableEntityException({
-          code: 'LOCAL_TOTAL_MISMATCH',
-          message_ar: 'إجمالي الفاتورة لا يطابق مجموع سطورها المحفوظة محليًا.',
-          message: 'The local invoice total does not match its immutable lines',
-          local_total: dto.local_total,
-          calculated_total: moneyNumber(total),
-        });
-      }
+      // The till's total is what the customer was charged and what the receipt
+      // shows, so it is the stored total. A total that does not match its own
+      // lines is accepted and flagged: a finished sale is never refused (spec §0).
+      const total = money(dto.local_total);
+      if (!sameMoney(total, subtotal.plus(taxAmount))) warningCodes.add('LOCAL_TOTAL_MISMATCH');
 
       // Acceptance-first: the sale is recorded even when it drives stock below
       // zero (NEGATIVE_STOCK). Only `stocked` variants move stock; the writer
@@ -509,8 +498,6 @@ export class SalesService {
         customerId = customer.id;
       }
 
-      const invoiceNumber =
-        `B-${claimed.branch_code}-${receivedAt.getTime()}-${randomUUID().slice(0, 8)}`;
       const invoice = await tx.salesInvoice.create({
         data: {
           id: invoiceId,

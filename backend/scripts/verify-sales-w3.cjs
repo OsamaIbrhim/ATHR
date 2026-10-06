@@ -6,6 +6,7 @@
 //
 //   D1-D5   per-tenant document numbers: two tenants, concurrency, rollback,
 //           adjustments / counts, terminal codes
+//   N1-N3   a POS sale is never refused: reused terminal sequence, mismatching total
 'use strict';
 
 const path = require('node:path');
@@ -34,7 +35,10 @@ const InventoryRepository = load('inventory', 'inventory.repository.js', 'Invent
 const AdjustmentsService = load('adjustments', 'adjustments.service.js', 'AdjustmentsService');
 const AdjustmentsReadService = load('adjustments', 'adjustments.read.service.js', 'AdjustmentsReadService');
 
+const { createSalesWorld, statementCounter } = require('./support/sales-world.cjs');
+
 const prisma = new PrismaClient({ log: [{ emit: 'event', level: 'query' }] });
+const counted = statementCounter(prisma);
 const inventory = new InventoryService(new InventoryRepository(prisma));
 
 let failed = 0;
@@ -111,10 +115,40 @@ async function verifyDocumentSequences() {
   check('D5 terminal codes come from the tenant counter, not from the device id', codeA === 'POS1' && codeB === 'POS2' && deviceA.slice(0, 8) === deviceB.slice(0, 8));
 }
 
+// --- N ------------------------------------------------------------------------
+
+async function verifyNeverRefused() {
+  const world = await createSalesWorld(prisma, 'n');
+  const [variant] = [await world.createVariant()];
+  const first = await world.sell(world.saleDto([variant]));
+  check('N1 a POS sale is stored under its printed invoice number', first.invoice_number === 'POS1-000001', first.invoice_number);
+
+  // A wiped till re-enrolls and starts again at 1: same terminal, same sequence, same printed number.
+  const again = world.saleDto([variant], { terminal_sequence: '1', invoice_number: 'POS1-000001' });
+  const second = await world.sell(again);
+  check('N1 a reused terminal sequence is accepted under a suffixed number with INVOICE_NUMBER_REASSIGNED',
+    second.id !== first.id && second.invoice_number === 'POS1-000001-2' && second.warning_codes.includes('INVOICE_NUMBER_REASSIGNED'),
+    `${second.invoice_number} ${show(second.warning_codes)}`);
+  const third = await world.sell(world.saleDto([variant], { terminal_sequence: '1', invoice_number: 'POS1-000001' }));
+  check('N1 the next collision takes the next suffix', third.invoice_number === 'POS1-000001-3', third.invoice_number);
+  const replay = await world.sell(again);
+  check('N1 the reassigned sale is still idempotent on its sync_id', replay.id === second.id && replay.invoice_number === second.invoice_number);
+  check('N1 three invoices exist for the three sales', (await prisma.salesInvoice.count({ where: { tenant_id: world.tenant.id } })) === 3);
+
+  const mismatch = await world.sell(world.saleDto([variant], { local_total: 130 }));
+  check('N2 a total that does not match its lines is accepted: the till total is stored, with LOCAL_TOTAL_MISMATCH',
+    mismatch.total.equals(130) && mismatch.subtotal.equals(100) && mismatch.warning_codes.includes('LOCAL_TOTAL_MISMATCH'),
+    `${mismatch.total} ${show(mismatch.warning_codes)}`);
+  const exact = await world.sell(world.saleDto([variant]));
+  check('N2 a matching total carries no mismatch warning', !exact.warning_codes.includes('LOCAL_TOTAL_MISMATCH'));
+  check('N3 the terminal sequence is no longer unique per terminal, the sync_id is',
+    (await rejection(prisma.salesInvoice.create({ data: { ...{ id: randomUUID(), tenant_id: world.tenant.id, invoice_number: 'X-1', branch_id: world.branch.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash', sync_id: first.sync_id } } }))) !== null);
+}
+
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyDocumentSequences];
+  const sections = [verifyDocumentSequences, verifyNeverRefused];
   for (const section of sections) {
     try {
       await section();

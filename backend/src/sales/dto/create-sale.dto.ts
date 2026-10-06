@@ -15,6 +15,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { IsQuantity } from '../../common/quantity';
+import { INVOICE_NUMBER_PATTERN } from '../invoice-number';
 
 const MAX_SERIALS_PER_LINE = 1000;
 
@@ -130,6 +131,11 @@ export class CreateSaleDto {
     message: 'terminal_sequence must be a positive decimal integer',
   })
   terminal_sequence: string;
+
+  /** The number the till printed on the receipt (`POS1-000123`); stored verbatim unless it collides. */
+  @IsString()
+  @Matches(INVOICE_NUMBER_PATTERN, { message: 'invoice_number must be 1-64 letters, digits, dot, dash or underscore' })
+  invoice_number: string;
 
   @IsDateString()
   occurred_at: string;

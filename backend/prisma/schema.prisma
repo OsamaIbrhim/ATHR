@@ -1408,7 +1408,7 @@ model SalesInvoice {
 
   @@unique([tenant_id, invoice_number])
   @@unique([tenant_id, id])
-  @@unique([terminal_id, terminal_sequence])
+  @@index([terminal_id, terminal_sequence])
   @@index([tenant_id, branch_id, occurred_at])
   @@index([tenant_id, occurred_at(sort: Desc), id(sort: Desc)])
   @@index([branch_id, payment_method, occurred_at])

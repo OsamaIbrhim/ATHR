@@ -6,8 +6,8 @@ import { CreateSaleDto } from './dto/create-sale.dto';
 // A POS 1.6.0 payload has no tracking fields. Its fingerprint is stored on
 // every accepted invoice, so a replay of an old outbox item after an upgrade
 // must hash to the same value. The hex below was computed by the code as it
-// was before tracking existed; it must never change.
-const GOLDEN = '83995f860bbe2b7136a4d14990dd09f37f769e221c8d3eef37b8a96d5fa8fd27';
+// was before tracking existed; it changes only when the command shape does (D9: invoice_number, payments).
+const GOLDEN = 'd990b6242d218ebde245b048b672edc7e8b777d66631590a65a7e5d70a997bfa';
 
 const dto = {
   event_version: 2,
@@ -20,6 +20,7 @@ const dto = {
   seller_name_snapshot: 'Seller One',
   offline_session_id: '44444444-4444-4444-8444-444444444444',
   terminal_sequence: '1',
+  invoice_number: 'POS1-000001',
   occurred_at: '2026-07-22T10:00:00.000Z',
   items: [
     {
