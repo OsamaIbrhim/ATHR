@@ -22,9 +22,9 @@ describe('SalesController POS terminal enforcement', () => {
   function subject() {
     const sales = {
       createSale: jest.fn().mockResolvedValue({ id: 'invoice-1' }),
-      createReturn: jest.fn().mockResolvedValue({ id: 'return-1' }),
-      findReturnableInvoice: jest.fn().mockResolvedValue({ id: 'invoice-1' }),
     } as any;
+    const returns = { createReturn: jest.fn().mockResolvedValue({ id: 'return-1' }) } as any;
+    const returnsRead = { findReturnableInvoice: jest.fn().mockResolvedValue({ id: 'invoice-1' }) } as any;
     const reads = {
       listSales: jest.fn(),
     } as any;
@@ -40,12 +40,16 @@ describe('SalesController POS terminal enforcement', () => {
     return {
       controller: new SalesController(
         sales,
+        returns,
+        returnsRead,
         reads,
         {} as any,
         terminals,
         fullAccess,
       ),
       sales,
+      returns,
+      returnsRead,
       reads,
       terminals,
       terminal,
@@ -63,7 +67,7 @@ describe('SalesController POS terminal enforcement', () => {
   });
 
   it('authenticates the enrolled terminal before a return or invoice lookup', async () => {
-    const { controller, sales, terminals } = subject();
+    const { controller, returns, returnsRead, terminals } = subject();
     await controller.lookupInvoice(
       ctx,
       ' B-100 ',
@@ -79,12 +83,12 @@ describe('SalesController POS terminal enforcement', () => {
       request(cashier),
     );
     expect(terminals.authenticate).toHaveBeenCalledTimes(2);
-    expect(sales.findReturnableInvoice).toHaveBeenCalledWith(
+    expect(returnsRead.findReturnableInvoice).toHaveBeenCalledWith(
       ctx,
       'B-100',
       cashier,
     );
-    expect(sales.createReturn).toHaveBeenCalledWith(ctx, returnDto, cashier);
+    expect(returns.createReturn).toHaveBeenCalledWith(ctx, returnDto, cashier);
   });
 
   it('allows an owner support lookup without impersonating a physical terminal', async () => {

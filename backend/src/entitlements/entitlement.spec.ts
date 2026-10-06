@@ -331,7 +331,7 @@ describe('POS sale gating', () => {
     const reads = {} as any;
     return {
       sales,
-      controller: new SalesController(sales, reads, {} as any, terminals, new EntitlementService(prisma)),
+      controller: new SalesController(sales, {} as any, {} as any, reads, {} as any, terminals, new EntitlementService(prisma)),
     };
   }
   const sale = (occurred_at: string) => ({ branch_id: 'b1', occurred_at, items: [] }) as any;

@@ -29,7 +29,7 @@ const { PrismaClient, Prisma } = require('@prisma/client');
 
 const dist = (...segments) => path.join(__dirname, '..', 'dist', 'src', ...segments);
 
-let InventoryService, InventoryRepository, PurchasingService, SalesService, TransfersService, BranchesRepository,
+let InventoryService, InventoryRepository, PurchasingService, SalesService, ReturnsService, TransfersService, BranchesRepository,
   PricingService, TaxResolutionService, SalesTaxSnapshotService, ProductsService, ProductsRepository, BrandsRepository,
   TaxCodeService, TaxCodeRepository, LimitService, EntitlementService, ProductTypesService;
 try {
@@ -37,6 +37,7 @@ try {
   ({ InventoryRepository } = require(dist('inventory', 'inventory.repository.js')));
   ({ PurchasingService } = require(dist('purchasing', 'purchasing.service.js')));
   ({ SalesService } = require(dist('sales', 'sales.service.js')));
+  ({ ReturnsService } = require(dist('sales', 'returns.service.js')));
   ({ TransfersService } = require(dist('transfers', 'transfers.service.js')));
   ({ BranchesRepository } = require(dist('branches', 'branches.repository.js')));
   ({ PricingService } = require(dist('pricing', 'pricing.service.js')));
@@ -467,7 +468,8 @@ async function verifyCostAccounting() {
     include: { items: true },
   });
   const sales = new SalesService(prisma, {}, { canViewSaleCostMargin: async () => true }, new SalesTaxSnapshotService(), inventory);
-  await sales.createReturn(world.context, { original_invoice_id: sold.id, items: [{ sales_invoice_item_id: sold.items[0].id, qty: 1 }] }, actor);
+  const returns = new ReturnsService(prisma, { canViewSaleCostMargin: async () => true }, inventory);
+  await returns.createReturn(world.context, { original_invoice_id: sold.id, items: [{ sales_invoice_item_id: sold.items[0].id, qty: 1 }] }, actor);
   stock = await stockOf(world, second);
   refreshed = await prisma.productVariant.findUniqueOrThrow({ where: { id: second.id } });
   check('E8 a customer return into empty stock restores the sale cost (80)', stock.qty_on_hand.equals(1) && stock.avg_cost.equals(80) && refreshed.cost_price.equals(80), `qty=${stock.qty_on_hand} avg=${stock.avg_cost}`);
@@ -939,6 +941,7 @@ async function verifyTrackedDocuments() {
   const seller = await staff('seller', 'Seller');
   const shift = await prisma.shift.create({ data: { tenant_id: world.tenant.id, branch_id: world.branch.id, opened_by: cashier.id } });
   const sales = new SalesService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), { canViewSaleCostMargin: async () => false }, new SalesTaxSnapshotService(), inventory);
+  const returns = new ReturnsService(prisma, { canViewSaleCostMargin: async () => false }, inventory);
   const purchasing = new PurchasingService(prisma, inventory);
   const actor = ownerActor(world);
   const terminalRow = { id: terminal.id, branch_id: world.branch.id, tenant_id: world.tenant.id };
@@ -1018,34 +1021,34 @@ async function verifyTrackedDocuments() {
 
   // --- customer return
   const serialItem = serialSale.items[0].id;
-  const wrongSerial = await rejection(sales.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1, serials: ['P2'] }] }, actor));
+  const wrongSerial = await rejection(returns.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1, serials: ['P2'] }] }, actor));
   check('E18 a return names only serials that were sold on that line', codeOf(wrongSerial) === 'RETURN_SERIAL_NOT_SOLD_ON_LINE', wrongSerial?.message);
-  const missingSerial = await rejection(sales.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1 }] }, actor));
+  const missingSerial = await rejection(returns.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1 }] }, actor));
   check('E18 a return of a serial item without its serial is refused', codeOf(missingSerial) === 'TRACKING_SERIALS_REQUIRED');
-  await sales.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1, serials: ['P1'] }] }, actor);
+  await returns.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1, serials: ['P1'] }] }, actor);
   check('E18 a returned serial is back in stock', (await serialsOf(world, phone)).P1 === 'in_stock');
-  const twice = await rejection(sales.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1, serials: ['P1'] }] }, actor));
+  const twice = await rejection(returns.createReturn(world.context, { original_invoice_id: serialSale.id, items: [{ sales_invoice_item_id: serialItem, qty: 1, serials: ['P1'] }] }, actor));
   check('E18 the same unit cannot be returned twice', twice !== null);
   // A serial resold since (it came back through a purchase and was sold on another invoice) is no longer this line's to return.
   await receive([{ variant_id: phone.id, qty: 1, unit_cost: 50, serials: ['RS1'] }]);
   const resoldOnA = await sell(phone, 1, { serials: ['RS1'] });
   await receive([{ variant_id: phone.id, qty: 1, unit_cost: 50, serials: ['RS1'] }]); // sold -> in stock again
   const resoldOnB = await sell(phone, 1, { serials: ['RS1'] });
-  const orphaning = await rejection(sales.createReturn(world.context, { original_invoice_id: resoldOnA.id, items: [{ sales_invoice_item_id: resoldOnA.items[0].id, qty: 1, serials: ['RS1'] }] }, actor));
+  const orphaning = await rejection(returns.createReturn(world.context, { original_invoice_id: resoldOnA.id, items: [{ sales_invoice_item_id: resoldOnA.items[0].id, qty: 1, serials: ['RS1'] }] }, actor));
   check('E18 a serial that was resold cannot be returned against its first sale', codeOf(orphaning) === 'RETURN_SERIAL_NOT_SOLD_ON_LINE' && (await serialsOf(world, phone)).RS1 === 'sold', orphaning?.message);
-  await sales.createReturn(world.context, { original_invoice_id: resoldOnB.id, items: [{ sales_invoice_item_id: resoldOnB.items[0].id, qty: 1, serials: ['RS1'] }] }, actor);
+  await returns.createReturn(world.context, { original_invoice_id: resoldOnB.id, items: [{ sales_invoice_item_id: resoldOnB.items[0].id, qty: 1, serials: ['RS1'] }] }, actor);
   check('E18 ...but can against the sale that owns it', (await serialsOf(world, phone)).RS1 === 'in_stock');
 
   // The 1.6.0 sale sold a unit with no serial on record; the unit may come back with its serial, or without one.
   const oldLine = { original_invoice_id: oldPosSale.id, items: [{ sales_invoice_item_id: oldPosSale.items[0].id, qty: 1 }] };
-  const elsewhere = await rejection(sales.createReturn(world.context, { ...oldLine, items: [{ ...oldLine.items[0], serials: ['NOT-IN-STOCK'] }] }, actor));
+  const elsewhere = await rejection(returns.createReturn(world.context, { ...oldLine, items: [{ ...oldLine.items[0], serials: ['NOT-IN-STOCK'] }] }, actor));
   check('E18 an unscanned unit cannot come back under a serial that is sold on another line', codeOf(elsewhere) === 'RETURN_SERIAL_NOT_SOLD_ON_LINE', elsewhere?.message);
   const onHandBefore = (await stockOf(world, phone)).qty_on_hand;
-  await sales.createReturn(world.context, { ...oldLine, items: [{ ...oldLine.items[0], serials: ['P2'] }] }, actor);
+  await returns.createReturn(world.context, { ...oldLine, items: [{ ...oldLine.items[0], serials: ['P2'] }] }, actor);
   check('E18 ...but under the serial the system still counts in stock: only the count is settled',
     (await serialsOf(world, phone)).P2 === 'in_stock' && (await stockOf(world, phone)).qty_on_hand.equals(onHandBefore.plus(1)));
   const secondUnscanned = await sell(phone);
-  await sales.createReturn(world.context, { original_invoice_id: secondUnscanned.id, items: [{ sales_invoice_item_id: secondUnscanned.items[0].id, qty: 1 }] }, actor);
+  await returns.createReturn(world.context, { original_invoice_id: secondUnscanned.id, items: [{ sales_invoice_item_id: secondUnscanned.items[0].id, qty: 1 }] }, actor);
   check('E18 a unit sold without a serial can be returned without one (today\'s POS return screen)', (await stockOf(world, phone)).qty_on_hand.equals(onHandBefore.plus(1)));
 
   // Batch return goes back to the batches the sale line drew. A receipt first settles the deficit.
@@ -1053,7 +1056,7 @@ async function verifyTrackedDocuments() {
   check('E18 the next receipt settles the unallocated deficit before shelving the rest', show(await batchesOf(world, milk)) === show({ '(unallocated)': 0, 'M-LATE': 3, 'M-SOON': 0 }), show(await batchesOf(world, milk)));
   const milkSale = await sell(milk, 1, { batch_no: 'M-LATE' });
   const beforeReturn = await batchesOf(world, milk);
-  await sales.createReturn(world.context, { original_invoice_id: milkSale.id, items: [{ sales_invoice_item_id: milkSale.items[0].id, qty: 1 }] }, actor);
+  await returns.createReturn(world.context, { original_invoice_id: milkSale.id, items: [{ sales_invoice_item_id: milkSale.items[0].id, qty: 1 }] }, actor);
   const afterReturn = await batchesOf(world, milk);
   check('E18 a batch return goes back to the batch the line drew', beforeReturn['M-LATE'] === 2 && afterReturn['M-LATE'] === beforeReturn['M-LATE'] + 1 && afterReturn['(unallocated)'] === beforeReturn['(unallocated)'], show({ beforeReturn, afterReturn }));
 

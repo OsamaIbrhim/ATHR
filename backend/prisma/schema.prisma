@@ -1645,6 +1645,10 @@ model ReturnItem {
   unit_price            Decimal          @db.Decimal(14, 2)
   unit_cost             Decimal          @db.Decimal(14, 4)
   unit_tax              Decimal          @db.Decimal(14, 2)
+  /// What this return refunds for the line, tax excluded and after the line's discount.
+  net_amount            Decimal          @default(0) @db.Decimal(14, 2)
+  /// The tax refunded with it.
+  tax_amount            Decimal          @default(0) @db.Decimal(14, 2)
   tenant_id             String           @db.Uuid
 
   @@index([sales_invoice_item_id])

@@ -10,6 +10,7 @@
 //   P1-P4   payments: split rows, warnings, 17 statements, shift cash from payments
 //   X1-X6   discounts: line + invoice, tax after discount, snapshot, limit warning, merge, fingerprint
 //   C1-C8   credit: balance + ledger, limit warning, collections, shift cash, append-only, debtors, statement
+//   R1-R4   returns: refund of what was paid, refund method + credit, shift cash, window
 //   N1-N3   a POS sale is never refused: reused terminal sequence, mismatching total, no number
 'use strict';
 
@@ -342,10 +343,83 @@ async function verifyCredit() {
   check('C8 another tenant cannot collect from or read this customer', stranger?.status === 404 && noStatement?.status === 404);
 }
 
+// --- R ------------------------------------------------------------------------
+
+async function verifyReturns() {
+  const world = await createSalesWorld(prisma, 'r');
+  const variant = await world.createVariant();
+  await world.sell(world.saleDto([variant])); // warm caches
+  const ReturnsService = load('sales', 'returns.service.js', 'ReturnsService');
+  const ShiftsService = load('shifts', 'shifts.service.js', 'ShiftsService');
+  const ShiftsRepository = load('shifts', 'shifts.repository.js', 'ShiftsRepository');
+  const CustomerAccountsService = load('customers', 'customer-accounts.service.js', 'CustomerAccountsService');
+  const returns = new ReturnsService(prisma, { canViewSaleCostMargin: async () => false }, world.inventory);
+  const accounts = new CustomerAccountsService(prisma);
+  const actor = { sub: world.cashier.id, membership_role: 'tenant_owner', permissions: new Set(), scope_set: [{ scope_type: 'tenant_wide', scope_ref_id: null }] };
+  const line = (extra = {}) => ({ variant_id: variant.id, qty: 3, unit_price: 100, unit_tax: 14, sku_snapshot: variant.sku, name_ar_snapshot: 'صنف', ...extra });
+  const giveBack = (invoice, item, qty, extra = {}) => returns.createReturn(world.context, { original_invoice_id: invoice.id, items: [{ sales_invoice_item_id: item.id, qty }], ...extra }, actor);
+
+  // 3 x 100 with 10% off: net 270, tax 37.80, total 307.80 -> 102.60 per unit, in three goes.
+  const sale = await world.sell({ ...world.saleDto([variant]), items: [line({ discount: { type: 'percent', value: 10 } })], local_total: 307.8, payments: [{ method: 'cash', amount: 307.8 }] });
+  const item = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: sale.id } });
+  const parts = [await giveBack(sale, item, 1), await giveBack(sale, item, 1), await giveBack(sale, item, 1)];
+  const refunded = parts.reduce((sum, part) => sum.plus(part.refund_total), D(0));
+  check('R1 a discounted line refunds what was paid: 102.60 a unit, 307.80 in three goes (not the list price)',
+    String(parts[0].refund_total) === '102.6' && refunded.equals('307.8'), `${parts.map((part) => part.refund_total).join(',')}`);
+  check('R1 the refund is stored per line as net and tax', parts[0].items[0].net_amount.equals(90) && parts[0].items[0].tax_amount.equals('12.6') && parts[0].refund_method === 'cash');
+  const over = await rejection(giveBack(sale, item, 1));
+  check('R1 nothing is left to return after the whole line came back', over?.status === 409, over?.message);
+
+  // Refund onto the customer account.
+  const phone = '01077777002';
+  const creditSale = await world.sell({ ...world.saleDto([variant], { customer_phone: phone }), items: [line({ qty: 2 })], local_total: 228, payments: [{ method: 'credit', amount: 228 }] });
+  const creditItem = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: creditSale.id } });
+  const customer = await prisma.customer.findFirstOrThrow({ where: { tenant_id: world.tenant.id, phone } });
+  const back = await giveBack(creditSale, creditItem, 1, { refund_method: 'credit' });
+  const after = await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } });
+  const refundEntry = await prisma.customerLedgerEntry.findFirstOrThrow({ where: { customer_id: customer.id, type: 'refund_credit' } });
+  check('R2 a refund to credit lowers what the customer owes and writes a refund_credit entry',
+    after.balance.equals(114) && refundEntry.amount.equals(-114) && refundEntry.return_id === back.id && refundEntry.balance_after.equals(114), `balance=${after.balance}`);
+  const noCustomer = await rejection(giveBack(sale, item, 1, { refund_method: 'credit' }));
+  const plain = await world.sell(world.saleDto([variant]));
+  const plainItem = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: plain.id } });
+  const needsCustomer = await rejection(giveBack(plain, plainItem, 1, { refund_method: 'credit' }));
+  check('R2 a refund to credit needs an invoice with a customer', needsCustomer?.response?.code === 'REFUND_TO_CREDIT_NEEDS_CUSTOMER' && noCustomer !== null, needsCustomer?.message);
+  const stmt = await accounts.statement(world.context, customer.id);
+  check('R2 the statement shows the sale and the refund', stmt.items.map((entry) => entry.type).sort().join() === 'refund_credit,sale_credit', show(stmt.items.map((entry) => entry.type)));
+
+  // The shift: a cash refund leaves the till, a card refund does not.
+  const second = await world.sell(world.saleDto([variant]));
+  const secondItem = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: second.id } });
+  const third = await world.sell(world.saleDto([variant]));
+  const thirdItem = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: third.id } });
+  const till = { sub: world.cashier.id, membership_role: 'cashier', permissions: new Set(), scope_set: [{ scope_type: 'location', scope_ref_id: world.branch.id }] };
+  await returns.createReturn(world.context, { original_invoice_id: second.id, items: [{ sales_invoice_item_id: secondItem.id, qty: 1 }], refund_method: 'cash' }, till);
+  await returns.createReturn(world.context, { original_invoice_id: third.id, items: [{ sales_invoice_item_id: thirdItem.id, qty: 1 }], refund_method: 'card' }, till);
+  const cashIn = (await prisma.salesPayment.aggregate({ where: { tenant_id: world.tenant.id, method: 'cash' }, _sum: { amount: true } }))._sum.amount;
+  const cashOut = (await prisma.return.aggregate({ where: { tenant_id: world.tenant.id, refund_method: 'cash' }, _sum: { refund_total: true } }))._sum.refund_total;
+  await new ShiftsService(prisma, new ShiftsRepository(prisma)).close(world.context, world.shift.id, actor, 0);
+  const closed = await prisma.shift.findUniqueOrThrow({ where: { id: world.shift.id } });
+  const tillCash = (await prisma.return.aggregate({ where: { tenant_id: world.tenant.id, refund_method: 'cash', shift_id: world.shift.id }, _sum: { refund_total: true } }))._sum.refund_total;
+  check('R3 the shift expects cash in minus cash refunds made at its till (a card refund leaves the drawer alone)', tillCash.equals(114) && closed.expected_cash.equals(cashIn.minus(114)), `expected=${closed.expected_cash} cashIn=${cashIn} cashOut=${cashOut}`);
+
+  // The window.
+  const old = await world.sell({ ...world.saleDto([variant]), occurred_at: new Date(Date.now() - 20 * 86_400_000).toISOString() });
+  const oldItem = await prisma.salesInvoiceItem.findFirstOrThrow({ where: { sales_invoice_id: old.id } });
+  const expired = await rejection(giveBack(old, oldItem, 1));
+  check('R4 a sale older than the default 14 days cannot be returned', expired?.response?.code === 'RETURN_WINDOW_EXPIRED', expired?.message);
+  await prisma.tenant.update({ where: { id: world.tenant.id }, data: { settings: { sales: { return_window_days: 30 } } } });
+  const allowed = await giveBack(old, oldItem, 1);
+  check('R4 the tenant setting widens the window', allowed.refund_total.equals(114));
+  await prisma.tenant.update({ where: { id: world.tenant.id }, data: { settings: { sales: { return_window_days: 0 } } } });
+  const off = await rejection(giveBack(second, secondItem, 1));
+  check('R4 a window of 0 switches returns off', off?.response?.code === 'RETURNS_NOT_ACCEPTED', off?.message);
+}
+
 // --- main -----------------------------------------------------------------------
 
 async function main() {
-  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments, verifyDiscounts, verifyCredit];
+  const sections = [verifyDocumentSequences, verifyNeverRefused, verifyPayments, verifyDiscounts, verifyCredit, verifyReturns];
   for (const section of sections) {
     try {
       await section();

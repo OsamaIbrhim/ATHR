@@ -15,6 +15,8 @@ import {
 import { Request, Response } from 'express'
 import { SalesService } from './sales.service'
 import { SalesReadService } from './sales-read.service'
+import { ReturnsService } from './returns.service'
+import { ReturnsReadService } from './returns-read.service'
 import { InvoicePdfService } from './invoice-pdf.service'
 import { CreateSaleDto } from './dto/create-sale.dto'
 import { AuthenticatedUser } from '../auth/authenticated-user'
@@ -34,6 +36,8 @@ import { EntitlementService } from '../entitlements/entitlement.service'
 export class SalesController {
   constructor(
     private svc: SalesService,
+    private returns: ReturnsService,
+    private returnsRead: ReturnsReadService,
     private reads: SalesReadService,
     private pdfService: InvoicePdfService,
     private terminals: TerminalsService,
@@ -99,7 +103,7 @@ export class SalesController {
       )
     }
 
-    return this.svc.createReturn(ctx, dto, req.user)
+    return this.returns.createReturn(ctx, dto, req.user)
   }
 
   @UseGuards(new PosProtocolGuard())
@@ -124,7 +128,7 @@ export class SalesController {
       )
     }
 
-    return this.svc.findReturnableInvoice(
+    return this.returnsRead.findReturnableInvoice(
       ctx,
       reference.trim(),
       req.user,
@@ -164,6 +168,6 @@ export class SalesController {
   ) {
     const branchId = resolveBranchScope(req.user, dto.branch_id)
 
-    return this.svc.listReturns(ctx, dto, branchId)
+    return this.returnsRead.listReturns(ctx, dto, branchId)
   }
 }
