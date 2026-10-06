@@ -85,7 +85,7 @@ export function buildReceiptHtml(
   const t = (ar: string, en: string) => (isAr ? ar : en)
   const currency = t('ج', 'EGP')
   const { receipt } = settings
-  const money = (value: number) => `${formatMoney(value)} ${currency}`
+  const money = (value: number) => `<bdi>${formatMoney(value)}</bdi> ${currency}`
 
   const lines = data.lines
     .map(
@@ -101,10 +101,10 @@ export function buildReceiptHtml(
   const grossDiscount = Math.round((data.lines.reduce((sum, line) => sum + toCents(line.amount), 0) - toCents(data.total))) / 100
   const summary = receipt.show_tax_breakdown
     ? `<div class="row"><span>${t('الإجمالي قبل الضريبة', 'Subtotal')}</span><span>${money(data.subtotal)}</span></div>` +
-      (data.discount > 0 ? `<div class="row"><span>${t('الخصم', 'Discount')}</span><span>-${money(data.discount)}</span></div>` : '') +
+      (data.discount > 0 ? `<div class="row"><span>${t('الخصم', 'Discount')}</span><span>${money(-data.discount)}</span></div>` : '') +
       `<div class="row"><span>${t('الضريبة', 'VAT')}</span><span>${money(data.tax)}</span></div>`
     : grossDiscount > 0
-      ? `<div class="row"><span>${t('الخصم', 'Discount')}</span><span>-${money(grossDiscount)}</span></div>`
+      ? `<div class="row"><span>${t('الخصم', 'Discount')}</span><span>${money(-grossDiscount)}</span></div>`
       : ''
 
   const payments = data.payments
