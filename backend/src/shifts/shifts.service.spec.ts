@@ -51,14 +51,15 @@ describe('ShiftsService', () => {
       })
       .mockResolvedValueOnce({ id: shiftId, status: 'closed' });
     const shiftUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
-    const salesAggregate = jest.fn().mockResolvedValue({ _sum: { total: 500 } });
+    const salesAggregate = jest.fn().mockResolvedValue({ _sum: { amount: 500 } });
     const returnAggregate = jest.fn().mockResolvedValue({ _sum: { refund_total: 100 } });
     const prisma = {
       shift: {
         findFirst: shiftFindFirst,
         updateMany: shiftUpdateMany,
       },
-      salesInvoice: { aggregate: salesAggregate },
+      salesPayment: { aggregate: salesAggregate },
+      customerLedgerEntry: { aggregate: jest.fn().mockResolvedValue({ _sum: { amount: -20 } }) },
       return: { aggregate: returnAggregate },
     };
     const service = serviceOver(prisma);
@@ -67,7 +68,11 @@ describe('ShiftsService', () => {
 
     expect(salesAggregate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ shift_id: shiftId, tenant_id: ctx.tenantId }),
+        where: expect.objectContaining({
+          method: 'cash',
+          tenant_id: ctx.tenantId,
+          invoice: expect.objectContaining({ shift_id: shiftId, tenant_id: ctx.tenantId }),
+        }),
       }),
     );
     expect(returnAggregate).toHaveBeenCalledWith(
@@ -76,8 +81,8 @@ describe('ShiftsService', () => {
       }),
     );
     const data = shiftUpdateMany.mock.calls[0][0].data;
-    expect(Number(data.expected_cash)).toBe(450);
-    expect(Number(data.difference)).toBe(-10);
+    expect(Number(data.expected_cash)).toBe(470);
+    expect(Number(data.difference)).toBe(-30);
     expect(data.closed_by).toBe(actor.sub);
   });
 

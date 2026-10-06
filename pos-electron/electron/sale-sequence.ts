@@ -1,6 +1,7 @@
 import { getMeta, setMeta } from './db/queries'
 import {
   isValidOfflineAccountingContext,
+  isTerminalSequence,
   maxTerminalSequence,
   type OfflineAccountingContext,
 } from './offline-accounting'
@@ -33,4 +34,17 @@ export function updateSecureAcknowledgedSequence(sequence: string) {
     // secure copy is updated on a best-effort basis to help recovery after a
     // local database restore.
   }
+}
+
+/**
+ * A re-enrolled till continues its numbering after the last sale the server
+ * accepted for this terminal (`terminal.last_sale_sequence` from enroll), so a
+ * wiped device never prints a number it already used. Never lowers the counter.
+ */
+export function seedSequenceFromEnrollment(lastSaleSequence: unknown) {
+  if (!isTerminalSequence(lastSaleSequence)) return
+  setMeta(
+    'terminal_sale_sequence',
+    maxTerminalSequence(getMeta('terminal_sale_sequence'), lastSaleSequence),
+  )
 }

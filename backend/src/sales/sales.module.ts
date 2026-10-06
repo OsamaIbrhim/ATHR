@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { SalesReadService } from './sales-read.service';
+import { ReturnsService } from './returns.service';
+import { ExchangeService } from './exchange.service';
+import { ReturnsReadService } from './returns-read.service';
 import { SalesController } from './sales.controller';
 import { PricingModule } from '../pricing/pricing.module';
 import { TaxModule } from '../tax/tax.module';
@@ -13,9 +16,12 @@ import { InventoryModule } from '../inventory/inventory.module';
   providers: [
     SalesService,
     SalesReadService,
+    ReturnsService,
+    ReturnsReadService,
+    ExchangeService,
     InvoicePdfService,
   ],
   controllers: [SalesController],
-  exports: [SalesService],
+  exports: [SalesService, ReturnsService],
 })
 export class SalesModule {}

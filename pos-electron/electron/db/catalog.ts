@@ -16,6 +16,7 @@ function hasInvalidCatalogProducts() {
     `SELECT 1 AS found
      FROM products
      WHERE COALESCE(catalog_version,0)<>${CATALOG_PRODUCT_VERSION}
+        OR tax_rate IS NULL
         OR COALESCE(sku,'')=''
         OR (COALESCE(name_ar,'')='' AND COALESCE(name_en,'')='')
      LIMIT 1`,

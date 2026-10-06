@@ -21,7 +21,7 @@ function setup() {
           discount_amount: 0,
           tax_amount: 14,
           total: 114,
-          payment_method: 'cash',
+          payments: [{ method: 'cash', amount: 114 }],
           language: 'ar',
           sync_id: null,
           event_version: 2,

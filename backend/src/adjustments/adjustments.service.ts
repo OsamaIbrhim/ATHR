@@ -1,3 +1,4 @@
+import { nextDocumentNumber } from '../common/document-sequence';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, type StockAdjustmentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -62,7 +63,7 @@ export class AdjustmentsService {
             tenant_id: context.tenantId,
             branch_id: dto.branch_id,
             warehouse_id: warehouseId,
-            adjustment_number: await this.nextNumber(tx),
+            adjustment_number: await nextDocumentNumber(tx, context.tenantId, 'adjustment'),
             note: dto.note?.trim() || null,
             idempotency_key: dto.command_id ?? null,
             command_fingerprint: fingerprint,
@@ -234,11 +235,6 @@ export class AdjustmentsService {
       ) AS u("id", "before", "after", "cost")
       WHERE item."tenant_id" = ${tenantId}::uuid AND item."id" = u."id"
     `;
-  }
-
-  private async nextNumber(tx: Tx): Promise<string> {
-    const [row] = await tx.$queryRaw<Array<{ value: bigint }>>`SELECT nextval('"StockAdjustmentNumberSequence"') AS value`;
-    return `ADJ-${String(row?.value).padStart(6, '0')}`;
   }
 
   /** The id of this key's document; 409 when the key was used for a different payload. */

@@ -124,7 +124,7 @@ describe('catalog snapshot (protocol 3)', () => {
       products: ['v1', 'v2', 'v3'],
       barcodes: ['B1', 'B2'],
       cursor: '7:3',
-      format: 'offline-sales-v3',
+      format: 'offline-sales-v4',
       validUntil: '2026-01-02T00:00:00.000Z',
     })
     expect(snapshotProgress()).toBeNull()

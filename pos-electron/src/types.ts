@@ -1,3 +1,5 @@
+import type { Discount } from '../electron/sale-math'
+
 export type User = {
   id: string
   name: string
@@ -47,6 +49,9 @@ export type Product = {
   uom_precision?: number
   selling_price?: number | string
   unit_tax?: number | string
+  /** Percent (14 = 14%); null on a row cached before W3. */
+  tax_rate?: string | number | null
+  tax_mode?: 'inclusive' | 'exclusive' | null
   catalog_version?: number
   qty?: number | string
 }
@@ -58,6 +63,8 @@ export type CartItem = Product & {
   unit_price: number
   unit_tax: number
   available_qty: number
+  /** A discount on this line (amount in pounds, or percent). */
+  discount?: Discount | null
 }
 
 export type Customer = {
@@ -102,6 +109,12 @@ export type InvoiceItem = {
   }
 }
 
+export type InvoicePayment = {
+  method: string
+  amount: number | string
+  tendered?: number | string | null
+}
+
 export type Invoice = {
   id: string
   invoice_number: string
@@ -115,7 +128,8 @@ export type Invoice = {
   subtotal: number | string
   tax_amount: number | string
   total: number | string
-  payment_method: string
+  discount_amount?: number | string | null
+  payments?: InvoicePayment[]
   status: string
   event_version?: number
   warning_codes?: string[]
@@ -192,7 +206,6 @@ export type ReturnRecord = {
     id: string
     invoice_number: string
     total: number | string
-    payment_method: string
     customer?: {
       id: string
       name?: string | null

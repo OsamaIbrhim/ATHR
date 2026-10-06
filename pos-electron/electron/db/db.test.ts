@@ -38,7 +38,7 @@ describe('migrations', () => {
   it('builds the full schema, indexes and WAL on a fresh database', () => {
     const db = openDatabase(file)
     expect(db.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION)
-    expect(LATEST_SCHEMA_VERSION).toBe(1)
+    expect(LATEST_SCHEMA_VERSION).toBe(2)
     expect(db.pragma('application_id', { simple: true })).toBe(APPLICATION_ID)
     expect(db.pragma('journal_mode', { simple: true })).toBe('wal')
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1)
@@ -128,7 +128,8 @@ function saleRecord(overrides: Partial<LocalSaleRecord> = {}): LocalSaleRecord {
     invoiceNumber: 'LOCAL-T1-000001',
     localTotal: 30,
     occurredAt: '2025-01-01T10:00:00.000Z',
-    paymentMethod: 'cash',
+    payments: [{ method: 'cash', amount: 30 }],
+    discountTotal: 0,
     customerPhone: null,
     cashierId: 'cashier-1',
     sellerId: 'seller-1',

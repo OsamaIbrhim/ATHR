@@ -3,7 +3,7 @@ import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 
 const ctx = contextFor(TENANT_A);
 const BRANCH = 'branch-1';
-const quote = { net_price: 150, tax_amount: 21 };
+const quote = { net_price: 150, tax_amount: 21, tax_percent: 14, tax: { mode_snapshot: 'exclusive' } };
 
 function variantRow(id: string, extra: Record<string, unknown> = {}) {
   return {
@@ -64,7 +64,7 @@ describe('SyncService snapshot (first-time, paged)', () => {
     });
     expect(result.settings.scale_barcode).toMatchObject({ enabled: false });
     expect(result.products[0]).toMatchObject({
-      id: 'v1', catalog_version: 3, label: 'M · Blue', selling_price: 150, unit_tax: 21, uom_precision: 0,
+      id: 'v1', catalog_version: 3, label: 'M · Blue', selling_price: 150, unit_tax: 21, tax_rate: 14, tax_mode: 'exclusive', uom_precision: 0,
       barcodes: [{ code: '6220001', pack_qty: 6, kind: 'standard' }],
     });
     expect(result.stock).toEqual([{ branch_id: BRANCH, variant_id: 'v1', qty_on_hand: 1.25, qty_reserved: 0, last_sold_at: null }]);

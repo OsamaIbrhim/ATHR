@@ -1,6 +1,7 @@
 import { decimalToMinorUnits, minorUnitsToDecimal } from '../money-codec'
 import { isValidQuantity } from '../quantity'
-import { PosSaleValidationError } from '../sale-validation'
+import { PosSaleValidationError } from '../sale-error'
+import { paymentSummary, type SalePayment } from '../sale-payments'
 import { get, run, setMeta, tx } from './queries'
 
 export interface LocalSaleItem {
@@ -13,7 +14,9 @@ export interface LocalSaleRecord {
   invoiceNumber: string
   localTotal: number
   occurredAt: string
-  paymentMethod: string
+  payments: SalePayment[]
+  /** Net discount of the whole invoice (lines + invoice discount), kept for the history views. */
+  discountTotal: number
   customerPhone: string | null
   cashierId: string
   sellerId: string
@@ -57,21 +60,24 @@ export function commitLocalSale(sale: LocalSaleRecord) {
     run(
       `INSERT INTO sales_local (
         sync_id,invoice_number,total_minor_units,created_at,occurred_at,payment_method,
-        customer_phone,cashier_id,seller_id,shift_id,offline_session_id,terminal_sequence
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        customer_phone,cashier_id,seller_id,shift_id,offline_session_id,terminal_sequence,
+        payments_json,discount_minor_units
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         sale.syncId,
         sale.invoiceNumber,
         decimalToMinorUnits(sale.localTotal),
         sale.occurredAt,
         sale.occurredAt,
-        sale.paymentMethod,
+        paymentSummary(sale.payments),
         sale.customerPhone,
         sale.cashierId,
         sale.sellerId,
         sale.shiftId,
         sale.offlineSessionId,
         sale.terminalSequence,
+        JSON.stringify(sale.payments),
+        decimalToMinorUnits(sale.discountTotal),
       ],
     )
     run(

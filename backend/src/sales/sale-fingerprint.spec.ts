@@ -1,13 +1,13 @@
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
-import { SalesService } from './sales.service';
+import { normalizeLines, saleCommandFingerprint } from './sale-command';
 import { CreateSaleDto } from './dto/create-sale.dto';
 
 // A POS 1.6.0 payload has no tracking fields. Its fingerprint is stored on
 // every accepted invoice, so a replay of an old outbox item after an upgrade
 // must hash to the same value. The hex below was computed by the code as it
-// was before tracking existed; it must never change.
-const GOLDEN = '83995f860bbe2b7136a4d14990dd09f37f769e221c8d3eef37b8a96d5fa8fd27';
+// was before tracking existed; it changes only when the command shape does (D9: invoice_number, payments).
+const GOLDEN = 'bcd1737c268fc3af8de2eff6e4f71a4eff59c2e0cbf22b5406f3dd60e970e8d0';
 
 const dto = {
   event_version: 2,
@@ -20,6 +20,7 @@ const dto = {
   seller_name_snapshot: 'Seller One',
   offline_session_id: '44444444-4444-4444-8444-444444444444',
   terminal_sequence: '1',
+  invoice_number: 'POS1-000001',
   occurred_at: '2026-07-22T10:00:00.000Z',
   items: [
     {
@@ -33,18 +34,17 @@ const dto = {
       variant_label_snapshot: 'M · Blue',
     },
   ],
-  payment_method: 'cash',
+  payments: [{ method: 'cash', amount: 342 }],
   language: 'ar',
   local_total: 342,
 } as any;
 
 function fingerprintOf(payload: any) {
-  const service = new SalesService(null as any, null as any, null as any, null as any, null as any) as any;
-  return service.saleCommandFingerprint(
+  return saleCommandFingerprint(
     payload,
     '22222222-2222-4222-8222-222222222222',
     new Date(payload.occurred_at),
-    service.normalizeLines(payload.items),
+    normalizeLines(payload.items),
   ) as string;
 }
 

@@ -1,0 +1,25 @@
+/* Payment screen: tenders list, split summary. Black/white identity like the rest of the register. */
+.pay-rows{display:grid;gap:10px;margin-bottom:12px}
+.pay-row{border:1px solid var(--line);border-radius:14px;padding:12px 14px;display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;background:#fff}
+.pay-row-head{grid-column:1/-1;display:flex;justify-content:space-between;align-items:center}
+.pay-row-head b{font-size:16px}
+.pay-remove{border:0;background:#f4f4f4;border-radius:8px;width:30px;height:30px;font-size:18px;color:#444}
+.pay-field{display:grid;gap:4px}
+.pay-field>span{font-size:12px;color:var(--muted);font-weight:700}
+.pay-field input{font-size:22px;font-weight:800;text-align:center;min-height:50px}
+.pay-add{display:grid;gap:6px}
+.pay-add>span{font-size:12px;color:var(--muted);font-weight:700}
+.pay-add>div{display:flex;gap:8px;flex-wrap:wrap}
+.pay-add button{border:1px dashed #9a9a9a;background:#fff;border-radius:10px;padding:9px 14px;font-weight:700;color:#222}
+.pay-add button:hover{border-style:solid;border-color:#111}
+.pay-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.pay-summary>div{display:grid;gap:2px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:#fff}
+.pay-summary>div>span{font-size:12px;color:var(--muted)}
+.pay-summary>div>b{font-size:19px}
+.pay-summary .ok b{color:#05603a}
+.pay-summary .warn{border-color:#b54708;background:#fffaeb}
+.pay-summary .warn b{color:#b54708}
+.pay-summary .change-row{margin-top:0;display:grid;justify-content:stretch}
+.exchange-note{background:#fffaeb;border:1px solid #b54708;color:#7a2e0e;border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:13px;line-height:1.7}
+.checkout-layout{grid-template-columns:minmax(0,1fr) 240px!important}.checkout-layout .keypad{align-self:start}.checkout-layout .keypad button{min-height:52px}
+.pay-row{min-width:0}.pay-field input{min-width:0;width:100%}.pay-rows{min-width:0}

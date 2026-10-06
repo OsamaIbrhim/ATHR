@@ -1,15 +1,8 @@
 import { ipcMain } from 'electron'
-import { assertQuantityPrecision, commitLocalSale, findSaleBySyncId } from '../db/sales'
-import { get, getMeta, q } from '../db/queries'
-import { assertFactoryResetIdle } from '../factory-reset-runtime'
-import { fromCents, lineCents, sameMoney, toCents } from '../money'
+import { commitLocalSale } from '../db/sales'
+import { q, setMeta } from '../db/queries'
 import { minorUnitsToDecimal } from '../money-codec'
-import {
-  nextTerminalSequence,
-  offlineAccountingContextMatches,
-} from '../offline-accounting'
-import { saleItemCommand, validateLocalSaleInput } from '../sale-validation'
-import { readSecureState } from '../secure-state'
+import { prepareSale } from './sale-prepare'
 
 function listLocalSales() {
   return q(
@@ -24,6 +17,8 @@ function listLocalSales() {
        s.created_at,
        COALESCE(s.occurred_at,s.created_at) AS occurred_at,
        s.payment_method,
+       s.payments_json,
+       s.discount_minor_units,
        s.customer_phone,
        s.cashier_id,
        s.seller_id,
@@ -49,101 +44,56 @@ function listLocalSales() {
 }
 
 function recordSale(sale: any) {
-  assertFactoryResetIdle()
-  const secure = readSecureState()
-  const authSession = secure.auth?.session
-  const context = secure.accounting
-  const device = secure.device
-  if (!device) throw new Error('This POS terminal is not enrolled')
-
-  const { syncId, items, localTotal, paymentMethod, customerPhone, sellerId, language } =
-    validateLocalSaleInput(sale, device.branch_id)
-  const seller = get(`SELECT id,name FROM sellers WHERE id=?`, [sellerId])
-  if (!seller) {
-    throw new Error(
-      'البائع المحدد غير موجود في قائمة الفرع المحلية. نفّذ مزامنة واختر البائع مرة أخرى.',
-    )
-  }
-  const existing = findSaleBySyncId(syncId)
-  if (existing) return { ...existing, ok: true, replayed: true }
-  assertQuantityPrecision(items)
-
-  const shift = context ? { id: context.shift_id, branch_id: context.branch_id } : null
-  if (
-    !authSession?.user ||
-    !shift ||
-    !offlineAccountingContextMatches(context, {
-      session: { user: authSession.user as any },
-      device,
-      shift,
-    })
-  ) {
-    throw new Error(
-      'Offline accounting authorization is missing, expired, or does not match the current cashier, terminal, and shift',
-    )
-  }
-
-  const calculatedTotalCents = items.reduce(
-    (sum: number, item: any) =>
-      sum + lineCents(item.unit_price, item.qty) + lineCents(item.unit_tax, item.qty),
-    0,
-  )
-  if (
-    toCents(localTotal) < 0 ||
-    !sameMoney(localTotal, fromCents(calculatedTotalCents))
-  ) {
-    throw new Error('Sale total does not match the immutable local price snapshots')
-  }
-  const occurredAt = new Date().toISOString()
-  const terminalSequence = nextTerminalSequence(
-    getMeta('terminal_sale_sequence'),
-    context.server_last_sale_sequence,
-  )
-  const invoiceNumber = `LOCAL-${device.terminal_code}-${terminalSequence}`
-  const command = {
-    event_version: 2,
-    sync_id: syncId,
-    branch_id: device.branch_id,
-    shift_id: context.shift_id,
-    origin_cashier_id: context.user_id,
-    cashier_name_snapshot: String(authSession.user.name || '').trim(),
-    seller_id: sellerId,
-    seller_name_snapshot: String(seller.name || '').trim(),
-    offline_session_id: context.session_id,
-    terminal_sequence: terminalSequence,
-    occurred_at: occurredAt,
-    customer_phone: customerPhone,
-    items: items.map(saleItemCommand),
-    payment_method: paymentMethod,
-    language,
-    local_total: localTotal,
-  }
+  const prepared = prepareSale(sale, { checkReplay: true })
+  if ('replayed' in prepared) return { ...prepared.replayed, ok: true, replayed: true }
+  const { validated, priced, command } = prepared
 
   commitLocalSale({
-    syncId,
-    invoiceNumber,
-    localTotal,
-    occurredAt,
-    paymentMethod: command.payment_method,
-    customerPhone: command.customer_phone || null,
-    cashierId: context.user_id,
-    sellerId,
-    shiftId: context.shift_id,
-    offlineSessionId: context.session_id,
-    terminalSequence,
-    items,
+    syncId: validated.syncId,
+    invoiceNumber: prepared.invoiceNumber,
+    localTotal: validated.localTotal,
+    occurredAt: prepared.occurredAt,
+    payments: validated.payments,
+    discountTotal: priced.discount,
+    customerPhone: validated.customerPhone || null,
+    cashierId: prepared.cashierId,
+    sellerId: validated.sellerId,
+    shiftId: prepared.shiftId,
+    offlineSessionId: prepared.offlineSessionId,
+    terminalSequence: prepared.terminalSequence,
+    items: validated.items,
     outboxPayload: JSON.stringify(command),
   })
   return {
-    sync_id: syncId,
-    invoice_number: invoiceNumber,
-    terminal_sequence: terminalSequence,
-    occurred_at: occurredAt,
+    sync_id: validated.syncId,
+    invoice_number: prepared.invoiceNumber,
+    terminal_sequence: prepared.terminalSequence,
+    occurred_at: prepared.occurredAt,
     ok: true,
+  }
+}
+
+/**
+ * The sale half of an online exchange: validated, priced and numbered like any
+ * sale, but sent by the register to `POST /pos/exchange` instead of the outbox.
+ * The number and sequence are taken now and kept (a retry sends the same
+ * command and the server replays it), so a later offline sale never reuses them.
+ */
+function prepareExchangeSale(sale: any) {
+  const prepared = prepareSale(sale, { checkReplay: false })
+  if ('replayed' in prepared) throw new Error('unreachable')
+  setMeta('terminal_sale_sequence', prepared.terminalSequence)
+  return {
+    command: prepared.command,
+    invoice_number: prepared.invoiceNumber,
+    terminal_sequence: prepared.terminalSequence,
+    occurred_at: prepared.occurredAt,
+    total: prepared.priced.total,
   }
 }
 
 export function registerSalesIpc() {
   ipcMain.handle('pos:sale', (_event, sale: any) => recordSale(sale))
+  ipcMain.handle('pos:prepare_exchange_sale', (_event, sale: any) => prepareExchangeSale(sale))
   ipcMain.handle('pos:list_local_sales', () => listLocalSales())
 }

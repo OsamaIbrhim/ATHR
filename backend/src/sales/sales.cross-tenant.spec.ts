@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { SalesService } from './sales.service';
+import { ReturnsService } from './returns.service';
+import { ReturnsReadService } from './returns-read.service';
 import { SalesReadService } from './sales-read.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
 import { actorFor } from '../auth/testing/actors';
@@ -80,6 +82,8 @@ function setup() {
   return {
     prisma,
     service: new SalesService(prisma, pricing, costVisibility, new SalesTaxSnapshotService(), {} as any),
+    returns: new ReturnsService(prisma, costVisibility, {} as any),
+    returnsRead: new ReturnsReadService(prisma),
     reads: new SalesReadService(prisma),
   };
 }
@@ -130,8 +134,8 @@ describe('sales — cross-tenant isolation', () => {
 
   /** `SalesInvoice.invoice_number` is still globally unique until Phase B. */
   it('does not resolve another tenant\'s invoice by invoice number', async () => {
-    const { service } = setup();
-    const found: any = await service.findReturnableInvoice(
+    const { returnsRead } = setup();
+    const found: any = await returnsRead.findReturnableInvoice(
       contextFor(TENANT_A),
       'B-100',
       ownerFor(BRANCH_A),
@@ -140,16 +144,16 @@ describe('sales — cross-tenant isolation', () => {
   });
 
   it('lists only the calling tenant\'s returns', async () => {
-    const { service } = setup();
-    const forA: any = await service.listReturns(contextFor(TENANT_A), listDto);
+    const { returnsRead } = setup();
+    const forA: any = await returnsRead.listReturns(contextFor(TENANT_A), listDto);
     expect(forA.items).toHaveLength(1);
     expect(forA.items[0].tenant_id ?? TENANT_A).toBe(TENANT_A);
   });
 
   it('does not create a return against another tenant\'s invoice', async () => {
-    const { service } = setup();
+    const { returns } = setup();
     await expect(
-      service.createReturn(
+      returns.createReturn(
         contextFor(TENANT_B),
         { original_invoice_id: INVOICE_A, items: [] } as any,
         ownerFor(BRANCH_B),

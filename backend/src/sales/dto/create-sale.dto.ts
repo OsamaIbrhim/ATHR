@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsDateString,
@@ -15,6 +16,9 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { IsQuantity } from '../../common/quantity';
+import { cleanInvoiceNumber } from '../invoice-number';
+import { SalePaymentDto } from './sale-payment.dto';
+import { cleanDiscount, type SaleDiscount } from '../sale-discounts';
 
 const MAX_SERIALS_PER_LINE = 1000;
 
@@ -68,6 +72,14 @@ export class CreateSaleItemDto {
   @IsString()
   @MaxLength(300)
   name_en_snapshot?: string;
+
+  /**
+   * A discount on this line (`{ type: 'amount' | 'percent', value }`), taken off
+   * the price as the cashier saw it. Cleaned, not validated: an unusable discount is none.
+   */
+  @IsOptional()
+  @Transform(({ value }) => cleanDiscount(value))
+  discount?: SaleDiscount;
 
   /** "L · أسود": what the cashier saw. POS <= 1.5 sent size/color instead. */
   @IsOptional()
@@ -131,6 +143,16 @@ export class CreateSaleDto {
   })
   terminal_sequence: string;
 
+  /**
+   * The number the till printed on the receipt (`POS1-000123`); stored verbatim
+   * unless it collides. Cleaned, not validated: a missing or malformed number
+   * never refuses a finished sale, the server derives one from terminal + sequence.
+   */
+  @IsOptional()
+  @Transform(({ value }) => cleanInvoiceNumber(value))
+  @IsString()
+  invoice_number?: string;
+
   @IsDateString()
   occurred_at: string;
 
@@ -145,9 +167,18 @@ export class CreateSaleDto {
   @ArrayMinSize(1)
   items: CreateSaleItemDto[];
 
-  @IsString()
-  @IsIn(['cash', 'card', 'instapay', 'vodafone_cash', 'installment'])
-  payment_method: string;
+  /** A discount on the whole invoice, spread over the lines (same shape as a line discount). */
+  @IsOptional()
+  @Transform(({ value }) => cleanDiscount(value))
+  discount?: SaleDiscount;
+
+  /** How the sale was paid; one entry per tender (split payment = several). */
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => SalePaymentDto)
+  payments: SalePaymentDto[];
 
   @IsOptional()
   @IsIn(['ar', 'en'])

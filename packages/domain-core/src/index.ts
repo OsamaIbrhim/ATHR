@@ -45,3 +45,24 @@ export {
   parseScaleBarcode,
 } from "./scale-barcode";
 export type { ScaleBarcodeConfig, ScaleBarcodeReading } from "./scale-barcode";
+
+export {
+  allocateProportionally,
+  calculateTax,
+  cumulativeShare,
+  discountAmount,
+  isDiscountAboveLimit,
+  lineAmount,
+  priceSale,
+} from "./sale-pricing";
+export type {
+  DecimalInput,
+  DiscountSpec,
+  DiscountType,
+  PricedSale,
+  SaleLineInput,
+  SaleLineResult,
+  SaleTotals,
+  TaxCalculation,
+  TaxMode,
+} from "./sale-pricing";

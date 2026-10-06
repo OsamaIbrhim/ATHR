@@ -6,6 +6,15 @@ import { TerminalsRepository } from './terminals.repository';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { fullAccess, unlimited } from '../entitlements/testing';
 
+// The per-tenant counter is one real statement (covered against Postgres by
+// scripts/verify-document-sequence.cjs); these specs only need a number back.
+jest.mock('../common/document-sequence', () => ({
+  ...jest.requireActual('../common/document-sequence'),
+  nextDocumentValue: jest.fn().mockResolvedValue(1n),
+  nextDocumentNumber: jest.fn().mockImplementation((_tx: unknown, _tenant: string, key: string) =>
+    Promise.resolve(key === 'terminal' ? 'POS1' : 'R-000001')),
+}));
+
 // WP-007 Phase A: TerminalsService delegates to a tenant-scoped repository,
 // and the operator-driven methods take a TenantContext. Device-credential
 // paths (authenticateDevice/heartbeat) are unchanged: a device proves itself
@@ -52,6 +61,52 @@ describe('TerminalsService', () => {
     expect(tx.posTerminal.upsert).toHaveBeenCalledWith(expect.objectContaining({
       create: expect.objectContaining({ branch_id: 'branch-1', enrolled_by: manager.sub }),
     }));
+  });
+
+  it('gives a new device a per-tenant terminal code and reports a zero sale sequence', async () => {
+    const enrollment = {
+      id: 'enrollment-1', branch_id: 'branch-1', created_by: manager.sub, tenant_id: 'tenant-1',
+      terminal_name: null, used_at: null, expires_at: new Date(Date.now() + 60_000),
+      branch: { id: 'branch-1', code: 'MAIN', tenant_id: 'tenant-1' },
+    };
+    const tx = {
+      posTerminalEnrollment: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      posTerminal: { upsert: jest.fn().mockImplementation(({ create }) => Promise.resolve({ id: 't1', ...create, branch: enrollment.branch })) },
+    };
+    const prisma = {
+      posTerminalEnrollment: { findUnique: jest.fn().mockResolvedValue(enrollment) },
+      posTerminal: { findUnique: jest.fn().mockResolvedValue(null) },
+      $transaction: jest.fn((callback) => callback(tx)),
+    };
+    const service = new TerminalsService(prisma as any, new TerminalsRepository(prisma as any), fullAccess, unlimited);
+    const { terminal } = await service.enroll({ enrollment_code: 'ABCDEF123456', device_id: dto.device_id });
+    expect(terminal.terminal_code).toBe('POS1');
+    expect(terminal.last_sale_sequence).toBe('0');
+  });
+
+  it('keeps the code of a device that enrolls again and tells it the sequence the server holds', async () => {
+    const enrollment = {
+      id: 'enrollment-2', branch_id: 'branch-1', created_by: manager.sub, tenant_id: 'tenant-1',
+      terminal_name: null, used_at: null, expires_at: new Date(Date.now() + 60_000),
+      branch: { id: 'branch-1', code: 'MAIN', tenant_id: 'tenant-1' },
+    };
+    const known = { id: 't1', device_id: dto.device_id, branch_id: 'branch-1', is_revoked: false, terminal_code: 'POS7', name: 'Till', last_sale_sequence: 412n };
+    const tx = {
+      posTerminalEnrollment: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      posTerminal: { upsert: jest.fn().mockImplementation(({ update }) => Promise.resolve({ ...known, ...update, branch: enrollment.branch })) },
+    };
+    const prisma = {
+      posTerminalEnrollment: { findUnique: jest.fn().mockResolvedValue(enrollment) },
+      posTerminal: { findUnique: jest.fn().mockResolvedValue(known) },
+      $transaction: jest.fn((callback) => callback(tx)),
+    };
+    const service = new TerminalsService(prisma as any, new TerminalsRepository(prisma as any), fullAccess, unlimited);
+    (require('../common/document-sequence').nextDocumentNumber as jest.Mock).mockClear();
+    const { terminal } = await service.enroll({ enrollment_code: 'ABCDEF123456', device_id: dto.device_id });
+    // No new number is taken: the existing code (and so the existing invoice numbers) stay valid.
+    expect(terminal.terminal_code).toBe('POS7');
+    expect(terminal.last_sale_sequence).toBe('412');
+    expect(require('../common/document-sequence').nextDocumentNumber).not.toHaveBeenCalledWith(expect.anything(), 'tenant-1', 'terminal');
   });
 
   it('accepts heartbeats only from an enrolled device in the cashier branch', async () => {

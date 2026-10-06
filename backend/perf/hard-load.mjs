@@ -536,7 +536,7 @@ async function mutationIntegrityLoad(adminToken) {
             offline_session_id: terminal.context.session_id,
             terminal_sequence: terminalSequence,
             occurred_at: new Date().toISOString(),
-            payment_method: 'cash',
+            payments: [{ method: 'cash', amount: localTotalByVariant[variantIndex] }],
             language: 'ar',
             local_total: localTotalByVariant[variantIndex],
             items: [
@@ -707,6 +707,7 @@ async function mutationIntegrityLoad(adminToken) {
       throw new Error('Negative-stock terminal state is missing')
     }
     const deficitQuantity = Number(stockAfter.qty_on_hand) + 1
+    const deficitTotal = new Prisma.Decimal(localTotalByVariant[0]).mul(deficitQuantity).toDecimalPlaces(2).toNumber()
     const deficitSyncId = randomUUID()
     const deficitCommand = {
       event_version: 2,
@@ -720,12 +721,9 @@ async function mutationIntegrityLoad(adminToken) {
       offline_session_id: deficitTerminal.context.session_id,
       terminal_sequence: (deficitTerminalRow.last_sale_sequence + 1n).toString(),
       occurred_at: new Date().toISOString(),
-      payment_method: 'cash',
       language: 'ar',
-      local_total: new Prisma.Decimal(localTotalByVariant[0])
-        .mul(deficitQuantity)
-        .toDecimalPlaces(2)
-        .toNumber(),
+      payments: [{ method: 'cash', amount: deficitTotal }],
+      local_total: deficitTotal,
       items: [
         {
           variant_id: stockRows[0].variant_id,

@@ -27,7 +27,7 @@
     "platform:admin": "ts-node prisma/grant-platform-admin.ts",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "jest --runInBand",
-    "test:db": "npm run build && node scripts/verify-tenant-constraints.cjs && node scripts/verify-price-book-behaviour.cjs && node scripts/verify-tax-code-behaviour.cjs && node scripts/verify-promotion-behaviour.cjs && node scripts/verify-sync-snapshot-behaviour.cjs && node scripts/verify-sync-delta-behaviour.cjs && node scripts/verify-raw-sql-tenant-scoping.cjs && node scripts/verify-nested-create-real-postgres.cjs && node scripts/verify-inventory-engine.cjs && node scripts/verify-stock-onboarding.cjs && node scripts/verify-subscription-behaviour.cjs",
+    "test:db": "npm run build && node scripts/verify-tenant-constraints.cjs && node scripts/verify-price-book-behaviour.cjs && node scripts/verify-tax-code-behaviour.cjs && node scripts/verify-promotion-behaviour.cjs && node scripts/verify-sync-snapshot-behaviour.cjs && node scripts/verify-sync-delta-behaviour.cjs && node scripts/verify-raw-sql-tenant-scoping.cjs && node scripts/verify-nested-create-real-postgres.cjs && node scripts/verify-inventory-engine.cjs && node scripts/verify-stock-onboarding.cjs && node scripts/verify-subscription-behaviour.cjs && node scripts/verify-sales-w3.cjs",
     "test:perf-contracts": "node --test perf/support/catalog-contract.test.mjs perf/support/resource-contract.test.mjs perf/support/sale-acknowledgement.test.mjs",
     "test:soft": "npm run test:deployment && npm run test:perf-contracts && npm test && npm run typecheck && npm run build"
   },

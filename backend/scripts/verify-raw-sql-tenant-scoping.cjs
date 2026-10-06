@@ -419,7 +419,7 @@ async function seedReportTenant(label, qty, unitPrice, unitCost) {
   const invoice = await prisma.salesInvoice.create({
     data: {
       tenant_id: tenant.id, invoice_number: `R4-${randomUUID()}`, branch_id: branch.id, status: 'completed',
-      occurred_at: at, subtotal: 90, tax_amount: 10, total: 100, payment_method: 'cash', language: 'ar',
+      occurred_at: at, subtotal: 90, tax_amount: 10, total: 100, language: 'ar',
       items: { create: [{ variant_id: variant.id, qty, unit_price: unitPrice, unit_cost: unitCost, unit_tax: 0 }] },
     },
     include: { items: true },

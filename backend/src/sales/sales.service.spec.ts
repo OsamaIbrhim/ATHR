@@ -1,3 +1,4 @@
+import { normalizeLines, saleCommandFingerprint } from './sale-command';
 import {
   BadRequestException,
   ConflictException,
@@ -10,10 +11,20 @@ import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { Prisma } from '@prisma/client';
+import { inventoryDouble, warehouseId } from './testing/inventory-double';
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { CreateSaleItemDto } from './dto/create-sale.dto';
+
+// The per-tenant counter is one real statement (covered against Postgres by
+// scripts/verify-document-sequence.cjs); these specs only need a number back.
+jest.mock('../common/document-sequence', () => ({
+  ...jest.requireActual('../common/document-sequence'),
+  nextDocumentValue: jest.fn().mockResolvedValue(1n),
+  nextDocumentNumber: jest.fn().mockImplementation((_tx: unknown, _tenant: string, key: string) =>
+    Promise.resolve(key === 'terminal' ? 'POS1' : 'R-000001')),
+}));
 
 const TAX_CODE_ID = '00000000-0000-0000-0000-0000000c0de1';
 
@@ -59,6 +70,7 @@ function saleDto(overrides: Record<string, unknown> = {}) {
     seller_name_snapshot: 'Seller One',
     offline_session_id: sessionId,
     terminal_sequence: '1',
+    invoice_number: 'POS1-000001',
     occurred_at: occurredAt,
     items: [
       {
@@ -72,38 +84,11 @@ function saleDto(overrides: Record<string, unknown> = {}) {
         variant_label_snapshot: 'M · Blue',
       },
     ],
-    payment_method: 'cash',
+    payments: [{ method: 'cash', amount: 342 }],
     language: 'ar',
     local_total: 342,
     ...overrides,
   } as any;
-}
-
-const warehouseId = '99999999-0000-4000-8000-000000000001';
-
-/**
- * InventoryService double: the stock engine is proven against Postgres by
- * `scripts/verify-inventory-engine.cjs`; these specs pin what sales asks of it.
- * `apply` reports the quantity after the command per line.
- */
-function inventoryDouble(qtyAfter = 8, reserved = 0, avgCost = 100) {
-  return {
-    defaultWarehouseId: jest.fn().mockResolvedValue(warehouseId),
-    drawnLots: jest.fn().mockResolvedValue([]),
-    serialStates: jest.fn().mockResolvedValue([]),
-    apply: jest.fn().mockImplementation((_tx: unknown, command: any) =>
-      Promise.resolve(
-        command.lines.map((line: any) => ({
-          variantId: line.variantId,
-          qtyBefore: new Prisma.Decimal(qtyAfter).minus(line.qtyDelta),
-          qtyAfter: new Prisma.Decimal(qtyAfter),
-          reserved: new Prisma.Decimal(reserved),
-          avgCostBefore: new Prisma.Decimal(avgCost),
-          avgCost: new Prisma.Decimal(avgCost),
-        })),
-      ),
-    ),
-  };
 }
 
 function setupSale(options: {
@@ -127,6 +112,7 @@ function setupSale(options: {
         {
           branch_id: branchId,
           branch_code: 'BOLD-01',
+          terminal_code: 'POS1',
           previous_sequence: options.lastSequence ?? 0n,
         },
       ]),
@@ -175,6 +161,8 @@ function setupSale(options: {
       ),
       create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'sale-1', ...data })),
     },
+    salesPayment: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    customerLedgerEntry: { create: jest.fn().mockResolvedValue({}) },
     salesInvoiceItem: {
       createManyAndReturn: jest.fn().mockImplementation(({ data }) =>
         Promise.resolve(data.map((item: any) => ({ ...item }))),
@@ -258,72 +246,12 @@ function setupSale(options: {
 }
 
 function fingerprint(service: SalesService, dto: any) {
-  return (service as any).saleCommandFingerprint(
+  return saleCommandFingerprint(
     dto,
     terminal.id,
     new Date(occurredAt),
-    (service as any).normalizeLines(dto.items),
+    normalizeLines(dto.items),
   );
-}
-
-function setupReturn(alreadyReturned = 0, itemType = 'stocked', tracking = 'none') {
-  const soldItem = {
-    id: 'sale-item-1',
-    variant_id: variantId,
-    qty: new Prisma.Decimal(3),
-    unit_price: 150,
-    unit_cost: 100,
-    unit_tax: 21,
-    variant: { item_type: itemType, tracking, base_uom: null },
-  };
-  const tx = {
-    $queryRaw: jest.fn().mockResolvedValue([]),
-    $executeRaw: jest.fn().mockResolvedValue(1),
-    shift: { findFirst: jest.fn().mockResolvedValue({ id: shiftId }) },
-    salesInvoice: {
-      findFirst: jest.fn().mockResolvedValue({
-        id: 'sale-1',
-        branch_id: branchId,
-        customer_id: null,
-        occurred_at: new Date(),
-        created_at: new Date(),
-        subtotal: 450,
-        tax_amount: 63,
-        items: [soldItem],
-      }),
-    },
-    returnItem: {
-      groupBy: jest.fn().mockResolvedValue(
-        alreadyReturned
-          ? [{ sales_invoice_item_id: 'sale-item-1', _sum: { qty: new Prisma.Decimal(alreadyReturned) } }]
-          : [],
-      ),
-    },
-    return: {
-      create: jest.fn().mockImplementation(({ data }) =>
-        Promise.resolve({
-          id: 'return-1',
-          created_at: new Date(),
-          ...data,
-          items: data.items.create.map((item: any, index: number) => ({ id: `return-item-${index + 1}`, ...item })),
-        }),
-      ),
-    },
-    customer: { findUnique: jest.fn(), update: jest.fn() },
-  };
-  const prisma = { $transaction: jest.fn((callback) => callback(tx)) };
-  const inventory = inventoryDouble();
-  return {
-    service: new SalesService(
-      prisma as any,
-      {} as any,
-      new CostVisibilityService(),
-      new SalesTaxSnapshotService(),
-      inventory as any,
-    ),
-    tx,
-    inventory,
-  };
 }
 
 describe('SalesService acceptance-first sale synchronization', () => {
@@ -517,7 +445,7 @@ describe('SalesService acceptance-first sale synchronization', () => {
     ]);
 
     await expect(
-      service.createSale(saleDto({ payment_method: 'card' }), terminal),
+      service.createSale(saleDto({ payments: [{ method: 'card', amount: 342 }] }), terminal),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
@@ -553,162 +481,191 @@ describe('SalesService acceptance-first sale synchronization', () => {
     });
   });
 
-  it('rejects only an internally inconsistent immutable local total', async () => {
+  it('reconciles a closed shift by the cash tendered only, not by the whole total', async () => {
+    const { service, tx } = setupSale({ closedShift: true });
+    await service.createSale(saleDto({ payments: [{ method: 'cash', amount: 100 }, { method: 'card', amount: 242 }] }), terminal);
+    expect(tx.shift.update.mock.calls[0][0].data.expected_cash.increment.toString()).toBe('100');
+
+    const cardOnly = setupSale({ closedShift: true });
+    await cardOnly.service.createSale(saleDto({ payments: [{ method: 'card', amount: 342 }] }), terminal);
+    expect(cardOnly.tx.shift.update).not.toHaveBeenCalled();
+  });
+
+  it('accepts a total that does not match its lines: the till total is stored, with a warning', async () => {
     const { service, tx } = setupSale();
-    await expect(
-      service.createSale(saleDto({ local_total: 999 }), terminal),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(tx.salesInvoice.create).not.toHaveBeenCalled();
-  });
-});
-
-describe('SalesService returns', () => {
-  it('rejects an item that was not sold on the original invoice', async () => {
-    const { service } = setupReturn();
-    await expect(
-      service.createReturn(
-      ctx,
-        {
-          original_invoice_id: 'sale-1',
-          items: [{ sales_invoice_item_id: 'not-on-sale', qty: 1 }],
-        },
-        actor,
-      ),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    const result = await service.createSale(saleDto({ local_total: 999 }), terminal);
+    expect(result.warning_codes).toContain('LOCAL_TOTAL_MISMATCH');
+    expect(tx.salesInvoice.create.mock.calls[0][0].data.total.toString()).toBe('999');
+    expect(tx.salesInvoice.create.mock.calls[0][0].data.subtotal.toString()).toBe('300');
   });
 
-  it('rejects quantities greater than the returnable quantity', async () => {
-    const { service } = setupReturn(2);
-    await expect(
-      service.createReturn(
-      ctx,
-        {
-          original_invoice_id: 'sale-1',
-          items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        },
-        actor,
-      ),
-    ).rejects.toBeInstanceOf(ConflictException);
-  });
-
-  it('returns the goods to the branch warehouse at the cost they were sold at', async () => {
-    const { service, inventory } = setupReturn();
-    await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-      },
-      actor,
+  it('stores one row per tender, in order, with the cash handed over', async () => {
+    const { service, tx } = setupSale();
+    const result = await service.createSale(
+      saleDto({ payments: [{ method: 'cash', amount: 300, tendered: 500 }, { method: 'card', amount: 42, reference: 'R1' }] }),
+      terminal,
     );
+    const rows = tx.salesPayment.createMany.mock.calls[0][0].data;
+    expect(rows.map((row: any) => [row.sequence, row.method, row.amount.toString(), row.tendered?.toString() ?? null])).toEqual([
+      [1, 'cash', '300', '500'],
+      [2, 'card', '42', null],
+    ]);
+    expect(rows.every((row: any) => row.sales_invoice_id === result.id && row.tenant_id === tenantId)).toBe(true);
+    expect(result.warning_codes).not.toContain('PAYMENT_TOTAL_MISMATCH');
+  });
 
-    expect(inventory.apply).toHaveBeenCalledTimes(1);
-    const [, command] = inventory.apply.mock.calls[0];
-    expect(command).toMatchObject({
-      warehouseId,
-      type: 'return',
-      costType: 'customer_return',
-      idempotencyKey: 'return:return-1',
-      reference: { type: 'Return', id: 'return-1' },
+  it('accepts payments that do not add up, and a method the tenant disabled, with warnings', async () => {
+    const { service, tx } = setupSale();
+    const result = await service.createSale(saleDto({ payments: [{ method: 'bank_transfer', amount: 100 }] }), terminal);
+    expect(result.warning_codes).toEqual(expect.arrayContaining(['PAYMENT_TOTAL_MISMATCH', 'PAYMENT_METHOD_DISABLED']));
+    expect(tx.salesPayment.createMany).toHaveBeenCalled();
+  });
+
+  describe('sales on credit', () => {
+    const creditSale = (extra: Record<string, unknown> = {}) =>
+      saleDto({ customer_phone: '01012345678', payments: [{ method: 'cash', amount: 142 }, { method: 'credit', amount: 200 }], ...extra });
+    /** The claim statement answers first, the customer upsert second. */
+    const withCustomer = (setup: ReturnType<typeof setupSale>, customer: { balance: number; credit_limit: number | null }) => {
+      const claim = {
+        branch_id: branchId, branch_code: 'BOLD-01', terminal_code: 'POS1', settings: {}, previous_sequence: 0n,
+      };
+      setup.tx.$queryRaw.mockReset();
+      setup.tx.$queryRaw.mockResolvedValueOnce([claim]).mockResolvedValueOnce([{ id: 'customer-1', ...customer }]);
+    };
+
+    it('books the credit part on the customer and writes one ledger entry with the balance it produced', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 200, credit_limit: null });
+      const result = await setup.service.createSale(creditSale(), terminal);
+      const upsert = setup.tx.$queryRaw.mock.calls[1];
+      expect(upsert[0].join('?')).toContain('"balance" = "Customer"."balance" + EXCLUDED."balance"');
+      expect(upsert.slice(1).map((value: unknown) => String(value))).toContain('200');
+      expect(setup.tx.customerLedgerEntry.create).toHaveBeenCalledTimes(1);
+      const entry = setup.tx.customerLedgerEntry.create.mock.calls[0][0].data;
+      expect([entry.type, entry.amount.toString(), entry.balance_after.toString(), entry.customer_id, entry.sales_invoice_id]).toEqual([
+        'sale_credit', '200', '200', 'customer-1', result.id,
+      ]);
+      expect(result.warning_codes).not.toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
     });
-    expect(command.lines).toHaveLength(1);
-    expect(command.lines[0].qtyDelta.toString()).toBe('2');
-    expect(command.lines[0].unitCost.toFixed(4)).toBe('100.0000');
-    expect(command.lines[0].value.toFixed(2)).toBe('200.00');
+
+    it('accepts a credit sale beyond the credit limit, with a warning', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 600, credit_limit: 500 });
+      const result = await setup.service.createSale(creditSale(), terminal);
+      expect(result.warning_codes).toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+      expect(setup.tx.customerLedgerEntry.create).toHaveBeenCalled();
+    });
+
+    it('accepts credit without a customer, with a warning and no ledger entry', async () => {
+      const { service, tx } = setupSale();
+      const result = await service.createSale(creditSale({ customer_phone: undefined }), terminal);
+      expect(result.warning_codes).toContain('CREDIT_WITHOUT_CUSTOMER');
+      expect(tx.customerLedgerEntry.create).not.toHaveBeenCalled();
+    });
+
+    it('writes no ledger entry for a sale without credit', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 0, credit_limit: 10 });
+      const result = await setup.service.createSale(saleDto({ customer_phone: '01012345678' }), terminal);
+      expect(setup.tx.customerLedgerEntry.create).not.toHaveBeenCalled();
+      expect(result.warning_codes).not.toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+    });
   });
 
-  it('does not restock a service item', async () => {
-    const { service, inventory } = setupReturn(0, 'service');
-    await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 1 }],
-      },
-      actor,
-    );
-    expect(inventory.apply.mock.calls[0][1].lines).toEqual([]);
-  });
+  describe('discounts', () => {
+    const lineWith = (discount?: unknown) => [{ ...saleDto().items[0], discount }];
+    const tenPercent = () =>
+      saleDto({ items: lineWith({ type: 'percent', value: 10 }), payments: [{ method: 'cash', amount: 307.8 }], local_total: 307.8 });
+    const halfOff = () =>
+      saleDto({ items: lineWith({ type: 'percent', value: 50 }), payments: [{ method: 'cash', amount: 171 }], local_total: 171 });
 
-  it('links a POS return to the currently open shift', async () => {
-    const { service, tx } = setupReturn();
-    const result = await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        reason: 'Wrong size',
-      },
-      actor,
-    );
+    it('stores the discount and the tax after it on the line, and the discount total on the invoice', async () => {
+      const { service, tx } = setupSale();
+      const result = await service.createSale(tenPercent(), terminal);
+      const line = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data[0];
+      expect([line.unit_price.toString(), line.unit_tax.toString(), line.discount_amount.toString(), line.tax_amount.toString()]).toEqual(['150', '21', '30', '37.8']);
+      const invoice = tx.salesInvoice.create.mock.calls[0][0].data;
+      expect([invoice.subtotal.toString(), invoice.discount_amount.toString(), invoice.tax_amount.toString(), invoice.total.toString()]).toEqual(['300', '30', '37.8', '307.8']);
+      expect(result.warning_codes).not.toContain('LOCAL_TOTAL_MISMATCH');
+      expect(result.warning_codes).not.toContain('DISCOUNT_ABOVE_LIMIT');
+    });
 
-    expect(tx.return.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          branch_id: branchId,
-          shift_id: shiftId,
-          created_by: cashierId,
+    it('records the tax snapshot over the discounted base', async () => {
+      const { service, tx } = setupSale();
+      await service.createSale(tenPercent(), terminal);
+      const snapshot = tx.salesTaxSnapshot.createMany.mock.calls[0][0].data[0];
+      expect([snapshot.base_amount.toString(), snapshot.tax_amount.toString()]).toEqual(['270', '37.8']);
+    });
+
+    it('accepts a discount above the cashier limit, flagged', async () => {
+      const { service } = setupSale();
+      expect((await service.createSale(halfOff(), terminal)).warning_codes).toContain('DISCOUNT_ABOVE_LIMIT');
+    });
+
+    it('lets a manager (override) discount beyond the limit without a flag', async () => {
+      const { service, tx } = setupSale();
+      tx.membership.findMany.mockImplementation(() =>
+        Promise.resolve([
+          {
+            user_id: cashierId,
+            role: 'location_manager',
+            granted_permissions: [],
+            revoked_permissions: [],
+            access_scope_assignments: [{ scope_type: 'location', scope_ref_id: branchId, effective_from: new Date('2020-01-01'), effective_to: null }],
+          },
+        ]),
+      );
+      expect((await service.createSale(halfOff(), terminal)).warning_codes).not.toContain('DISCOUNT_ABOVE_LIMIT');
+    });
+
+    it('merges two lines of one variant that carry different discounts instead of refusing the sale', async () => {
+      const { service, tx } = setupSale();
+      const base = saleDto().items[0];
+      await service.createSale(
+        saleDto({
+          items: [{ ...base, qty: 1, discount: { type: 'amount', value: 10 } }, { ...base, qty: 1 }],
+          payments: [{ method: 'cash', amount: 330.6 }],
+          local_total: 330.6,
         }),
-      }),
-    );
-    expect(String(result.refund_total)).toBe('342');
+        terminal,
+      );
+      const rows = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data;
+      expect(rows).toHaveLength(1);
+      expect([rows[0].qty.toString(), rows[0].discount_amount.toString()]).toEqual(['2', '10']);
+    });
+
+    it('fingerprints the discounts, and leaves a sale without any untouched', () => {
+      const { service } = setupSale();
+      const plain = fingerprint(service, saleDto());
+      expect(fingerprint(service, saleDto({ items: lineWith({ type: 'amount', value: 5 }) }))).not.toBe(plain);
+      expect(fingerprint(service, saleDto({ discount: { type: 'percent', value: 5 } }))).not.toBe(plain);
+      expect(fingerprint(service, saleDto({ items: lineWith(undefined) }))).toBe(plain);
+    });
   });
 
-  /**
-   * BR-CST-101 / Matrix §17 §51. `ReturnItem.unit_cost` is the sale line's cost
-   * carried onto the return, so the return response is the same disclosure as
-   * `GET /sales/:id` under a different table — see `sales.cost-visibility.spec.ts`
-   * for the read-path half.
-   */
-  it('strips unit_cost from the return response for an actor without cost/margin visibility', async () => {
-    const { service, tx } = setupReturn();
-    const result: any = await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        reason: 'Wrong size',
-      },
-      actor,
-    );
-
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]).not.toHaveProperty('unit_cost');
-    // Only the response is projected — the written row keeps the true cost.
-    const written = tx.return.create.mock.calls[0][0].data.items.create[0];
-    expect(Number(written.unit_cost)).toBe(100);
+  it('stores the printed invoice number verbatim', async () => {
+    const { service } = setupSale();
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.invoice_number).toBe('POS1-000001');
+    expect(result.warning_codes).not.toContain('INVOICE_NUMBER_REASSIGNED');
   });
 
-  it('returns unit_cost on a return to an actor holding cost/margin visibility', async () => {
-    const { service } = setupReturn();
-    const result: any = await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        reason: 'Wrong size',
-      },
-      // A location manager holds `sales.sale.view-cost-margin`; the cashier
-      // the module's other cases use does not, which is why they mask.
-      actorFor('location_manager', { sub: cashierId, branchId }),
-    );
-
-    expect(Number(result.items[0].unit_cost)).toBe(100);
+  it('prints {terminal_code}-{sequence} when the till sent no usable number', async () => {
+    const { service } = setupSale();
+    const result = await service.createSale(saleDto({ invoice_number: undefined, terminal_sequence: '7' }), terminal);
+    expect(result.invoice_number).toBe('POS1-000007');
+    expect(result.warning_codes).toContain('INVOICE_NUMBER_REASSIGNED');
   });
 
-  it('masks the return response when the key was revoked from the actor', async () => {
-    const { service } = setupReturn();
-    const result: any = await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        reason: 'Wrong size',
-      },
-      actorFor('location_manager', { sub: cashierId, branchId, revoked: ['sales.sale.view-cost-margin'] }),
-    );
-
-    expect(result.items[0]).not.toHaveProperty('unit_cost');
+  it('stores a sale whose number is already taken under a suffix and warns, never refuses', async () => {
+    const { service, tx } = setupSale();
+    tx.salesInvoice.findMany.mockResolvedValue([
+      { sync_id: 'another-sync', invoice_number: 'POS1-000001' },
+      { sync_id: 'third-sync', invoice_number: 'POS1-000001-2' },
+    ]);
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.invoice_number).toBe('POS1-000001-3');
+    expect(result.warning_codes).toContain('INVOICE_NUMBER_REASSIGNED');
   });
 });
 
@@ -778,147 +735,4 @@ describe('SalesService tracked items', () => {
     expect(validateSync(dto(['A', ''], 42), { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
   });
 
-  describe('customer returns', () => {
-    const returnOf = (qty: number, serials?: string[]) => ({
-      original_invoice_id: 'sale-1',
-      items: [{ sales_invoice_item_id: 'sale-item-1', qty, ...(serials ? { serials } : {}) }],
-    });
-    // A serial the sale line took out; `latest` = nothing touched it since (not returned, not resold).
-    const drawnSerial = (serial: string, status = 'sold', latest = status === 'sold') => ({
-      line_id: 'sale-item-1', serial, serial_status: status, serial_latest: latest,
-      batch_no: null, expiry_date: null, batch_created_at: null, qty: new Prisma.Decimal(1),
-    });
-    const drawnBatch = (batchNo: string, qty: number) => ({
-      line_id: 'sale-item-1', serial: null, serial_status: null, serial_latest: null, batch_no: batchNo, expiry_date: null,
-      batch_created_at: new Date('2026-01-01'), qty: new Prisma.Decimal(qty),
-    });
-    const serialState = (serial: string, status: string, warehouse: string | null = warehouseId) => ({
-      variant_id: variantId, serial, status, warehouse_id: status === 'in_stock' ? warehouse : null,
-    });
-    // The sold line has qty 3 (setupReturn).
-    const serialReturn = (drawn: unknown[], states: unknown[] = []) => {
-      const setup = setupReturn(0, 'stocked', 'serial');
-      setup.inventory.drawnLots.mockResolvedValue(drawn);
-      setup.inventory.serialStates.mockResolvedValue(states);
-      return setup;
-    };
-    const suppliedLots = (setup: ReturnType<typeof setupReturn>) => setup.inventory.apply.mock.calls[0][1].lines[0].lots;
-
-    it('does not look up lots for an untracked variant', async () => {
-      const { service, inventory } = setupReturn();
-      await service.createReturn(ctx, returnOf(1), actor);
-      expect(inventory.drawnLots).not.toHaveBeenCalled();
-      expect(inventory.apply.mock.calls[0][1].lines[0]).not.toHaveProperty('lots');
-    });
-
-    it('puts back the serials that were sold on the line', async () => {
-      const setup = serialReturn([drawnSerial('S1'), drawnSerial('S2'), drawnSerial('S3')]);
-      await setup.service.createReturn(ctx, returnOf(2, ['S1', 'S3']), actor);
-      expect(setup.inventory.drawnLots).toHaveBeenCalledWith(expect.anything(), ctx.tenantId, { type: 'SalesInvoice', id: 'sale-1' }, ['sale-item-1']);
-      expect(suppliedLots(setup)).toEqual({ serials: ['S1', 'S3'] });
-    });
-
-    it('refuses a serial that is already back, and one that was resold since (its sale would be orphaned)', async () => {
-      const back = serialReturn([drawnSerial('S1'), drawnSerial('S2', 'in_stock'), drawnSerial('S3')]);
-      await expect(back.service.createReturn(ctx, returnOf(1, ['S2']), actor)).rejects.toMatchObject({
-        response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['S2'] },
-      });
-      // S1 shows 'sold' but a later invoice sold it again: this line no longer owns it.
-      const resold = serialReturn([drawnSerial('S1', 'sold', false), drawnSerial('S2'), drawnSerial('S3')]);
-      await expect(resold.service.createReturn(ctx, returnOf(1, ['S1']), actor)).rejects.toMatchObject({
-        response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['S1'] },
-      });
-      expect(back.inventory.apply).not.toHaveBeenCalled();
-      expect(resold.inventory.apply).not.toHaveBeenCalled();
-    });
-
-    it('needs the serial of every unit whose serial is on record', async () => {
-      const setup = serialReturn([drawnSerial('S1'), drawnSerial('S2'), drawnSerial('S3')]);
-      await expect(setup.service.createReturn(ctx, returnOf(1), actor)).rejects.toMatchObject({
-        response: { code: 'TRACKING_SERIALS_REQUIRED' },
-      });
-      await expect(setup.service.createReturn(ctx, returnOf(2, ['S1']), actor)).rejects.toMatchObject({
-        response: { code: 'TRACKING_SERIALS_REQUIRED' },
-      });
-    });
-
-    describe('units that were sold without a serial on record (a POS without serial scanning)', () => {
-      // Sold 3, only S1 was recorded: two units have no serial on record.
-      it('come back with their own new serials', async () => {
-        const setup = serialReturn([drawnSerial('S1')]);
-        await setup.service.createReturn(ctx, returnOf(2, ['NEW-1', 'NEW-2']), actor);
-        expect(suppliedLots(setup)).toEqual({ serials: ['NEW-1', 'NEW-2'] });
-      });
-
-      it('come back with no serial at all, up to that many units', async () => {
-        const setup = serialReturn([drawnSerial('S1')]);
-        await setup.service.createReturn(ctx, returnOf(2), actor);
-        expect(suppliedLots(setup)).toEqual({ serials: [] });
-
-        const tooMany = serialReturn([drawnSerial('S1')]);
-        await expect(tooMany.service.createReturn(ctx, returnOf(3), actor)).rejects.toMatchObject({
-          response: { code: 'TRACKING_SERIALS_REQUIRED' },
-        });
-      });
-
-      it('never exceed the units without a record', async () => {
-        const setup = serialReturn([drawnSerial('S1')]);
-        await expect(setup.service.createReturn(ctx, returnOf(3, ['N1', 'N2', 'N3']), actor)).rejects.toMatchObject({
-          response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['N3'] },
-        });
-      });
-
-      it('settle the count when the serial was never scanned out and is still in stock', async () => {
-        const setup = serialReturn([drawnSerial('S1')], [serialState('P2', 'in_stock')]);
-        await setup.service.createReturn(ctx, returnOf(1, ['P2']), actor);
-        // Nothing to put back: the serial is already in stock, only on hand moves.
-        expect(suppliedLots(setup)).toEqual({ serials: [] });
-        expect(setup.inventory.serialStates).toHaveBeenCalledWith(expect.anything(), ctx.tenantId, [{ variantId, serial: 'P2' }]);
-      });
-
-      it('never take a serial that is sold on another line, sent to a supplier or in transit', async () => {
-        for (const status of ['sold', 'returned_to_supplier', 'in_transit']) {
-          const setup = serialReturn([drawnSerial('S1')], [serialState('X', status)]);
-          await expect(setup.service.createReturn(ctx, returnOf(1, ['X']), actor)).rejects.toMatchObject({
-            response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE', serials: ['X'] },
-          });
-        }
-        const elsewhere = serialReturn([drawnSerial('S1')], [serialState('X', 'in_stock', 'another-warehouse')]);
-        await expect(elsewhere.service.createReturn(ctx, returnOf(1, ['X']), actor)).rejects.toMatchObject({
-          response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE' },
-        });
-      });
-
-      it('leave less to take back once earlier returns used the allowance', async () => {
-        // 3 sold, S1 recorded, 1 unrecorded unit already returned: one unrecorded unit left.
-        const { service, inventory } = setupReturn(1, 'stocked', 'serial');
-        inventory.drawnLots.mockResolvedValue([drawnSerial('S1')]);
-        inventory.serialStates.mockResolvedValue([]);
-        await service.createReturn(ctx, returnOf(1, ['NEW-A']), actor);
-        const again = setupReturn(2, 'stocked', 'serial');
-        again.inventory.drawnLots.mockResolvedValue([drawnSerial('S1')]);
-        again.inventory.serialStates.mockResolvedValue([]);
-        await expect(again.service.createReturn(ctx, returnOf(1, ['NEW-B']), actor)).rejects.toMatchObject({
-          response: { code: 'RETURN_SERIAL_NOT_SOLD_ON_LINE' },
-        });
-      });
-    });
-
-    it('sends batch goods back to the batches the line drew, newest draw first, skipping earlier returns', async () => {
-      // The sale drew 2 from A (soonest) and 1 from B; 1 unit was already returned (it went back to B).
-      const { service, inventory } = setupReturn(1, 'stocked', 'batch');
-      inventory.drawnLots.mockResolvedValue([drawnBatch('A', 2), drawnBatch('B', 1)]);
-      await service.createReturn(ctx, returnOf(2), actor);
-      const { batches } = inventory.apply.mock.calls[0][1].lines[0].lots;
-      expect(batches.map((batch: any) => [batch.batchNo, batch.qty.toString()])).toEqual([['A', '2']]);
-    });
-
-    it('sends batch units the line has no record of to the unallocated row', async () => {
-      const { service, inventory } = setupReturn(0, 'stocked', 'batch');
-      inventory.drawnLots.mockResolvedValue([drawnBatch('A', 1)]);
-      await service.createReturn(ctx, returnOf(2), actor);
-      const { batches } = inventory.apply.mock.calls[0][1].lines[0].lots;
-      expect(batches.map((batch: any) => [batch.batchNo, batch.qty.toString()])).toEqual([['A', '1'], ['', '1']]);
-    });
-  });
 });

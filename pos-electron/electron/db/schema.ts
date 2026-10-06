@@ -101,3 +101,18 @@ export const SCHEMA_V1 = `
     value TEXT NOT NULL
   );
 `
+
+/**
+ * Version 2 (W3 sales): the tax rate and mode of each product (the till
+ * recomputes tax after a discount), and the payments and invoice discount of
+ * a local sale. Only ADD COLUMN: nothing stored by version 1 is touched.
+ *
+ * `tax_rate` is NULL for rows cached before this version; the next catalog
+ * refresh fills it and until then those lines cannot take a discount.
+ */
+export const SCHEMA_V2_STEPS = [
+  `ALTER TABLE products ADD COLUMN tax_rate TEXT`,
+  `ALTER TABLE products ADD COLUMN tax_mode TEXT`,
+  `ALTER TABLE sales_local ADD COLUMN payments_json TEXT`,
+  `ALTER TABLE sales_local ADD COLUMN discount_minor_units INTEGER NOT NULL DEFAULT 0`,
+] as const

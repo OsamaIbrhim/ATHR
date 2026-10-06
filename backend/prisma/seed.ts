@@ -400,7 +400,7 @@ async function main() {
   }
 
   // Sales Invoices – 15 with items
-  const paymentMethods = ['cash','card','instapay','vodafone_cash','installment'];
+  const paymentMethods = ['cash','card','wallet','bank_transfer','other'] as const;
   const salesInvoices = [];
   for (let i=0; i<15; i++) {
     const branch = i %3 ===0 ? b2 : b1;
@@ -429,7 +429,7 @@ async function main() {
         seller_name_snapshot: seller.name,
         status: 'completed',
         subtotal, tax_amount, total,
-        payment_method: paymentMethods[i % paymentMethods.length],
+        payments: { create: [{ sequence: 1, method: paymentMethods[i % paymentMethods.length], amount: total }] },
         language: 'ar',
         created_at: new Date(Date.now() - deterministicRandom()*30*86400000),
         items: { create: items }

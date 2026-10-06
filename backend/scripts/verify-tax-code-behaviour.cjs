@@ -161,7 +161,6 @@ async function verifySnapshotImmutability(tenant) {
       subtotal: 100,
       tax_amount: 14,
       total: 114,
-      payment_method: 'cash',
       // Same as above: `tenant_id` is part of the composite invoice relation
       // and must not be repeated in the nested create.
       items: {

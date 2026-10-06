@@ -15,6 +15,10 @@ import {
 import { Request, Response } from 'express'
 import { SalesService } from './sales.service'
 import { SalesReadService } from './sales-read.service'
+import { ReturnsService } from './returns.service'
+import { ExchangeService } from './exchange.service'
+import { ExchangeDto } from './dto/exchange.dto'
+import { ReturnsReadService } from './returns-read.service'
 import { InvoicePdfService } from './invoice-pdf.service'
 import { CreateSaleDto } from './dto/create-sale.dto'
 import { AuthenticatedUser } from '../auth/authenticated-user'
@@ -34,6 +38,9 @@ import { EntitlementService } from '../entitlements/entitlement.service'
 export class SalesController {
   constructor(
     private svc: SalesService,
+    private returns: ReturnsService,
+    private returnsRead: ReturnsReadService,
+    private exchanges: ExchangeService,
     private reads: SalesReadService,
     private pdfService: InvoicePdfService,
     private terminals: TerminalsService,
@@ -99,7 +106,23 @@ export class SalesController {
       )
     }
 
-    return this.svc.createReturn(ctx, dto, req.user)
+    return this.returns.createReturn(ctx, dto, req.user)
+  }
+
+  /** Return + new sale in one transaction (online). Needs a terminal: the new sale is a POS sale. */
+  @UseGuards(new PosProtocolGuard())
+  @RequirePermission('returns.return.request', 'sales.sale.create')
+  @Post('pos/exchange')
+  async exchange(
+    @TenantCtx() ctx: TenantContext,
+    @Body() dto: ExchangeDto,
+    @Headers('x-pos-device-id') deviceId: string | undefined,
+    @Headers('x-pos-device-token') deviceToken: string | undefined,
+    @Req() req: Request & { user: AuthenticatedUser },
+  ) {
+    const terminal = await this.terminals.authenticate(deviceId, deviceToken, req.user)
+    await this.entitlements.assertCanWrite(terminal.tenant_id)
+    return this.exchanges.exchange(ctx, dto, req.user, terminal)
   }
 
   @UseGuards(new PosProtocolGuard())
@@ -124,7 +147,7 @@ export class SalesController {
       )
     }
 
-    return this.svc.findReturnableInvoice(
+    return this.returnsRead.findReturnableInvoice(
       ctx,
       reference.trim(),
       req.user,
@@ -164,6 +187,6 @@ export class SalesController {
   ) {
     const branchId = resolveBranchScope(req.user, dto.branch_id)
 
-    return this.svc.listReturns(ctx, dto, branchId)
+    return this.returnsRead.listReturns(ctx, dto, branchId)
   }
 }

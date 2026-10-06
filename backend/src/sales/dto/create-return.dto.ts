@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsIn,
   IsOptional,
   IsString,
   IsUUID,
@@ -10,6 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { IsQuantity } from '../../common/quantity';
+import { REFUND_METHODS, type RefundMethod } from '../payment-methods';
 
 export class CreateReturnItemDto {
   @IsUUID()
@@ -40,4 +42,9 @@ export class CreateReturnDto {
   @IsString()
   @MaxLength(500)
   reason?: string;
+
+  /** How the money goes back (default cash); `credit` lowers what the customer owes. */
+  @IsOptional()
+  @IsIn(REFUND_METHODS)
+  refund_method?: RefundMethod;
 }
