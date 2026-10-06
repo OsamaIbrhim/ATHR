@@ -10,6 +10,7 @@ export type ApiErrorPayload = {
   message_ar?: string
   field?: string
   details?: string[]
+  data?: any
   request_id?: string
 }
 
@@ -21,8 +22,9 @@ const fieldLabels: Record<string, string> = {
   email: 'البريد الإلكتروني',
   password: 'كلمة المرور',
   sku: 'رمز SKU',
-  barcode_ean13: 'باركود EAN-13',
-  barcode_internal: 'الباركود الداخلي',
+  code: 'الباركود',
+  pack_qty: 'كمية العبوة',
+  attributes: 'الخصائص',
   enrollment_code: 'رمز تسجيل الجهاز',
   branch_id: 'الفرع',
   quantity: 'الكمية',
@@ -32,6 +34,8 @@ export class ApiError extends Error {
   code: string
   field?: string
   details: string[]
+  /** Structured extras of a domain error (per-row results, `line_index`, `count_id`...). */
+  data?: any
   requestId?: string
 
   constructor(payload: ApiErrorPayload, status?: number) {
@@ -42,6 +46,7 @@ export class ApiError extends Error {
     this.code = payload.code || 'REQUEST_FAILED'
     this.field = payload.field
     this.details = payload.details || []
+    this.data = payload.data
     this.requestId = payload.request_id
   }
 }
@@ -121,6 +126,12 @@ export async function apiPatch(path: string, body: any) {
   }), path)
 }
 
+export async function apiPut(path: string, body: any) {
+  return handleResponse(await authorizedFetch(path, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }), path)
+}
+
 export async function apiDelete(path: string) {
   return handleResponse(await authorizedFetch(path, { method: 'DELETE' }), path)
 }
@@ -136,9 +147,12 @@ export async function apiGetBlob(path: string) {
 export type AdminUser = {
   id: string
   name: string
+  /** Client-compatible role name (owner, branch_manager, ...). */
   role: string
+  membership_role?: string
   branch_id: string | null
-  capabilities?: string[]
+  /** Effective permission keys of the session's membership. */
+  permissions?: string[]
 }
 
 export function getStoredUser(): AdminUser | null {

@@ -6,7 +6,26 @@ import {
 
 type Context = { params: Promise<{ path: string[] }> }
 
+// CSRF defense-in-depth on top of SameSite=Strict: a mutating request that
+// carries an Origin must come from this same host.
+function isCrossOrigin(request: NextRequest) {
+  const origin = request.headers.get('origin')
+  if (!origin || ['GET', 'HEAD'].includes(request.method)) return false
+  try {
+    const host = request.headers.get('x-forwarded-host') ?? request.headers.get('host')
+    return new URL(origin).host !== host
+  } catch {
+    return true
+  }
+}
+
 async function proxy(request: NextRequest, context: Context) {
+  if (isCrossOrigin(request)) {
+    return NextResponse.json({
+      code: 'FORBIDDEN_ORIGIN',
+      message_ar: 'الطلب مرفوض لأن مصدره غير مسموح.',
+    }, { status: 403 })
+  }
   const { path } = await context.params
   const safePath = path.map(segment => encodeURIComponent(segment)).join('/')
   const target = `/${safePath}${request.nextUrl.search}`

@@ -6,5 +6,5 @@ const contracts = require('../dist');
 
 test('publishes stable ATHR protocol identifiers', () => {
   assert.equal(contracts.API_CONTRACT_VERSION, 1);
-  assert.equal(contracts.POS_PROTOCOL_VERSION, 2);
+  assert.equal(contracts.POS_PROTOCOL_VERSION, 3);
 });

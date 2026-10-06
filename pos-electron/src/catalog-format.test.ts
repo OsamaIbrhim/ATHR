@@ -3,10 +3,11 @@ import {
   CATALOG_FORMAT_VERSION,
   isValidCatalogProduct,
   isValidCatalogStock,
+  isValidWireProduct,
   requiresFullCatalogRefresh,
 } from '../electron/catalog-format'
 
-describe('offline sales v2 catalog', () => {
+describe('offline sales v4 catalog', () => {
   const product = {
     id: 'variant-1',
     sku: 'SKU-1',
@@ -14,7 +15,9 @@ describe('offline sales v2 catalog', () => {
     name_en: 'Product',
     selling_price: 150,
     unit_tax: 21,
-    catalog_version: 2,
+    tax_rate: 14,
+    tax_mode: 'exclusive',
+    catalog_version: 3,
   }
 
   it('forces one full snapshot when the local catalog contract changes', () => {
@@ -31,6 +34,41 @@ describe('offline sales v2 catalog', () => {
     expect(isValidCatalogProduct({ ...product, catalog_version: 1 })).toBe(false)
   })
 
+  it('needs the tax rate and mode (the till recomputes tax after a discount)', () => {
+    expect(isValidCatalogProduct({ ...product, tax_rate: '14.0000' })).toBe(true)
+    expect(isValidCatalogProduct({ ...product, tax_rate: undefined })).toBe(false)
+    expect(isValidCatalogProduct({ ...product, tax_rate: null })).toBe(false)
+    expect(isValidCatalogProduct({ ...product, tax_rate: 101 })).toBe(false)
+    expect(isValidCatalogProduct({ ...product, tax_mode: 'both' })).toBe(false)
+    expect(isValidCatalogProduct({ ...product, tax_mode: 'inclusive' })).toBe(true)
+  })
+
+  it('a v2 catalog (older tills) forces the full refresh', () => {
+    expect(CATALOG_FORMAT_VERSION).toBe('offline-sales-v4')
+    expect(requiresFullCatalogRefresh('offline-sales-v2', 0)).toBe(true)
+    expect(isValidCatalogProduct({ ...product, catalog_version: 2 })).toBe(false)
+  })
+
+  it('validates the wire product: unit precision and barcodes', () => {
+    const wire = {
+      ...product,
+      label: 'L · أسود',
+      uom_precision: 3,
+      barcodes: [
+        { code: '6221234567890', pack_qty: 1, kind: 'standard' },
+        { code: '2100001', pack_qty: 1, kind: 'scale_plu' },
+      ],
+    }
+    expect(isValidWireProduct(wire)).toBe(true)
+    expect(isValidWireProduct({ ...wire, label: null, barcodes: [] })).toBe(true)
+    expect(isValidWireProduct({ ...wire, barcodes: undefined })).toBe(false)
+    expect(isValidWireProduct({ ...wire, uom_precision: 4 })).toBe(false)
+    expect(isValidWireProduct({ ...wire, uom_precision: 1.5 })).toBe(false)
+    expect(isValidWireProduct({ ...wire, barcodes: [{ code: '', pack_qty: 1, kind: 'standard' }] })).toBe(false)
+    expect(isValidWireProduct({ ...wire, barcodes: [{ code: 'x', pack_qty: 0, kind: 'standard' }] })).toBe(false)
+    expect(isValidWireProduct({ ...wire, barcodes: [{ code: 'x', pack_qty: 1, kind: 'other' }] })).toBe(false)
+  })
+
   it('rejects malformed or negative synchronized stock', () => {
     expect(isValidCatalogStock({
       variant_id: 'variant-1',
@@ -40,6 +78,10 @@ describe('offline sales v2 catalog', () => {
       variant_id: 'variant-1',
       qty_on_hand: -1,
     })).toBe(false)
+    expect(isValidCatalogStock({ variant_id: 'variant-1', qty_on_hand: 12.345 })).toBe(true)
+    expect(isValidCatalogStock({ variant_id: 'variant-1', qty_on_hand: 0 })).toBe(true)
+    expect(isValidCatalogStock({ variant_id: 'variant-1', qty_on_hand: 1.2345 })).toBe(false)
+    expect(isValidCatalogStock({ variant_id: 'variant-1', qty_on_hand: 'x' })).toBe(false)
     expect(isValidCatalogStock({
       variant_id: '',
       qty_on_hand: 1,

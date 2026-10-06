@@ -1,16 +1,11 @@
 import { Injectable } from '@nestjs/common'
-import { Prisma } from '@prisma/client'
+import { Prisma, type PaymentMethod } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import type { TenantContext, TenantScope } from '../identity/tenant-context.type'
 import { ListSalesDto } from './dto/list-sales.dto'
 
 @Injectable()
 export class SalesReadService {
-  private readonly countCache = new Map<
-    string,
-    { expiresAt: number; value: Promise<number> }
-  >()
-
   constructor(private prisma: PrismaService) {}
 
   async listSales(context: TenantContext, dto: ListSalesDto, branchId?: string) {
@@ -18,7 +13,7 @@ export class SalesReadService {
     const where: Prisma.SalesInvoiceWhereInput = {
       tenant_id: context.tenantId,
       ...(branchId ? { branch_id: branchId } : {}),
-      ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
+      ...(dto.payment_method ? { payments: { some: { method: dto.payment_method as PaymentMethod } } } : {}),
       ...(dto.status ? { status: dto.status } : {}),
       ...(dto.has_warnings === 'true'
         ? { warning_codes: { isEmpty: false } }
@@ -41,21 +36,8 @@ export class SalesReadService {
           }
         : {}),
     }
-    // Tenant is part of the key: keyed on filters alone, one tenant's
-    // result count would be served to another (Blueprint §125).
-    const countKey = JSON.stringify({
-      tenantId: context.tenantId,
-      branchId,
-      q,
-      payment: dto.payment_method,
-      status: dto.status,
-      hasWarnings: dto.has_warnings,
-      from: dto.from,
-      to: dto.to,
-    })
-
     const [total, invoices] = await Promise.all([
-      this.cachedSalesCount(countKey, where),
+      this.prisma.salesInvoice.count({ where }),
       this.prisma.salesInvoice.findMany({
         where,
         select: {
@@ -71,7 +53,7 @@ export class SalesReadService {
           discount_amount: true,
           tax_amount: true,
           total: true,
-          payment_method: true,
+          payments: { select: { method: true, amount: true, tendered: true, reference: true }, orderBy: { sequence: 'asc' } },
           language: true,
           sync_id: true,
           event_version: true,
@@ -101,10 +83,6 @@ export class SalesReadService {
       total_pages: Math.max(1, Math.ceil(total / dto.page_size)),
       server_time: new Date().toISOString(),
     }
-  }
-
-  invalidateCounts() {
-    this.countCache.clear()
   }
 
   private async hydrateInvoices(context: TenantScope, invoices: any[]) {
@@ -158,9 +136,9 @@ export class SalesReadService {
           ? this.prisma.user.findMany({
               where: {
                 id: { in: sellerIds },
-                memberships: { some: { tenantId: context.tenantId } },
+                memberships: { some: { tenant_id: context.tenantId } },
               },
-              select: { id: true, name: true, role: true },
+              select: { id: true, name: true },
             })
           : Promise.resolve([]),
         this.prisma.salesInvoiceItem.groupBy({
@@ -203,47 +181,6 @@ export class SalesReadService {
         },
       }
     })
-  }
-
-  private cachedSalesCount(
-    key: string,
-    where: Prisma.SalesInvoiceWhereInput,
-  ) {
-    const now = Date.now()
-    const cached = this.countCache.get(key)
-    if (cached && cached.expiresAt > now) return cached.value
-
-    const ttl = Math.min(
-      30_000,
-      Math.max(0, Number(process.env.LIST_COUNT_CACHE_MS || 5_000)),
-    )
-    let value: Promise<number>
-    value = this.prisma.salesInvoice
-      .count({ where })
-      .then((total) => {
-        if (this.countCache.get(key)?.value === value) {
-          this.countCache.set(key, {
-            expiresAt: Date.now() + ttl,
-            value: Promise.resolve(total),
-          })
-        }
-        return total
-      })
-      .catch((error) => {
-        if (this.countCache.get(key)?.value === value) {
-          this.countCache.delete(key)
-        }
-        throw error
-      })
-
-    this.countCache.set(key, {
-      expiresAt: Number.POSITIVE_INFINITY,
-      value,
-    })
-    if (this.countCache.size > 500) {
-      this.countCache.delete(this.countCache.keys().next().value!)
-    }
-    return value
   }
 
   private endOfDay(value: string) {

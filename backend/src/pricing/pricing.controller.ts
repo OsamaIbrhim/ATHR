@@ -4,14 +4,12 @@ import { PricingService } from './pricing.service';
 import { CostVisibilityService } from './cost-visibility.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { CalculatePriceDto } from './dto/calculate-price.dto';
-import { RequireCapabilities } from '../auth/roles.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 import { PromotionEvaluationService } from '../promotions/promotion-evaluation.service';
 
 @Controller('pricing')
-@RequireCapabilities('products.read')
 export class PricingController {
   constructor(
     private pricing: PricingService,

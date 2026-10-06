@@ -1,20 +1,14 @@
+import { actorFor } from '../auth/testing/actors';
 import { SalesController } from './sales.controller';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
+import { fullAccess } from '../entitlements/testing';
 
 // WP-007 Phase A: sales entry points take the resolved TenantContext first.
 const ctx = contextFor(TENANT_A);
 
 describe('SalesController POS terminal enforcement', () => {
-  const cashier = {
-    sub: 'cashier-1',
-    role: 'cashier',
-    branch_id: 'branch-1',
-  } as any;
-  const owner = {
-    sub: 'owner-1',
-    role: 'owner',
-    branch_id: null,
-  } as any;
+  const cashier = actorFor('cashier', { sub: 'cashier-1', branchId: 'branch-1' });
+  const owner = actorFor('tenant_owner', { sub: 'owner-1', tenantWide: true });
   const request = (user: any) => ({ user }) as any;
   const sale = {
     branch_id: 'branch-1',
@@ -28,12 +22,11 @@ describe('SalesController POS terminal enforcement', () => {
   function subject() {
     const sales = {
       createSale: jest.fn().mockResolvedValue({ id: 'invoice-1' }),
-      createReturn: jest.fn().mockResolvedValue({ id: 'return-1' }),
-      findReturnableInvoice: jest.fn().mockResolvedValue({ id: 'invoice-1' }),
     } as any;
+    const returns = { createReturn: jest.fn().mockResolvedValue({ id: 'return-1' }) } as any;
+    const returnsRead = { findReturnableInvoice: jest.fn().mockResolvedValue({ id: 'invoice-1' }) } as any;
     const reads = {
       listSales: jest.fn(),
-      invalidateCounts: jest.fn(),
     } as any;
     const terminal = {
       id: 'terminal-1',
@@ -47,11 +40,17 @@ describe('SalesController POS terminal enforcement', () => {
     return {
       controller: new SalesController(
         sales,
+        returns,
+        returnsRead,
+        {} as any,
         reads,
         {} as any,
         terminals,
+        fullAccess,
       ),
       sales,
+      returns,
+      returnsRead,
       reads,
       terminals,
       terminal,
@@ -66,11 +65,10 @@ describe('SalesController POS terminal enforcement', () => {
       'secret-1',
     );
     expect(sales.createSale).toHaveBeenCalledWith(sale, terminal);
-    expect(reads.invalidateCounts).toHaveBeenCalledTimes(1);
   });
 
   it('authenticates the enrolled terminal before a return or invoice lookup', async () => {
-    const { controller, sales, terminals } = subject();
+    const { controller, returns, returnsRead, terminals } = subject();
     await controller.lookupInvoice(
       ctx,
       ' B-100 ',
@@ -86,12 +84,12 @@ describe('SalesController POS terminal enforcement', () => {
       request(cashier),
     );
     expect(terminals.authenticate).toHaveBeenCalledTimes(2);
-    expect(sales.findReturnableInvoice).toHaveBeenCalledWith(
+    expect(returnsRead.findReturnableInvoice).toHaveBeenCalledWith(
       ctx,
       'B-100',
       cashier,
     );
-    expect(sales.createReturn).toHaveBeenCalledWith(ctx, returnDto, cashier);
+    expect(returns.createReturn).toHaveBeenCalledWith(ctx, returnDto, cashier);
   });
 
   it('allows an owner support lookup without impersonating a physical terminal', async () => {

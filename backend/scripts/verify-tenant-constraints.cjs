@@ -9,7 +9,7 @@
 //      scoped, not still effectively global).
 //
 // Runs against a real, freshly-migrated Postgres (wired into the CI
-// migration-gate job's `athr_migrations_clean` database). Not a jest spec:
+// `npm run test:db` (CI backend job)). Not a jest spec:
 // the `backend` CI job has no live database, matching the existing
 // perf/*.mjs convention for tests that need one.
 'use strict';
@@ -66,21 +66,10 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
   const branch = await prisma.branch.create({
     data: { tenant_id: tenantId, code: `${label}-BR`, name_ar: 'فرع اختبار' },
   });
-  // WP-009 Phase A: warehouse_id is nullable only until PR2's InventoryStock
-  // primary-key swap makes it NOT NULL -- this chain's own InventoryStock/
-  // InventoryMovement/InventoryCostMovement rows below need a real Warehouse
-  // for `branch`, the same way prisma/seed.ts resolves one, not a NULL that
-  // works today only because nothing enforces it yet. secondBranch never
-  // takes an inventory row (Transfer has no warehouse_id column), so it gets
-  // none.
-  const legalEntity = await prisma.legalEntity.create({
-    data: { tenant_id: tenantId, legal_name: `${label} legal entity`, is_primary: true },
-  });
-  const location = await prisma.location.create({
-    data: { id: branch.id, tenantId, legal_entity_id: legalEntity.id, code: branch.code, name_ar: branch.name_ar },
-  });
+  // InventoryStock/InventoryMovement/InventoryCostMovement are keyed by warehouse;
+  // this chain's rows below need a real default Warehouse of `branch`.
   const warehouse = await prisma.warehouse.create({
-    data: { tenant_id: tenantId, location_id: location.id, name: `${label} default warehouse`, is_default: true },
+    data: { tenant_id: tenantId, branch_id: branch.id, name: `${label} default warehouse`, is_default: true },
   });
   // Transfer has a pre-existing "Transfer_distinct_branches" CHECK
   // (from_branch_id <> to_branch_id) -- a second branch is needed so this
@@ -138,7 +127,7 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
     data: { tenant_id: tenantId, branch_id: branch.id, opened_by: sharedUser.id },
   });
   const inventoryStock = await prisma.inventoryStock.create({
-    data: { tenant_id: tenantId, branch_id: branch.id, warehouse_id: warehouse.id, variant_id: variant.id, qty_on_hand: 5 },
+    data: { tenant_id: tenantId, warehouse_id: warehouse.id, variant_id: variant.id, qty_on_hand: 5 },
   });
   // sync_id left unset so the SalesInvoiceItem AFTER INSERT trigger treats
   // this as a historical/imported invoice and skips the derived-InventoryMovement
@@ -151,7 +140,6 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
       subtotal: 10,
       tax_amount: 0,
       total: 10,
-      payment_method: 'cash',
     },
   });
   const salesInvoiceItem = await prisma.salesInvoiceItem.create({
@@ -287,7 +275,6 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
   const inventoryMovement = await prisma.inventoryMovement.create({
     data: {
       tenant_id: tenantId,
-      branch_id: branch.id,
       warehouse_id: warehouse.id,
       variant_id: variant.id,
       movement_type: 'adjustment',
@@ -305,12 +292,11 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
     data: {
       tenant_id: tenantId,
       variant_id: variant.id,
-      branch_id: branch.id,
       warehouse_id: warehouse.id,
       movement_type: 'adjustment',
       quantity_delta: 1,
-      global_quantity_before: 0,
-      global_quantity_after: 1,
+      quantity_before: 0,
+      quantity_after: 1,
       unit_cost: 1,
       cost_before: 1,
       cost_after: 1,
@@ -352,25 +338,30 @@ async function buildChain(tenantId, label, sharedUser, periodStart) {
  * A whose named FK column is redirected to tenant B's row}. */
 function foreignKeyCases(chainA, chainB) {
   return [
-    { table: 'inventoryStock', name: 'InventoryStock.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, branch_id: chainB.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, qty_on_hand: 1 }) },
-    { table: 'inventoryStock', name: 'InventoryStock.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, branch_id: chainA.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainB.variant.id, qty_on_hand: 1 }) },
-    { table: 'inventoryMovement', name: 'InventoryMovement.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, branch_id: chainB.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', on_hand_delta: 1, reserved_delta: 0, on_hand_after: 1, reserved_after: 0, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-im-branch`, occurred_at: new Date() }) },
-    { table: 'inventoryMovement', name: 'InventoryMovement.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, branch_id: chainA.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainB.variant.id, movement_type: 'adjustment', on_hand_delta: 1, reserved_delta: 0, on_hand_after: 1, reserved_after: 0, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-im-variant`, occurred_at: new Date() }) },
-    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, branch_id: chainB.branch.id, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, global_quantity_before: 0, global_quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-branch`, occurred_at: new Date() }) },
-    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, variant_id: chainB.variant.id, movement_type: 'adjustment', quantity_delta: 1, global_quantity_before: 0, global_quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-variant`, occurred_at: new Date() }) },
-    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.purchase_invoice_id -> PurchaseInvoice', data: () => ({ tenant_id: chainA.tenant, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, global_quantity_before: 0, global_quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-pi`, occurred_at: new Date(), purchase_invoice_id: chainB.purchaseInvoice.id }) },
-    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.purchase_invoice_item_id -> PurchaseInvoiceItem', data: () => ({ tenant_id: chainA.tenant, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, global_quantity_before: 0, global_quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-pii`, occurred_at: new Date(), purchase_invoice_item_id: chainB.purchaseInvoiceItem.id }) },
-    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.supplier_return_id -> SupplierReturn', data: () => ({ tenant_id: chainA.tenant, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, global_quantity_before: 0, global_quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-sr`, occurred_at: new Date(), supplier_return_id: chainB.supplierReturn.id }) },
-    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.supplier_return_item_id -> SupplierReturnItem', data: () => ({ tenant_id: chainA.tenant, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, global_quantity_before: 0, global_quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-sri`, occurred_at: new Date(), supplier_return_item_id: chainB.supplierReturnItem.id }) },
-    { table: 'salesInvoice', name: 'SalesInvoice.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-branch`, branch_id: chainB.branch.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
-    { table: 'salesInvoice', name: 'SalesInvoice.customer_id -> Customer', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-customer`, branch_id: chainA.branch.id, customer_id: chainB.customer.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
-    { table: 'salesInvoice', name: 'SalesInvoice.terminal_id -> PosTerminal', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-terminal`, branch_id: chainA.branch.id, terminal_id: chainB.posTerminal.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
+    { table: 'warehouse', name: 'Warehouse.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, branch_id: chainB.branch.id, name: 'x' }) },
+    { table: 'inventoryStock', name: 'InventoryStock.warehouse_id -> Warehouse', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainB.warehouse.id, variant_id: chainA.variant.id, qty_on_hand: 1 }) },
+    { table: 'inventoryStock', name: 'InventoryStock.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainA.warehouse.id, variant_id: chainB.variant.id, qty_on_hand: 1 }) },
+    { table: 'inventoryMovement', name: 'InventoryMovement.warehouse_id -> Warehouse', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainB.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', on_hand_delta: 1, reserved_delta: 0, on_hand_after: 1, reserved_after: 0, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-im-branch`, occurred_at: new Date() }) },
+    { table: 'inventoryMovement', name: 'InventoryMovement.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainA.warehouse.id, variant_id: chainB.variant.id, movement_type: 'adjustment', on_hand_delta: 1, reserved_delta: 0, on_hand_after: 1, reserved_after: 0, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-im-variant`, occurred_at: new Date() }) },
+    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.warehouse_id -> Warehouse', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainB.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, quantity_before: 0, quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-branch`, occurred_at: new Date() }) },
+    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainA.warehouse.id, variant_id: chainB.variant.id, movement_type: 'adjustment', quantity_delta: 1, quantity_before: 0, quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-variant`, occurred_at: new Date() }) },
+    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.purchase_invoice_id -> PurchaseInvoice', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, quantity_before: 0, quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-pi`, occurred_at: new Date(), purchase_invoice_id: chainB.purchaseInvoice.id }) },
+    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.purchase_invoice_item_id -> PurchaseInvoiceItem', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, quantity_before: 0, quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-pii`, occurred_at: new Date(), purchase_invoice_item_id: chainB.purchaseInvoiceItem.id }) },
+    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.supplier_return_id -> SupplierReturn', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, quantity_before: 0, quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-sr`, occurred_at: new Date(), supplier_return_id: chainB.supplierReturn.id }) },
+    { table: 'inventoryCostMovement', name: 'InventoryCostMovement.supplier_return_item_id -> SupplierReturnItem', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainA.warehouse.id, variant_id: chainA.variant.id, movement_type: 'adjustment', quantity_delta: 1, quantity_before: 0, quantity_after: 1, unit_cost: 1, cost_before: 1, cost_after: 1, inventory_value_before: 0, movement_value: 1, inventory_value_after: 1, reference_type: 'Manual', reference_id: 'x', idempotency_key: `${chainA.label}-fk-icm-sri`, occurred_at: new Date(), supplier_return_item_id: chainB.supplierReturnItem.id }) },
+    { table: 'inventoryBatch', name: 'InventoryBatch.warehouse_id -> Warehouse', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainB.warehouse.id, variant_id: chainA.variant.id, batch_no: 'B1' }) },
+    { table: 'inventoryBatch', name: 'InventoryBatch.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, warehouse_id: chainA.warehouse.id, variant_id: chainB.variant.id, batch_no: 'B1' }) },
+    { table: 'inventorySerial', name: 'InventorySerial.variant_id -> ProductVariant', data: () => ({ tenant_id: chainA.tenant, variant_id: chainB.variant.id, serial: 'S1', warehouse_id: chainA.warehouse.id }) },
+    { table: 'inventorySerial', name: 'InventorySerial.warehouse_id -> Warehouse', data: () => ({ tenant_id: chainA.tenant, variant_id: chainA.variant.id, serial: 'S2', warehouse_id: chainB.warehouse.id }) },
+    { table: 'salesInvoice', name: 'SalesInvoice.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-branch`, branch_id: chainB.branch.id, subtotal: 1, tax_amount: 0, total: 1 }) },
+    { table: 'salesInvoice', name: 'SalesInvoice.customer_id -> Customer', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-customer`, branch_id: chainA.branch.id, customer_id: chainB.customer.id, subtotal: 1, tax_amount: 0, total: 1 }) },
+    { table: 'salesInvoice', name: 'SalesInvoice.terminal_id -> PosTerminal', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-terminal`, branch_id: chainA.branch.id, terminal_id: chainB.posTerminal.id, subtotal: 1, tax_amount: 0, total: 1 }) },
     // SalesInvoice's "offline_accounting_context_complete" CHECK requires
     // terminal_id/terminal_sequence/shift_id/offline_session_id/cashier_id/
     // received_by/command_fingerprint to be all-null or all-set together --
     // setting shift_id alone would trip that CHECK before the FK is ever
     // evaluated, so every other field is filled in to isolate the FK test.
-    { table: 'salesInvoice', name: 'SalesInvoice.shift_id -> Shift', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-shift`, branch_id: chainA.branch.id, terminal_id: chainA.posTerminal.id, terminal_sequence: 1, shift_id: chainB.shift.id, offline_session_id: crypto.randomUUID(), cashier_id: chainA.sharedUserId, received_by: chainA.sharedUserId, command_fingerprint: '0'.repeat(64), subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
+    { table: 'salesInvoice', name: 'SalesInvoice.shift_id -> Shift', data: () => ({ tenant_id: chainA.tenant, invoice_number: `${chainA.label}-fk-si-shift`, branch_id: chainA.branch.id, terminal_id: chainA.posTerminal.id, terminal_sequence: 1, shift_id: chainB.shift.id, offline_session_id: crypto.randomUUID(), cashier_id: chainA.sharedUserId, received_by: chainA.sharedUserId, command_fingerprint: '0'.repeat(64), subtotal: 1, tax_amount: 0, total: 1 }) },
     { table: 'posTerminal', name: 'PosTerminal.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, device_id: crypto.randomUUID(), terminal_code: `${chainA.label}-fk-pt`, name: 'x', branch_id: chainB.branch.id }) },
     { table: 'posTerminalEnrollment', name: 'PosTerminalEnrollment.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, code_hash: `${chainA.label}-fk-pte`, branch_id: chainB.branch.id, created_by: chainA.sharedUserId, expires_at: new Date(Date.now() + 3600_000) }) },
     { table: 'return', name: 'Return.branch_id -> Branch', data: () => ({ tenant_id: chainA.tenant, original_invoice_id: chainA.salesInvoice.id, branch_id: chainB.branch.id, return_invoice_number: `${chainA.label}-fk-ret-branch`, status: 'voided' }) },
@@ -423,10 +414,10 @@ function uniquenessCases(chainA, chainB) {
     // must coexist across two tenants and collide within one.
     { table: 'taxCategory', name: 'TaxCategory (tenant_id, code)', valueA: () => ({ code: `${chainA.label}-dup-taxcat` }), rowA: () => ({ tenant_id: chainA.tenant, name_en: 'x', updated_at: new Date() }), rowB: () => ({ tenant_id: chainB.tenant, name_en: 'x', updated_at: new Date() }) },
     { table: 'productVariant', name: 'ProductVariant (tenant_id, sku)', valueA: () => ({ sku: `${chainA.label}-dup-sku` }), rowA: () => ({ tenant_id: chainA.tenant, product_id: chainA.product.id, cost_price: 1 }), rowB: () => ({ tenant_id: chainB.tenant, product_id: chainB.product.id, cost_price: 1 }) },
-    { table: 'productVariant', name: 'ProductVariant (tenant_id, barcode_internal)', valueA: () => ({ barcode_internal: `${chainA.label}-dup-barcode` }), rowA: () => ({ tenant_id: chainA.tenant, product_id: chainA.product.id, cost_price: 1, sku: `${chainA.label}-barcode-dup-a-${crypto.randomUUID()}` }), rowB: () => ({ tenant_id: chainB.tenant, product_id: chainB.product.id, cost_price: 1, sku: `${chainA.label}-barcode-dup-b-${crypto.randomUUID()}` }) },
+    { table: 'productBarcode', name: 'ProductBarcode (tenant_id, code)', valueA: () => ({ code: `${chainA.label}-dup-barcode` }), rowA: () => ({ tenant_id: chainA.tenant, variant_id: chainA.variant.id }), rowB: () => ({ tenant_id: chainB.tenant, variant_id: chainB.variant.id }) },
     { table: 'customer', name: 'Customer (tenant_id, phone)', valueA: () => ({ phone: `${chainA.label}-dup-phone` }), rowA: () => ({ tenant_id: chainA.tenant }), rowB: () => ({ tenant_id: chainB.tenant }) },
     { table: 'posTerminal', name: 'PosTerminal (tenant_id, terminal_code)', valueA: () => ({ terminal_code: `${chainA.label}-dup-term` }), rowA: () => ({ tenant_id: chainA.tenant, device_id: crypto.randomUUID(), name: 'x', branch_id: chainA.branch.id }), rowB: () => ({ tenant_id: chainB.tenant, device_id: crypto.randomUUID(), name: 'x', branch_id: chainB.branch.id }) },
-    { table: 'salesInvoice', name: 'SalesInvoice (tenant_id, invoice_number)', valueA: () => ({ invoice_number: `${chainA.label}-dup-inv` }), rowA: () => ({ tenant_id: chainA.tenant, branch_id: chainA.branch.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }), rowB: () => ({ tenant_id: chainB.tenant, branch_id: chainB.branch.id, subtotal: 1, tax_amount: 0, total: 1, payment_method: 'cash' }) },
+    { table: 'salesInvoice', name: 'SalesInvoice (tenant_id, invoice_number)', valueA: () => ({ invoice_number: `${chainA.label}-dup-inv` }), rowA: () => ({ tenant_id: chainA.tenant, branch_id: chainA.branch.id, subtotal: 1, tax_amount: 0, total: 1 }), rowB: () => ({ tenant_id: chainB.tenant, branch_id: chainB.branch.id, subtotal: 1, tax_amount: 0, total: 1 }) },
     { table: 'return', name: 'Return (tenant_id, return_invoice_number)', valueA: () => ({ return_invoice_number: `${chainA.label}-dup-ret` }), rowA: () => ({ tenant_id: chainA.tenant, original_invoice_id: chainA.salesInvoice.id, branch_id: chainA.branch.id, status: 'voided' }), rowB: () => ({ tenant_id: chainB.tenant, original_invoice_id: chainB.salesInvoice.id, branch_id: chainB.branch.id, status: 'voided' }) },
     { table: 'supplierReturn', name: 'SupplierReturn (tenant_id, return_number)', valueA: () => ({ return_number: `${chainA.label}-dup-sr` }), rowA: () => ({ tenant_id: chainA.tenant, purchase_invoice_id: chainA.purchaseInvoice.id, supplier_id: chainA.supplier.id, branch_id: chainA.branch.id, idempotency_key: `${chainA.label}-dup-sr-idem-a`, command_fingerprint: chainA.label.padEnd(64, '0'), reason: 'x', credit_total: 1, inventory_value_removed: 1, purchase_price_variance: 0, occurred_at: new Date() }), rowB: () => ({ tenant_id: chainB.tenant, purchase_invoice_id: chainB.purchaseInvoice.id, supplier_id: chainB.supplier.id, branch_id: chainB.branch.id, idempotency_key: `${chainA.label}-dup-sr-idem-b`, command_fingerprint: chainA.label.padEnd(64, '0'), reason: 'x', credit_total: 1, inventory_value_removed: 1, purchase_price_variance: 0, occurred_at: new Date() }) },
     { table: 'transfer', name: 'Transfer (tenant_id, transfer_number)', valueA: () => ({ transfer_number: `${chainA.label}-dup-tr` }), rowA: () => ({ tenant_id: chainA.tenant, from_branch_id: chainA.branch.id, to_branch_id: chainA.secondBranch.id }), rowB: () => ({ tenant_id: chainB.tenant, from_branch_id: chainB.branch.id, to_branch_id: chainB.secondBranch.id }) },
@@ -440,7 +431,7 @@ function uniquenessCases(chainA, chainB) {
 
 async function main() {
   const sharedUser = await prisma.user.create({
-    data: { name: 'constraint-proof', password_hash: 'not-a-real-hash', role: 'owner' },
+    data: { name: 'constraint-proof', password_hash: 'not-a-real-hash' },
   });
   // A second, otherwise-unused User: the SellerCommissionPeriodRow FK case
   // below targets chain B's own period with a foreign tenant-A row, and
@@ -448,7 +439,7 @@ async function main() {
   // for its own row -- reusing sharedUser there would collide on the
   // composite primary key before the foreign key is ever evaluated.
   const secondSharedUser = await prisma.user.create({
-    data: { name: 'constraint-proof-2', password_hash: 'not-a-real-hash', role: 'owner' },
+    data: { name: 'constraint-proof-2', password_hash: 'not-a-real-hash' },
   });
 
   const tenantA = await prisma.tenant.create({ data: { name: 'MT-MIG-006 proof tenant A' } });

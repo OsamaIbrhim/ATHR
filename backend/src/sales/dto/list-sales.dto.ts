@@ -1,4 +1,5 @@
 import { Type } from 'class-transformer';
+import { PAYMENT_METHODS } from '../payment-methods';
 import {
   IsBooleanString,
   IsDateString,
@@ -44,7 +45,7 @@ export class ListSalesDto {
   to?: string;
 
   @IsOptional()
-  @IsIn(['cash', 'card', 'instapay', 'vodafone_cash', 'installment'])
+  @IsIn(PAYMENT_METHODS)
   payment_method?: string;
 
   @IsOptional()

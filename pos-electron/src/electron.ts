@@ -1,8 +1,10 @@
+import type { ReceiptData } from '../electron/receipt-html'
+import type { PosSettings } from '../electron/sale-settings'
+import type { ScanResult } from '../electron/scan-types'
 import {
   Customer,
   HeldSale,
   OfflineAccountingContext,
-  Product,
   Seller,
   SyncState,
 } from './types'
@@ -105,9 +107,10 @@ export type FactoryResetStatus = {
 }
 
 export type AthrBridge = {
-  search(query: string): Promise<Product[]>
+  scan(term: string): Promise<ScanResult>
   stock(variantId: string): Promise<number>
   sellers(): Promise<Seller[]>
+  settings(): Promise<PosSettings>
 
   sale(payload: unknown): Promise<{
     sync_id: string
@@ -118,8 +121,16 @@ export type AthrBridge = {
     replayed?: boolean
   }>
 
+  prepare_exchange_sale(payload: unknown): Promise<{
+    command: unknown
+    invoice_number: string
+    terminal_sequence: string
+    occurred_at: string
+    total: number
+  }>
+
   print(
-    invoice: unknown,
+    receipt: ReceiptData,
     lang: 'ar' | 'en',
   ): Promise<{
     ok: boolean

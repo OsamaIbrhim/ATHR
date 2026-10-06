@@ -18,7 +18,7 @@ import { RegisterScreen } from './screens/RegisterScreen'
 import { SalesScreen } from './screens/SalesScreen'
 import { ScreenLoader, Toasts, ToastValue } from './components/ui'
 import { DiagnosticsConsole } from './components/DiagnosticsConsole'
-import { migrateLegacyLocalStorage } from './local-storage-migration'
+import type { ExchangeStart } from './exchange'
 
 const emptySync: SyncState = {
   device_id: '',
@@ -45,6 +45,7 @@ export default function App() {
   const [checkingShift, setCheckingShift] = useState(false)
   const [closingShift, setClosingShift] = useState(false)
   const [view, setView] = useState<AppView>('register')
+  const [exchange, setExchange] = useState<ExchangeStart | null>(null)
   const [syncState, setSyncState] = useState<SyncState>(emptySync)
   const [toasts, setToasts] = useState<ToastValue[]>([])
 
@@ -138,7 +139,6 @@ export default function App() {
   )
 
   useEffect(() => {
-    migrateLegacyLocalStorage(localStorage)
     api
       .bootstrap()
       .then((result) => {
@@ -350,6 +350,8 @@ export default function App() {
           shift={shift}
           accountingContext={accountingContext}
           syncState={syncState}
+          exchange={exchange}
+          onExchangeEnd={() => setExchange(null)}
           onSync={syncNow}
           onSales={() => setView('sales')}
           onCloseShift={requestShiftClose}
@@ -363,6 +365,10 @@ export default function App() {
           shift={shift}
           syncState={syncState}
           onRegister={() => setView('register')}
+          onExchange={(start) => {
+            setExchange(start)
+            setView('register')
+          }}
           onSync={syncNow}
           onCloseShift={requestShiftClose}
           onLogout={logoutCashier}

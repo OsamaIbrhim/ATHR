@@ -1,3 +1,4 @@
+import { PageQueryDto } from '../common/page-query.dto';
 import {
   Body,
   Controller,
@@ -10,7 +11,6 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { ShiftsService } from './shifts.service';
-import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 import { CloseShiftDto, OpenShiftDto } from './dto/shift.dto';
@@ -20,8 +20,6 @@ import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
 
 @Controller('shifts')
-@Roles('owner', 'branch_manager', 'cashier')
-@RequireCapabilities('shifts.manage')
 export class ShiftsController {
   constructor(
     private svc: ShiftsService,
@@ -33,9 +31,10 @@ export class ShiftsController {
   list(
     @TenantCtx() ctx: TenantContext,
     @Query('branch_id') branch_id: string | undefined,
+    @Query() paging: PageQueryDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.list(ctx, resolveBranchScope(req.user, branch_id));
+    return this.svc.list(ctx, resolveBranchScope(req.user, branch_id), paging);
   }
 
   @RequirePermission('shift.view')
@@ -61,7 +60,6 @@ export class ShiftsController {
 
   @RequirePermission('shift.view')
   @Post(':id/offline-context')
-  @Roles('branch_manager', 'cashier')
   async offlineContext(
     @TenantCtx() ctx: TenantContext,
     @Param('id') id: string,

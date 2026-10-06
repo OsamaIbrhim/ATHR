@@ -21,6 +21,9 @@ COPY packages ./packages
 RUN npm run build:shared
 COPY backend ./backend
 RUN npm run build --workspace athr-operations-api
+# npm may hoist every backend dependency to the root; the runtime stage copies
+# backend/node_modules unconditionally, so make sure it exists.
+RUN mkdir -p backend/node_modules
 
 FROM node:20.19-bookworm-slim AS runtime
 WORKDIR /app/backend

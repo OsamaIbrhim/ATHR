@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { calculateTax } from '@athr/domain-core';
 import { Prisma, type TaxCode, type TaxExemption, type TaxMode, type TaxRoundingPolicy } from '@prisma/client';
 import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { decimal, money } from '../common/money';
@@ -70,14 +71,19 @@ export class TaxResolutionService {
     return categoryId;
   }
 
-  /** Every active code in the tenant, keyed by category, for bulk paths. */
+  /** Active codes keyed by category: every one in the tenant, or only the given categories. */
   async loadActiveCodeIndex(
     context: TenantScope,
     transaction?: Prisma.TransactionClient,
+    categoryIds?: readonly string[],
   ): Promise<TaxCodeIndex> {
     const db = transaction ?? this.prisma;
     const codes = await db.taxCode.findMany({
-      where: { tenant_id: context.tenantId, status: 'active' },
+      where: {
+        tenant_id: context.tenantId,
+        status: 'active',
+        ...(categoryIds ? { tax_category_id: { in: [...new Set(categoryIds)] } } : {}),
+      },
     });
     return new Map(codes.map((code) => [code.tax_category_id, code]));
   }
@@ -125,7 +131,7 @@ export class TaxResolutionService {
       // the one where an exempt customer is never charged tax.
       const net =
         contextMode === 'inclusive'
-          ? money(authored.div(decimal(1).plus(rate.div(100))))
+          ? decimal(calculateTax(rate.toFixed(4), 'inclusive', authored.toFixed(2)).net)
           : authored;
       return {
         tax_code_id: code.id,
@@ -142,19 +148,11 @@ export class TaxResolutionService {
       };
     }
 
-    let net: Prisma.Decimal;
-    let tax: Prisma.Decimal;
-    let gross: Prisma.Decimal;
-
-    if (contextMode === 'inclusive') {
-      gross = authored;
-      net = money(gross.div(decimal(1).plus(rate.div(100))));
-      tax = money(gross.minus(net));
-    } else {
-      net = authored;
-      tax = money(net.mul(rate).div(100));
-      gross = money(net.plus(tax));
-    }
+    // The split itself lives in @athr/domain-core, shared with the POS.
+    const split = calculateTax(rate.toFixed(4), contextMode, authored.toFixed(2));
+    const net = decimal(split.net);
+    const tax = decimal(split.tax);
+    const gross = decimal(split.gross);
 
     return {
       tax_code_id: code.id,

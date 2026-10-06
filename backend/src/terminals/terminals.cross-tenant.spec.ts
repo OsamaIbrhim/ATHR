@@ -1,9 +1,20 @@
+import { actorFor } from '../auth/testing/actors';
 import { randomUUID } from 'crypto';
 import { createHash } from 'crypto';
 import { TerminalsRepository } from './terminals.repository';
 import { TerminalsService } from './terminals.service';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aBranch } from '../identity/testing/fixture-builders';
+import { fullAccess, unlimited } from '../entitlements/testing';
+
+// The per-tenant counter is one real statement (covered against Postgres by
+// scripts/verify-document-sequence.cjs); these specs only need a number back.
+jest.mock('../common/document-sequence', () => ({
+  ...jest.requireActual('../common/document-sequence'),
+  nextDocumentValue: jest.fn().mockResolvedValue(1n),
+  nextDocumentNumber: jest.fn().mockImplementation((_tx: unknown, _tenant: string, key: string) =>
+    Promise.resolve(key === 'terminal' ? 'POS1' : 'R-000001')),
+}));
 
 /**
  * WP-007 Phase A §A.3.6 — cross-tenant isolation for the `terminals` module.
@@ -59,11 +70,11 @@ function setup() {
     posTerminal: { branch: { table: 'branch', localKey: 'branch_id' } },
   });
   const repository = new TerminalsRepository(prisma);
-  return { prisma, repository, service: new TerminalsService(prisma, repository) };
+  return { prisma, repository, service: new TerminalsService(prisma, repository, fullAccess, unlimited) };
 }
 
 const ownerOf = (branchId: string, tenantId: string) =>
-  ({ sub: randomUUID(), role: 'owner', branch_id: branchId, tenant_id: tenantId, capabilities: [] }) as any;
+  actorFor('tenant_owner', { sub: randomUUID(), tenantWide: true, branchId, tenantId });
 
 describe('terminals — cross-tenant isolation', () => {
   it('lists only the calling tenant\'s terminals', async () => {
@@ -150,13 +161,7 @@ describe('terminals — cross-tenant isolation', () => {
 
   it('refuses to decommission another tenant\'s terminal', async () => {
     const { service, prisma } = setup();
-    const manager = {
-      sub: randomUUID(),
-      role: 'branch_manager',
-      branch_id: BRANCH_B,
-      tenant_id: TENANT_B,
-      capabilities: [],
-    } as any;
+    const manager = actorFor('location_manager', { sub: randomUUID(), branchId: BRANCH_B, tenantId: TENANT_B });
 
     await expect(
       service.selfDecommission(
@@ -213,7 +218,7 @@ describe('terminals — cross-tenant isolation', () => {
    */
   it('fails closed when the calling actor carries no tenant_id at all', async () => {
     const { service } = setup();
-    const actorWithoutTenant = { sub: randomUUID(), role: 'owner', branch_id: BRANCH_A } as any;
+    const actorWithoutTenant = { ...ownerOf(BRANCH_A, TENANT_A), tenant_id: null };
     await expect(
       service.authenticate(DEVICE_A, 'token-a', actorWithoutTenant),
     ).rejects.toThrow('registered to another branch');

@@ -1,24 +1,58 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import type { Product } from '@prisma/client';
+import type { Product, ProductBarcode, ProductVariant, UnitOfMeasure } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
 import { TaxResolutionService } from '../tax/tax-resolution.service';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { InventoryService } from '../inventory/inventory.service';
+import { quantityNumber } from '../common/quantity';
+import { readTenantSettings, withPlanReceipt } from '../catalog/tenant-settings';
+import { EntitlementService } from '../entitlements/entitlement.service';
+import {
+  compareCursors,
+  formatCursor,
+  parseCursor,
+  type SyncCursor,
+} from './sync-cursor';
 
 /**
  * Prisma's automatic relation loader for `include: { product: true }` fans
  * out into a Postgres statement that exceeds `max_stack_depth` once the
- * parent result set is unbounded and large (confirmed at ~10k rows; safe at
- * ~100). A flat `id IN (...)` batch is a different, well-understood query
- * shape that does not hit this. Batch defensively rather than assume an
- * unbounded array is safe at any catalog size.
- *
- * Exported so `verify-sync-snapshot-behaviour.cjs` (migration-gate) imports
- * this value instead of restating it -- a copy in two files can drift
- * silently and the CI proof would then be checking a different chunk size
- * than the one actually shipped.
+ * parent result set is unbounded and large. A flat `id IN (...)` batch is a
+ * different, well-understood query shape that does not hit this; product
+ * batches are therefore bounded. Exported so `verify-sync-snapshot-behaviour.cjs`
+ * imports this value instead of restating it.
  */
 export const PRODUCT_BATCH_SIZE = 1_000;
+
+/** Variants per snapshot page (keyset on variant id). */
+export const SNAPSHOT_PAGE_SIZE = 1_000;
+
+/** Changes read per delta pull. */
+export const DELTA_CHANGE_LIMIT = 5_000;
+
+/** The catalog wire format the POS caches; bumped when the payload shape changes. */
+export const CATALOG_VERSION = 3;
+
+export interface PullQuery {
+  /** The cursor the POS has applied up to; absent = take a snapshot. */
+  readonly cursor?: string;
+  /** Snapshot continuation: last variant id received, and the cursor the snapshot started at. */
+  readonly snapshot_after?: string;
+  readonly snapshot_cursor?: string;
+}
+
+interface ChangeRow {
+  readonly txid: string;
+  readonly sequence: bigint;
+  readonly kind: string;
+  readonly entity_key: string | null;
+}
+
+interface TerminalRef {
+  readonly id: string;
+  readonly sync_cursor: string | null;
+}
 
 @Injectable()
 export class SyncService {
@@ -26,7 +60,261 @@ export class SyncService {
     private prisma: PrismaService,
     private pricing: PricingService,
     private tax: TaxResolutionService,
+    private inventory: InventoryService,
+    private entitlements?: EntitlementService,
   ) {}
+
+  /**
+   * One pull: a snapshot page (no cursor, or continuing a snapshot) or a
+   * delta of the entities that changed since the POS's cursor.
+   */
+  async pull(context: TenantContext, branchId: string, query: PullQuery = {}, terminal?: TerminalRef) {
+    const tenant = await this.prisma.tenant.findUniqueOrThrow({
+      where: { id: context.tenantId },
+      select: { settings: true, name: true, sync_floor: true },
+    });
+    const stored = readTenantSettings(tenant.settings, tenant);
+    const settings = this.entitlements
+      ? withPlanReceipt(stored, (await this.entitlements.resolve(context.tenantId)).features.has('receipt.remove_branding'))
+      : stored;
+    const floor = parseCursor(tenant.sync_floor);
+
+    if (query.snapshot_after !== undefined) {
+      if (!query.snapshot_cursor) throw new BadRequestException('snapshot_cursor is required with snapshot_after');
+      parseCursor(query.snapshot_cursor);
+      return this.snapshotPage(context, branchId, settings, query.snapshot_after || null, query.snapshot_cursor);
+    }
+    if (!query.cursor) {
+      const head = (await this.headCursor(context.tenantId)) ?? floor;
+      return this.snapshotPage(context, branchId, settings, null, formatCursor(head));
+    }
+
+    const cursor = parseCursor(query.cursor);
+    if (terminal && terminal.sync_cursor !== query.cursor) {
+      // The POS states what it has applied; compaction never removes anything above the lowest such cursor.
+      await this.prisma.posTerminal.updateMany({
+        where: { id: terminal.id, tenant_id: context.tenantId },
+        data: { sync_cursor: query.cursor },
+      });
+    }
+    // Compaction removed changes this POS never saw: it must start over.
+    if (compareCursors(cursor, floor) < 0) {
+      const head = (await this.headCursor(context.tenantId)) ?? floor;
+      return this.snapshotPage(context, branchId, settings, null, formatCursor(head));
+    }
+    return this.delta(context, branchId, settings, cursor);
+  }
+
+  /** The newest change whose transaction has finished, or null when there is none. */
+  private async headCursor(tenantId: string): Promise<SyncCursor | null> {
+    const [head] = await this.prisma.$queryRaw<Array<{ txid: string; sequence: bigint }>>`
+      SELECT "txid"::text AS txid, "sequence"
+      FROM "SyncChange"
+      WHERE "tenant_id" = ${tenantId}::uuid
+        AND "txid" < pg_snapshot_xmin(pg_current_snapshot())
+      ORDER BY "txid" DESC, "sequence" DESC
+      LIMIT 1`;
+    return head ? { txid: BigInt(head.txid), sequence: head.sequence } : null;
+  }
+
+  /**
+   * Changes after `cursor` that this branch should see. Only changes of
+   * finished transactions are returned (txid below the snapshot's xmin), in
+   * (txid, sequence) order, so a transaction that commits after this read
+   * always sorts after everything already handed out.
+   */
+  private readChanges(tenantId: string, branchId: string, cursor: SyncCursor): Promise<ChangeRow[]> {
+    return this.prisma.$queryRaw<ChangeRow[]>`
+      SELECT "txid"::text AS txid, "sequence", "kind", "entity_key"
+      FROM "SyncChange"
+      WHERE "tenant_id" = ${tenantId}::uuid
+        AND ("branch_id" IS NULL OR "branch_id" = ${branchId}::uuid)
+        AND ("txid", "sequence") > (${cursor.txid.toString()}::text::xid8, ${cursor.sequence}::bigint)
+        AND "txid" < pg_snapshot_xmin(pg_current_snapshot())
+      ORDER BY "txid", "sequence"
+      LIMIT ${DELTA_CHANGE_LIMIT}`;
+  }
+
+  private async delta(
+    context: TenantContext,
+    branchId: string,
+    settings: ReturnType<typeof readTenantSettings>,
+    cursor: SyncCursor,
+  ) {
+    const changes = await this.readChanges(context.tenantId, branchId, cursor);
+    const issuedAt = new Date().toISOString();
+    const base = {
+      catalog_version: CATALOG_VERSION,
+      mode: 'delta' as const,
+      server_time: issuedAt,
+      catalog_valid_until: this.catalogValidUntil(),
+      products: [] as unknown[],
+      stock: [] as unknown[],
+      deleted_variant_ids: [] as string[],
+      reset_products: false,
+      reset_stock: false,
+      reset_sellers: false,
+      has_more: false,
+    };
+    if (!changes.length) return { ...base, cursor: formatCursor(cursor) };
+
+    const last = changes[changes.length - 1];
+    const newCursor = formatCursor({ txid: BigInt(last.txid), sequence: last.sequence });
+
+    // A rule, tax or wide price change touches many prices: start a fresh snapshot.
+    if (changes.some((change) => change.kind === 'pricing')) {
+      return this.snapshotPage(context, branchId, settings, null, newCursor);
+    }
+
+    const keys = (kind: string) => [
+      ...new Set(changes.filter((c) => c.kind === kind && c.entity_key).map((c) => c.entity_key as string)),
+    ];
+    const variantIds = keys('variant');
+    const productIds = keys('product');
+    const uomIds = keys('uom');
+    const stockIds = keys('inventory');
+    const has = (kind: string) => changes.some((change) => change.kind === kind);
+
+    const clauses = [
+      variantIds.length ? { id: { in: variantIds } } : null,
+      productIds.length ? { product_id: { in: productIds } } : null,
+      uomIds.length ? { base_uom_id: { in: uomIds } } : null,
+    ].filter((clause): clause is NonNullable<typeof clause> => clause !== null);
+    const found = clauses.length
+      ? await this.prisma.productVariant.findMany({ where: { tenant_id: context.tenantId, OR: clauses } })
+      : [];
+
+    const { products, presentIds } = await this.catalogRows(context, found.filter((v) => v.is_active));
+    const candidateIds = new Set([...variantIds, ...found.map((variant) => variant.id)]);
+    const deleted = [...candidateIds].filter((id) => !presentIds.has(id));
+    const stock = await this.branchStock(context, branchId, [...new Set([...stockIds, ...presentIds])]);
+
+    return {
+      ...base,
+      cursor: newCursor,
+      products,
+      stock,
+      deleted_variant_ids: deleted,
+      has_more: changes.length === DELTA_CHANGE_LIMIT,
+      ...(has('sellers') ? { sellers: await this.sellers(context, branchId), reset_sellers: true } : {}),
+      ...(has('settings') ? { settings } : {}),
+    };
+  }
+
+  /**
+   * One page of the first-time (or restart) snapshot: variants ordered by id,
+   * `SNAPSHOT_PAGE_SIZE` at a time. `snapshot_cursor` is the stream position
+   * when the snapshot started; the POS continues from it with a delta after
+   * the last page, and can resume a half-done snapshot with `snapshot_after`.
+   */
+  private async snapshotPage(
+    context: TenantContext,
+    branchId: string,
+    settings: ReturnType<typeof readTenantSettings>,
+    after: string | null,
+    snapshotCursor: string,
+  ) {
+    const first = after === null;
+    const rows = await this.prisma.productVariant.findMany({
+      where: {
+        tenant_id: context.tenantId,
+        is_active: true,
+        product: { is_active: true, tenant_id: context.tenantId },
+        ...(after ? { id: { gt: after } } : {}),
+      },
+      orderBy: { id: 'asc' },
+      take: SNAPSHOT_PAGE_SIZE + 1,
+    });
+    const hasMore = rows.length > SNAPSHOT_PAGE_SIZE;
+    const page = rows.slice(0, SNAPSHOT_PAGE_SIZE);
+
+    const [{ products }, stock, sellers] = await Promise.all([
+      this.catalogRows(context, page),
+      this.branchStock(context, branchId, page.map((variant) => variant.id)),
+      first ? this.sellers(context, branchId) : undefined,
+    ]);
+    const issuedAt = new Date().toISOString();
+    return {
+      catalog_version: CATALOG_VERSION,
+      mode: 'snapshot' as const,
+      cursor: snapshotCursor,
+      server_time: issuedAt,
+      catalog_valid_until: this.catalogValidUntil(),
+      products,
+      stock,
+      deleted_variant_ids: [] as string[],
+      snapshot_after: hasMore ? page[page.length - 1].id : null,
+      has_more: hasMore,
+      reset_products: first,
+      reset_stock: first,
+      reset_sellers: first,
+      ...(first ? { sellers, settings } : {}),
+    };
+  }
+
+  /**
+   * The POS rows for some active variants: product names, unit, barcodes and
+   * the quoted price. A variant with no resolvable price is left out (BR-PSL-101):
+   * the catalog must not fail for one unpriced item, and it is not advertised
+   * until it is priced.
+   */
+  private async catalogRows(context: TenantContext, variantRows: readonly ProductVariant[]) {
+    if (!variantRows.length) return { products: [], presentIds: new Set<string>() };
+    const productsById = await this.loadProducts(context, variantRows);
+    const usable = variantRows.filter((variant) => productsById.get(variant.product_id)?.is_active);
+    const variants = usable.map((variant) => ({ ...variant, product: productsById.get(variant.product_id)! }));
+
+    const uomIds = [...new Set(variants.map((v) => v.base_uom_id).filter((id): id is string => !!id))];
+    const [barcodes, uoms, rules, taxCodes] = await Promise.all([
+      this.prisma.productBarcode.findMany({
+        where: { tenant_id: context.tenantId, variant_id: { in: variants.map((v) => v.id) } },
+        orderBy: { created_at: 'asc' },
+      }),
+      uomIds.length
+        ? this.prisma.unitOfMeasure.findMany({ where: { tenant_id: context.tenantId, id: { in: uomIds } } })
+        : Promise.resolve([] as UnitOfMeasure[]),
+      this.pricing.loadActiveRules(context, undefined, variants),
+      this.tax.loadActiveCodeIndex(context),
+    ]);
+    const barcodesByVariant = new Map<string, ProductBarcode[]>();
+    for (const barcode of barcodes) {
+      barcodesByVariant.set(barcode.variant_id, [...(barcodesByVariant.get(barcode.variant_id) ?? []), barcode]);
+    }
+    const uomById = new Map(uoms.map((uom) => [uom.id, uom]));
+
+    const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
+    const issuedAt = new Date().toISOString();
+    const priced = variants.filter((variant) => quotes.has(variant.id));
+    return {
+      presentIds: new Set(priced.map((variant) => variant.id)),
+      products: priced.map((variant) =>
+        this.productSnapshot(
+          variant,
+          quotes.get(variant.id)!,
+          barcodesByVariant.get(variant.id) ?? [],
+          variant.base_uom_id ? uomById.get(variant.base_uom_id) : undefined,
+          issuedAt,
+        ),
+      ),
+    };
+  }
+
+  /** A branch's POS stock is its default warehouse; the branch id is stamped on every row. */
+  private async branchStock(context: TenantContext, branchId: string, variantIds: string[]) {
+    if (!variantIds.length) return [];
+    const warehouseId = await this.inventory.defaultWarehouseId(this.prisma, context.tenantId, branchId);
+    const rows = await this.prisma.inventoryStock.findMany({
+      where: { tenant_id: context.tenantId, warehouse_id: warehouseId, variant_id: { in: variantIds } },
+      select: { variant_id: true, qty_on_hand: true, qty_reserved: true, last_sold_at: true },
+    });
+    return rows.map((row) => ({
+      branch_id: branchId,
+      variant_id: row.variant_id,
+      qty_on_hand: quantityNumber(row.qty_on_hand),
+      qty_reserved: quantityNumber(row.qty_reserved),
+      last_sold_at: row.last_sold_at,
+    }));
+  }
 
   private catalogValidUntil(now = Date.now()) {
     const configured = Number(process.env.POS_PRICE_CATALOG_TTL_MS || 86_400_000);
@@ -34,153 +322,13 @@ export class SyncService {
     return new Date(now + ttl).toISOString();
   }
 
-  async pull(context: TenantContext, branchId: string, cursor?: string) {
-    if (!cursor) return this.snapshot(context, branchId);
-    let parsedCursor: bigint;
-    try {
-      parsedCursor = BigInt(cursor);
-      if (parsedCursor < 0n) throw new Error('negative');
-    } catch {
-      throw new BadRequestException('cursor must be a non-negative integer');
-    }
-
-    const changes = await this.prisma.syncChange.findMany({
-      where: {
-        tenant_id: context.tenantId,
-        sequence: { gt: parsedCursor },
-        OR: [{ branch_id: null }, { branch_id: branchId }],
-      },
-      orderBy: { sequence: 'asc' },
-      take: 5_000,
-    });
-    const issuedAt = new Date().toISOString();
-    const catalogValidUntil = this.catalogValidUntil();
-    const sellers = await this.sellers(context, branchId);
-    if (!changes.length) {
-      return {
-        mode: 'delta', cursor, server_time: issuedAt,
-        catalog_valid_until: catalogValidUntil,
-        products: [], stock: [], deleted_variant_ids: [],
-        sellers, reset_sellers: true,
-        reset_products: false, reset_stock: false, has_more: false,
-      };
-    }
-
-    const resetCatalog = changes.some((change) => change.kind === 'product' || change.kind === 'pricing');
-    const requestedIds = new Set(
-      changes
-        .filter((change) => change.kind === 'variant' || change.kind === 'inventory')
-        .map((change) => change.entity_key)
-        .filter((value): value is string => !!value),
-    );
-    const [variantRows, stock, rules, taxCodes] = await Promise.all([
-      this.prisma.productVariant.findMany({
-        where: {
-          tenant_id: context.tenantId,
-          product: { is_active: true, tenant_id: context.tenantId },
-          is_active: true,
-          ...(resetCatalog ? {} : { id: { in: [...requestedIds] } }),
-        },
-      }),
-      this.prisma.inventoryStock.findMany({
-        where: {
-          tenant_id: context.tenantId,
-          branch_id: branchId,
-          ...(resetCatalog ? {} : { variant_id: { in: [...requestedIds] } }),
-        },
-      }),
-      this.pricing.loadActiveRules(context),
-      this.tax.loadActiveCodeIndex(context),
-    ]);
-    const variants = await this.attachProducts(context, variantRows);
-    const presentIds = new Set(variants.map((variant) => variant.id));
-    const deletedVariantIds = resetCatalog ? [] : [...requestedIds].filter((id) => !presentIds.has(id));
-    const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
-    // WP-008 Phase B (BR-PSL-101): a variant with no resolvable price is
-    // omitted from `quotes` rather than throwing (unlike `calculate`) --
-    // the offline catalog snapshot must not fail entirely for one unpriced
-    // item. It is simply not advertised to POS until it is priced.
-    const products = variants
-      .filter((variant) => quotes.has(variant.id))
-      .map((variant) => this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt));
-
-    return {
-      mode: 'delta',
-      cursor: changes[changes.length - 1].sequence.toString(),
-      server_time: issuedAt,
-      catalog_valid_until: catalogValidUntil,
-      products, stock, deleted_variant_ids: deletedVariantIds,
-      reset_products: resetCatalog, reset_stock: resetCatalog,
-      sellers, reset_sellers: true,
-      has_more: changes.length === 5_000,
-    };
-  }
-
-  private async snapshot(context: TenantContext, branchId: string) {
-    const cursor = await this.prisma.syncChange.aggregate({
-      where: { tenant_id: context.tenantId },
-      _max: { sequence: true },
-    });
-    const [variantRows, stock, rules, sellers, taxCodes] = await Promise.all([
-      this.prisma.productVariant.findMany({
-        where: {
-          tenant_id: context.tenantId,
-          is_active: true,
-          product: { is_active: true, tenant_id: context.tenantId },
-        },
-      }),
-      this.prisma.inventoryStock.findMany({
-        where: { tenant_id: context.tenantId, branch_id: branchId },
-      }),
-      this.pricing.loadActiveRules(context),
-      this.sellers(context, branchId),
-      this.tax.loadActiveCodeIndex(context),
-    ]);
-    const variants = await this.attachProducts(context, variantRows);
-    const issuedAt = new Date().toISOString();
-    const quotes = this.pricing.quoteMany(variants, rules, taxCodes);
-    const products = variants
-      .filter((variant) => quotes.has(variant.id))
-      .map((variant) => this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt));
-    return {
-      mode: 'snapshot',
-      cursor: (cursor._max.sequence || 0n).toString(),
-      server_time: issuedAt,
-      catalog_valid_until: this.catalogValidUntil(),
-      products, stock, deleted_variant_ids: [],
-      sellers, reset_sellers: true,
-      reset_products: true, reset_stock: true, has_more: false,
-    };
-  }
-
   /**
-   * Replaces Prisma's automatic `include: { product: true }` relation loader,
-   * which exceeds Postgres's max_stack_depth once the parent variant set is
-   * unbounded and large (confirmed at CI catalog volume). The product batch
-   * query is deliberately unfiltered on `is_active` (only tenant_id + id) so
-   * a product deactivated between the two queries cannot strand a variant
-   * the first query already committed to returning -- the throw below is a
-   * true invariant guard, not a race that's merely unlikely to fire.
-   *
-   * Honest note on WHY, not just that: this was isolated behaviourally, not
-   * diagnosed to a Postgres/Prisma internal cause. Bisecting the failing
-   * statement against a real `postgres:16` instance showed: the plain
-   * variant filter query alone (no `include`) succeeds at 10k+ rows; the
-   * same query plus `include: { product: true }` fails identically with
-   * Postgres error 54001 whether concurrent or not; the same query plus
-   * `include` bounded to `take: 100` succeeds. That isolates the *trigger*
-   * (Prisma's relation-loader fan-out over an unbounded parent set) but not
-   * the mechanism inside Postgres's executor that actually exhausts the
-   * C stack for that access pattern. The fix below takes a categorically
-   * different, independently-bisected-safe query shape (a flat `id IN (...)`
-   * batch has no JOIN, no relation-loader fan-out, and was separately
-   * confirmed safe at the same row count) rather than tuning the unsafe one,
-   * so it does not depend on ever fully explaining the internal cause.
+   * Loads the parents of some variants in flat `id IN (...)` batches (see
+   * PRODUCT_BATCH_SIZE). The batch query is deliberately unfiltered on
+   * `is_active` (tenant + id only) so a product deactivated between two reads
+   * cannot strand a variant the first read already returned.
    */
-  private async attachProducts<T extends { readonly id: string; readonly product_id: string }>(
-    context: TenantContext,
-    variants: readonly T[],
-  ): Promise<(T & { readonly product: Product })[]> {
+  private async loadProducts(context: TenantContext, variants: readonly ProductVariant[]) {
     const productIds = [...new Set(variants.map((variant) => variant.product_id))];
     const productsById = new Map<string, Product>();
     for (let offset = 0; offset < productIds.length; offset += PRODUCT_BATCH_SIZE) {
@@ -190,50 +338,55 @@ export class SyncService {
       });
       for (const product of products) productsById.set(product.id, product);
     }
-    return variants.map((variant) => {
-      const product = productsById.get(variant.product_id);
-      if (!product) {
-        throw new Error(
-          `SyncService: active product ${variant.product_id} not found for active variant ${variant.id}; the variant query's product filter invariant broke.`,
-        );
-      }
-      return { ...variant, product };
-    });
+    return productsById;
   }
 
-  private sellers(context: TenantContext, branchId: string) {
-    const users = (this.prisma as any).user;
-    if (!users) return Promise.resolve([]);
-    return users.findMany({
+  /** The branch's active sellers: `seller` Memberships scoped to the branch. */
+  private async sellers(context: TenantContext, branchId: string) {
+    const memberships = await this.prisma.membership.findMany({
       where: {
-        // User has no tenant_id column (ADR-0003); scope through Membership.
-        memberships: { some: { tenantId: context.tenantId } },
-        branch_id: branchId,
+        tenant_id: context.tenantId,
         role: 'seller',
-        is_active: true,
+        access_scope_assignments: { some: { scope_type: 'location', scope_ref_id: branchId } },
+        user: { is_active: true },
       },
-      select: { id: true, name: true },
-      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      select: { user: { select: { id: true, name: true } } },
+      orderBy: [{ user: { name: 'asc' } }, { user_id: 'asc' }],
     });
+    return memberships.map(({ user }) => user);
   }
 
   private productSnapshot(
     variant: any,
     quote: ReturnType<PricingService['quote']>,
+    barcodes: ProductBarcode[],
+    uom: UnitOfMeasure | undefined,
     issuedAt: string,
   ) {
     return {
-      catalog_version: 2,
+      catalog_version: CATALOG_VERSION,
       id: variant.id,
       sku: variant.sku,
       name_en: variant.product.name_en,
       name_ar: variant.product.name_ar,
-      barcode_ean13: variant.barcode_ean13,
-      barcode_internal: variant.barcode_internal,
-      size: variant.size,
-      color: variant.color,
-      selling_price: quote.net_price,
-      unit_tax: quote.tax_amount,
+      label: variant.label,
+      attributes: variant.attributes,
+      // W2b: additive field; a POS that predates it ignores it and sells the item untracked.
+      tracking: variant.tracking,
+      uom_code: uom?.code ?? null,
+      uom_name_ar: uom?.name_ar ?? null,
+      uom_precision: uom?.precision ?? 0,
+      barcodes: barcodes.map((barcode) => ({
+        code: barcode.code,
+        pack_qty: quantityNumber(barcode.pack_qty),
+        kind: barcode.kind,
+      })),
+      selling_price: quote!.net_price,
+      unit_tax: quote!.tax_amount,
+      // What the POS needs to price a discount exactly like the server does:
+      // the rate (percent) and whether the shelf price contains it.
+      tax_rate: quote!.tax_percent,
+      tax_mode: quote!.tax.mode_snapshot,
       price_issued_at: issuedAt,
     };
   }

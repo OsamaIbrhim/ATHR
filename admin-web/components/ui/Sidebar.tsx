@@ -3,36 +3,72 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { apiLogout, getStoredUser } from '@/lib/api'
-import { NAV_ITEMS } from '@/lib/permissions'
+import { activeNavHref, NAV } from '@/lib/permissions'
+import { interceptLeave } from '@/lib/leave-guard'
+import { ADMIN_PRODUCT_LINE, BRAND_NAME } from '@/lib/brand'
 
-export default function Sidebar(){
-  const p = usePathname()
-  const [capabilities, setCapabilities] = useState<string[]>([])
+function useStoredPermissions() {
+  const [permissions, setPermissions] = useState<string[]>([])
   const [userName, setUserName] = useState('')
   useEffect(() => {
     const update = () => {
       const user = getStoredUser()
-      setCapabilities(user?.capabilities || [])
+      setPermissions(user?.permissions || [])
       setUserName(user?.name || '')
     }
     update()
     window.addEventListener('athr-user-updated', update)
     return () => window.removeEventListener('athr-user-updated', update)
   }, [])
-  if (p === '/login') return null
-  const visible = NAV_ITEMS.filter(({ capability }) => capabilities.includes(capability))
+  return { permissions, userName }
+}
+
+export function Brand() {
+  return <div className="text-2xl font-bold">{BRAND_NAME} <span className="text-accent">{ADMIN_PRODUCT_LINE}</span></div>
+}
+
+/** The menu itself, shared by the static sidebar and the phone drawer. */
+export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
+  const pathname = usePathname()
+  const { permissions, userName } = useStoredPermissions()
+  const visible = NAV.filter(({ permission }) => permissions.includes(permission))
+  const active = activeNavHref(pathname)
   return (
-    <aside className="w-64 shrink-0 bg-athr text-white min-h-screen p-4 overflow-y-auto">
-      <div className="text-2xl font-bold mb-6">ATHR <span className="text-accent">Operations</span></div>
-      <nav className="space-y-1">
-        {visible.map(({ href, label })=>(
-          <Link key={href} href={href} className={`block px-3 py-2 rounded-xl ${p===href || (href !== '/' && p.startsWith(href))?'bg-white/15': 'hover:bg-white/10'}`}>{label}</Link>
-        ))}
-        {!visible.length&&<div className="rounded-lg bg-white/10 p-3 text-sm text-white/80">لم تُحمّل صلاحيات القائمة. تحقق من اتصال الخادم ثم أعد تسجيل الدخول.</div>}
+    <div className="on-dark">
+      <nav aria-label="القائمة الرئيسية" className="space-y-1">
+        {visible.map(({ href, label, group }, index) => {
+          const isActive = href === active
+          const heading = group && group !== visible[index - 1]?.group
+          return (
+            <div key={href}>
+              {heading && <div className="mb-1 mt-4 px-3 text-xs font-semibold text-white/60">{group}</div>}
+              <Link
+                href={href}
+                onClick={e => { if (interceptLeave(href)) { e.preventDefault(); return } onNavigate?.() }}
+                aria-current={isActive ? 'page' : undefined}
+                className={`block rounded-xl border-s-4 px-3 py-2.5 md:py-2 ${isActive ? 'border-accent bg-white/15 font-semibold' : 'border-transparent hover:bg-white/10'}`}
+              >
+                {label}
+              </Link>
+            </div>
+          )
+        })}
+        {!visible.length && <div className="rounded-lg bg-white/10 p-3 text-sm text-white/80">لم تُحمّل صلاحيات القائمة. تحقق من اتصال الخادم ثم أعد تسجيل الدخول.</div>}
       </nav>
-      {userName && <div className="text-sm text-white/70 mt-8">{userName}</div>}
-      <div className="text-xs text-white/50 mt-8">ar-EG • EGP</div>
-      <button className="mt-4 text-sm text-white/70" onClick={async()=>{ await apiLogout(); location.href='/login' }}>تسجيل الخروج</button>
+      {userName && <div className="mt-8 text-sm text-white/70">{userName}</div>}
+      <button className="mt-2 min-h-11 text-sm text-white/70 hover:text-white md:min-h-0" onClick={async () => { await apiLogout(); location.href = '/login' }}>تسجيل الخروج</button>
+    </div>
+  )
+}
+
+/** Static sidebar, desktop only. The phone gets the top bar + drawer in AppShell. */
+export default function Sidebar() {
+  const pathname = usePathname()
+  if (pathname === '/login') return null
+  return (
+    <aside className="sticky top-0 hidden h-screen w-64 shrink-0 overflow-y-auto bg-athr p-4 text-white md:block">
+      <div className="mb-6"><Brand /></div>
+      <SidebarNav />
     </aside>
   )
 }

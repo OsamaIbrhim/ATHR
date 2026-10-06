@@ -5,7 +5,6 @@ import { IdempotencyKeyGuard, RequiresIdempotencyKey } from '../common/http/idem
 import { assertIdentityPermission } from './authorize.util';
 import { CreateSupportAccessGrantDto } from './dto/create-support-access-grant.dto';
 import { MembershipRepository } from './membership.repository';
-import { PermissionPolicyService } from './permission-policy.service';
 import { RequestWithIdentity, resolveContextOrThrow } from './resolve-tenant-context.util';
 import { SupportAccessGrantService } from './support-access-grant.service';
 import { TenantContextResolver } from './tenant-context.resolver';
@@ -27,7 +26,6 @@ export class SupportAccessGrantController {
   constructor(
     private readonly grants: SupportAccessGrantService,
     private readonly membershipRepository: MembershipRepository,
-    private readonly permissionPolicy: PermissionPolicyService,
     private readonly tenantContext: TenantContextResolver,
   ) {}
 
@@ -35,7 +33,7 @@ export class SupportAccessGrantController {
   @Envelope('list')
   async list(@Param('tenantId') tenantId: string, @Req() req: RequestWithIdentity) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'support_access.grant');
+    await assertIdentityPermission(context, this.membershipRepository, 'support_access.grant');
     const items = await this.grants.list(context);
     return { items, page: { limit: items.length, next_cursor: null, previous_cursor: null, has_more: false } };
   }
@@ -48,7 +46,7 @@ export class SupportAccessGrantController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'support_access.grant');
+    await assertIdentityPermission(context, this.membershipRepository, 'support_access.grant');
     return this.grants.findById(context, grantId);
   }
 
@@ -62,7 +60,7 @@ export class SupportAccessGrantController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'support_access.grant');
+    await assertIdentityPermission(context, this.membershipRepository, 'support_access.grant');
     const result = await this.grants.create(context, {
       operatorIdentityId: dto.operator_identity_id,
       mode: dto.mode,
@@ -87,7 +85,7 @@ export class SupportAccessGrantController {
     @Req() req: RequestWithIdentity,
   ) {
     const context = await resolveContextOrThrow(this.tenantContext, req, tenantId);
-    await assertIdentityPermission(context, this.membershipRepository, this.permissionPolicy, 'support_access.grant');
+    await assertIdentityPermission(context, this.membershipRepository, 'support_access.grant');
     return this.grants.revoke(context, grantId);
   }
 }

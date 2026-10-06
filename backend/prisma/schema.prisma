@@ -10,51 +10,45 @@ datasource db {
 }
 
 model Branch {
-  id                       String                  @id @default(uuid()) @db.Uuid
-  code                     String
-  name_ar                  String
-  name_en                  String?
-  address                  String?
-  phone                    String?
-  cash_drawer_enabled      Boolean                 @default(false)
-  is_active                Boolean                 @default(true)
-  created_at               DateTime                @default(now())
-  tenant_id                String                  @db.Uuid
-  users                    User[]
-  inventory                InventoryStock[]
-  inventory_movements      InventoryMovement[]
-  inventory_cost_movements InventoryCostMovement[]
-  purchase_invoices        PurchaseInvoice[]
-  supplier_returns         SupplierReturn[]
-  sales                    SalesInvoice[]
-  shifts                   Shift[]
-  returns                  Return[]
-  outgoing_transfers       Transfer[]              @relation("TransferFromBranch")
-  incoming_transfers       Transfer[]              @relation("TransferToBranch")
-  offer_suggestions        OfferSuggestion[]
-  pos_terminals            PosTerminal[]
-  pos_enrollment_codes     PosTerminalEnrollment[]
-  assortments              Assortment[]
+  id                   String                  @id @default(uuid()) @db.Uuid
+  code                 String
+  name_ar              String
+  name_en              String?
+  address              String?
+  phone                String?
+  cash_drawer_enabled  Boolean                 @default(false)
+  is_active            Boolean                 @default(true)
+  created_at           DateTime                @default(now())
+  tenant_id            String                  @db.Uuid
+  warehouses           Warehouse[]
+  purchase_invoices    PurchaseInvoice[]
+  supplier_returns     SupplierReturn[]
+  sales                SalesInvoice[]
+  shifts               Shift[]
+  returns              Return[]
+  outgoing_transfers   Transfer[]              @relation("TransferFromBranch")
+  incoming_transfers   Transfer[]              @relation("TransferToBranch")
+  offer_suggestions    OfferSuggestion[]
+  pos_terminals        PosTerminal[]
+  pos_enrollment_codes PosTerminalEnrollment[]
+  assortments          Assortment[]
+  stock_adjustments    StockAdjustment[]
+  stock_counts         StockCount[]
 
   @@unique([tenant_id, code])
   @@unique([tenant_id, id])
-  @@index([tenant_id])
 }
 
 model User {
   id                         String                      @id @default(uuid()) @db.Uuid
-  branch_id                  String?                     @db.Uuid
-  branch                     Branch?                     @relation(fields: [branch_id], references: [id])
   name                       String
   phone                      String?                     @unique
   email                      String?                     @unique
   password_hash              String
-  role                       Role
-  granted_capabilities       String[]                    @default([])
-  revoked_capabilities       String[]                    @default([])
   is_active                  Boolean                     @default(true)
   created_at                 DateTime                    @default(now())
   created_returns            Return[]                    @relation("ReturnCreatedBy")
+  customer_ledger_entries    CustomerLedgerEntry[]       @relation("CustomerLedgerCreatedBy")
   created_transfers          Transfer[]                  @relation("TransferCreatedBy")
   shipped_transfers          Transfer[]                  @relation("TransferShippedBy")
   received_transfers         Transfer[]                  @relation("TransferReceivedBy")
@@ -79,12 +73,17 @@ model User {
   closed_seller_periods      SellerCommissionPeriod[]    @relation("SellerPeriodClosedBy")
   seller_period_rows         SellerCommissionPeriodRow[] @relation("SellerPeriodSeller")
   memberships                Membership[]
+  // ADR-0006: operates the platform console only; grants no tenant access.
+  is_platform_admin          Boolean                     @default(false)
 }
 
 model RefreshToken {
   id         String    @id @default(uuid()) @db.Uuid
   user_id    String    @db.Uuid
   user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  // The tenant this session was issued for; refresh re-issues for the same one.
+  tenant_id  String?   @db.Uuid
+  tenant     Tenant?   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   token_hash String    @unique
   expires_at DateTime
   revoked_at DateTime?
@@ -93,116 +92,81 @@ model RefreshToken {
   @@index([user_id, expires_at])
 }
 
-enum Role {
-  owner
-  branch_manager
-  cashier
-  warehouse_manager
-  seller
-}
-
 // WP-005 Phase B (MT-MIG-001/002/003): Tenant/Organization/LegalEntity/Location/
-// Warehouse/Membership foundation. Additive only — see docs/adr/0002-0006 and
-// docs/runbooks/tenant-migration-backfill-rollback.md.
-enum TenantAccessMode {
-  provisioning
-  internal_demo
-  trial
-  active
-  payment_grace
-  read_only
-  restricted
-  suspended
-  closure_requested
-  closed
-  deletion_pending
-}
-
+// Warehouse/Membership foundation. See docs/adr/0002-0006.
 model Tenant {
   id                    String               @id @default(uuid()) @db.Uuid
   name                  String
-  access_mode           TenantAccessMode     @default(active)
   default_locale        String               @default("ar")
   default_timezone      String               @default("Africa/Cairo")
   default_currency      String               @default("EGP")
+  // Tenant-level settings in one place (e.g. `scale_barcode`); the shape is
+  // owned by `catalog/tenant-settings.ts`.
+  settings              Json                 @default("{}")
+  // Highest sync change ("txid:sequence") removed by compaction; a POS whose
+  // cursor is below it must take a fresh snapshot.
+  sync_floor            String               @default("0:0")
   created_at            DateTime             @default(now())
   updated_at            DateTime             @updatedAt
   organization_profile  OrganizationProfile?
   legal_entities        LegalEntity[]
-  locations             Location[]
   warehouses            Warehouse[]
   memberships           Membership[]
+  refresh_tokens        RefreshToken[]
   invitations           Invitation[]
   support_access_grants SupportAccessGrant[]
+  subscription          Subscription?
+  subscription_events   SubscriptionEvent[]
 }
 
 model OrganizationProfile {
-  id           String   @id @default(uuid()) @db.Uuid
-  tenant_id    String   @unique @db.Uuid
-  tenant       Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  display_name String
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt
+  id            String   @id @default(uuid()) @db.Uuid
+  tenant_id     String   @unique @db.Uuid
+  tenant        Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  display_name  String
+  // Chosen at signup; used later to pick a catalog preset.
+  business_type String?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
 }
 
 model LegalEntity {
-  id         String     @id @default(uuid()) @db.Uuid
-  tenant_id  String     @db.Uuid
-  tenant     Tenant     @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
+  id         String   @id @default(uuid()) @db.Uuid
+  tenant_id  String   @db.Uuid
+  tenant     Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
   legal_name String
-  is_primary Boolean    @default(true)
-  created_at DateTime   @default(now())
-  updated_at DateTime   @updatedAt
-  locations  Location[]
+  is_primary Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   @@index([tenant_id])
 }
 
-// NOTE: tenantId/identityId are camelCase (not this file's usual snake_case)
-// because docs/runbooks/tenant-migration-backfill-rollback.md's Accepted,
-// literal validation queries reference them as `l."tenantId"`, `m."tenantId"`,
-// `m."identityId"` — matched exactly so those queries run unmodified.
-model Location {
-  id              String      @id @default(uuid()) @db.Uuid
-  tenantId        String      @db.Uuid
-  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  legal_entity_id String      @db.Uuid
-  legal_entity    LegalEntity @relation(fields: [legal_entity_id], references: [id], onDelete: Restrict)
-  code            String
-  name_ar         String
-  name_en         String?
-  address         String?
-  phone           String?
-  is_active       Boolean     @default(true)
-  created_at      DateTime    @default(now())
-  updated_at      DateTime    @updatedAt
-  warehouses      Warehouse[]
-
-  @@index([tenantId])
-  @@index([legal_entity_id])
-}
-
+// A Warehouse holds stock. It belongs to a Branch (the operational site) or,
+// with branch_id = null, is a centralized warehouse. Every branch has exactly
+// one default warehouse (partial unique index in the migration) that sales,
+// returns and the POS stock sync use; creating a branch creates it in the same
+// transaction.
 model Warehouse {
-  id             String    @id @default(uuid()) @db.Uuid
-  tenant_id      String    @db.Uuid
-  tenant         Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
-  location_id    String?   @db.Uuid
-  location       Location? @relation(fields: [location_id], references: [id], onDelete: SetNull)
-  name           String
-  is_default     Boolean   @default(false)
-  is_centralized Boolean   @default(false)
-  created_at     DateTime  @default(now())
-  updated_at     DateTime  @updatedAt
-  // WP-009 Phase A: InventoryStock/InventoryMovement/InventoryCostMovement
-  // reference (tenant_id, id) as a composite FK, mirroring the same pattern
-  // already used on Branch/ProductVariant.
+  id                       String                  @id @default(uuid()) @db.Uuid
+  tenant_id                String                  @db.Uuid
+  tenant                   Tenant                  @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
+  branch_id                String?                 @db.Uuid
+  branch                   Branch?                 @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  name                     String
+  is_default               Boolean                 @default(false)
+  created_at               DateTime                @default(now())
+  updated_at               DateTime                @updatedAt
   inventory                InventoryStock[]
   inventory_movements      InventoryMovement[]
   inventory_cost_movements InventoryCostMovement[]
+  inventory_batches        InventoryBatch[]
+  inventory_serials        InventorySerial[]
+  stock_adjustments        StockAdjustment[]
+  stock_counts             StockCount[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
-  @@index([location_id])
+  @@index([branch_id])
 }
 
 enum MembershipRole {
@@ -224,18 +188,22 @@ enum MembershipStatus {
 
 model Membership {
   id                       String                  @id @default(uuid()) @db.Uuid
-  tenantId                 String                  @db.Uuid
-  tenant                   Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  identityId               String                  @db.Uuid
-  identity                 User                    @relation(fields: [identityId], references: [id], onDelete: Restrict)
+  tenant_id                String                  @db.Uuid
+  tenant                   Tenant                  @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
+  user_id                  String                  @db.Uuid
+  user                     User                    @relation(fields: [user_id], references: [id], onDelete: Restrict)
   role                     MembershipRole
   status                   MembershipStatus        @default(active)
+  // Effective permissions = role defaults + granted - revoked (permission keys
+  // from identity/permission-catalog.ts).
+  granted_permissions      String[]                @default([])
+  revoked_permissions      String[]                @default([])
   created_at               DateTime                @default(now())
   updated_at               DateTime                @updatedAt
   access_scope_assignments AccessScopeAssignment[]
 
-  @@unique([identityId, tenantId])
-  @@index([tenantId])
+  @@unique([user_id, tenant_id])
+  @@index([tenant_id])
 }
 
 // WP-006 (MT-MIG-005's identity/permission half only — see
@@ -253,6 +221,9 @@ enum InvitationStatus {
   revoked
 }
 
+// `location` is the historical name of the branch scope: its scope_ref_id is a
+// Branch id (the Location model no longer exists). The value is kept so stored
+// assignments, JWT claims and the permission catalog keep working unchanged.
 enum AccessScopeType {
   tenant_wide
   location
@@ -288,7 +259,6 @@ model Invitation {
   created_at             DateTime         @default(now())
   updated_at             DateTime         @updatedAt
 
-  @@index([tenant_id])
   @@index([tenant_id, email])
 }
 
@@ -343,29 +313,26 @@ model SupportAccessGrant {
   reason                  String
   created_at              DateTime          @default(now())
 
-  @@index([tenant_id])
   @@index([tenant_id, expires_at])
 }
 
+// One row per tenant.
 model SellerCommissionSettings {
-  id                 Int      @id @default(1)
+  tenant_id          String   @id @db.Uuid
   default_rate       Decimal  @default(0) @db.Decimal(5, 2)
-  default_target     Decimal? @db.Decimal(12, 2)
-  default_bonus      Decimal  @default(0) @db.Decimal(12, 2)
+  default_target     Decimal? @db.Decimal(14, 2)
+  default_bonus      Decimal  @default(0) @db.Decimal(14, 2)
   period_length_days Int      @default(30)
   period_anchor      DateTime @default(now())
   updated_at         DateTime @updatedAt
-  tenant_id          String   @db.Uuid
-
-  @@index([tenant_id])
 }
 
 model SellerCommissionOverride {
   seller_id  String   @id @db.Uuid
   seller     User     @relation(fields: [seller_id], references: [id], onDelete: Cascade)
   rate       Decimal? @db.Decimal(5, 2)
-  target     Decimal? @db.Decimal(12, 2)
-  bonus      Decimal? @db.Decimal(12, 2)
+  target     Decimal? @db.Decimal(14, 2)
+  bonus      Decimal? @db.Decimal(14, 2)
   updated_at DateTime @updatedAt
   tenant_id  String   @db.Uuid
 
@@ -378,8 +345,8 @@ model SellerCommissionPeriod {
   period_end_exclusive DateTime
   period_length_days   Int
   default_rate         Decimal                     @db.Decimal(5, 2)
-  default_target       Decimal?                    @db.Decimal(12, 2)
-  default_bonus        Decimal                     @db.Decimal(12, 2)
+  default_target       Decimal?                    @db.Decimal(14, 2)
+  default_bonus        Decimal                     @db.Decimal(14, 2)
   closed_by            String                      @db.Uuid
   closer               User                        @relation("SellerPeriodClosedBy", fields: [closed_by], references: [id], onDelete: Restrict)
   closed_at            DateTime                    @default(now())
@@ -389,7 +356,6 @@ model SellerCommissionPeriod {
   @@unique([tenant_id, period_start, period_end_exclusive], map: "SellerCommissionPeriod_tenant_period_dates_key")
   @@unique([tenant_id, id])
   @@index([closed_at(sort: Desc)])
-  @@index([tenant_id])
 }
 
 model SellerCommissionPeriodRow {
@@ -401,16 +367,16 @@ model SellerCommissionPeriodRow {
   branch_id              String?                @db.Uuid
   branch_name            String?
   invoice_count          Int
-  gross_sales_before_tax Decimal                @db.Decimal(12, 2)
+  gross_sales_before_tax Decimal                @db.Decimal(14, 2)
   return_count           Int
-  returns_before_tax     Decimal                @db.Decimal(12, 2)
-  net_sales_before_tax   Decimal                @db.Decimal(12, 2)
+  returns_before_tax     Decimal                @db.Decimal(14, 2)
+  net_sales_before_tax   Decimal                @db.Decimal(14, 2)
   commission_rate        Decimal                @db.Decimal(5, 2)
-  percentage_commission  Decimal                @db.Decimal(12, 2)
-  target                 Decimal?               @db.Decimal(12, 2)
+  percentage_commission  Decimal                @db.Decimal(14, 2)
+  target                 Decimal?               @db.Decimal(14, 2)
   target_achieved        Boolean
-  target_bonus           Decimal                @db.Decimal(12, 2)
-  estimated_total        Decimal                @db.Decimal(12, 2)
+  target_bonus           Decimal                @db.Decimal(14, 2)
+  estimated_total        Decimal                @db.Decimal(14, 2)
   tenant_id              String                 @db.Uuid
 
   @@id([period_id, seller_id])
@@ -430,19 +396,18 @@ model Supplier {
   tenant_id        String            @db.Uuid
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
 }
 
 model Category {
-  id        String    @id @default(uuid()) @db.Uuid
-  name_ar   String
-  name_en   String?
-  parent_id String?   @db.Uuid
-  products  Product[]
-  tenant_id String    @db.Uuid
+  id           String       @id @default(uuid()) @db.Uuid
+  name_ar      String
+  name_en      String?
+  parent_id    String?      @db.Uuid
+  products     Product[]
+  stock_counts StockCount[]
+  tenant_id    String       @db.Uuid
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
 }
 
 // WP-008 Phase A (BR-CLS-103): Brand is an independent, archivable entity —
@@ -461,7 +426,6 @@ model Brand {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, name])
-  @@index([tenant_id])
 }
 
 model Product {
@@ -479,6 +443,10 @@ model Product {
   image_url       String?
   is_active       Boolean          @default(true)
   has_variants    Boolean          @default(true)
+  // null = simple product (no attributes). Otherwise the type defines which
+  // attributes its variants carry.
+  product_type_id String?          @db.Uuid
+  product_type    ProductType?     @relation(fields: [tenant_id, product_type_id], references: [tenant_id, id], onDelete: Restrict)
   // WP-008 Phase C (BR-TAX-201, OD-CAT-014): the product-level *default* tax
   // category. NOT NULL — every product must resolve to a category, which is
   // what stops a line falling back to an implicit rate. Backfilled by
@@ -492,6 +460,7 @@ model Product {
   @@unique([tenant_id, sku_base])
   @@unique([tenant_id, id])
   @@index([tenant_id, tax_category_id])
+  @@index([tenant_id, product_type_id])
   @@index([is_active, created_at])
   @@index([name_en(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_en_trgm_idx")
   @@index([name_ar(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_name_ar_trgm_idx")
@@ -509,17 +478,27 @@ enum ItemType {
   bundle_kit_placeholder
 }
 
+// W2b: how a variant's stock is followed beyond its quantity. `serial` = every
+// unit has its own number; `batch` = units are grouped by batch number with an
+// optional expiry date. Changed only while no warehouse holds any of it.
+enum TrackingMode {
+  none
+  serial
+  batch
+}
+
 model ProductVariant {
   id                         String                    @id @default(uuid()) @db.Uuid
   product_id                 String                    @db.Uuid
   product                    Product                   @relation(fields: [tenant_id, product_id], references: [tenant_id, id], onDelete: Cascade)
   sku                        String
-  barcode_ean13              String?
-  barcode_internal           String?
-  size                       String?
-  color                      String?
-  style                      String?
-  cost_price                 Decimal                   @db.Decimal(12, 2)
+  // Values of the product type's attributes, keyed by attribute key
+  // (`{"size":"L","color":"أسود"}`), and the display label computed from the
+  // axis attributes when the variant is written ("L · أسود"; "" if simple).
+  attributes                 Json                      @default("{}")
+  label                      String                    @default("")
+  barcodes                   ProductBarcode[]
+  cost_price                 Decimal                   @db.Decimal(14, 4)
   return_count               Int                       @default(0)
   qa_flag                    Boolean                   @default(false)
   is_active                  Boolean                   @default(true)
@@ -527,6 +506,7 @@ model ProductVariant {
   // physical, inventory-tracked item, so the default preserves current
   // behavior with zero data migration needed for this column.
   item_type                  ItemType                  @default(stocked)
+  tracking                   TrackingMode              @default(none)
   // BR-TYP-101: a stocked Variant needs a Base stock UOM before inventory
   // tracking can be enabled; nullable because non_stock/service/bundle
   // variants have none, and existing stocked rows have none until assigned.
@@ -543,6 +523,8 @@ model ProductVariant {
   inventory                  InventoryStock[]
   inventory_movements        InventoryMovement[]
   inventory_cost_movements   InventoryCostMovement[]
+  inventory_batches          InventoryBatch[]
+  inventory_serials          InventorySerial[]
   sales_items                SalesInvoiceItem[]
   purchase_items             PurchaseInvoiceItem[]
   supplier_return_items      SupplierReturnItem[]
@@ -558,18 +540,62 @@ model ProductVariant {
   // because a bundle component always names a Variant specifically, never a
   // product/brand/category, so there is no polymorphism to preserve.
   bundle_components          BundleComponent[]
+  stock_adjustment_items     StockAdjustmentItem[]
+  stock_count_lines          StockCountLine[]
+  stock_count_entries        StockCountEntry[]
   tenant_id                  String                    @db.Uuid
 
   @@unique([tenant_id, sku])
-  @@unique([tenant_id, barcode_internal])
   @@unique([tenant_id, id])
-  @@index([barcode_ean13])
   @@index([created_at(sort: Desc), id(sort: Asc)])
   @@index([product_id])
   @@index([sku(ops: raw("gin_trgm_ops"))], type: Gin, map: "ProductVariant_sku_trgm_idx")
   @@index([tenant_id])
   @@index([base_uom_id])
   @@index([tenant_id, tax_category_id])
+}
+
+// A tenant's kind of product (clothing, grocery item, phone ...): the list of
+// attributes its variants carry. `attributes` is an array of
+// { key, label_ar, label_en, kind: text|number|select, options?, axis }; the
+// single validator is `catalog/product-type-schema.ts`.
+model ProductType {
+  id           String       @id @default(uuid()) @db.Uuid
+  tenant_id    String       @db.Uuid
+  name_ar      String
+  name_en      String
+  attributes   Json         @default("[]")
+  is_active    Boolean      @default(true)
+  created_at   DateTime     @default(now())
+  updated_at   DateTime     @updatedAt
+  products     Product[]
+  stock_counts StockCount[]
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, name_en])
+  @@index([tenant_id])
+}
+
+enum BarcodeKind {
+  standard
+  // The item code of a weighed item; the scale label adds weight or price.
+  scale_plu
+}
+
+// Every scannable code of a variant. Scanning a pack barcode adds `pack_qty`
+// units of the variant.
+model ProductBarcode {
+  id         String         @id @default(uuid()) @db.Uuid
+  tenant_id  String         @db.Uuid
+  code       String
+  variant_id String         @db.Uuid
+  variant    ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Cascade)
+  pack_qty   Decimal        @default(1) @db.Decimal(14, 3)
+  kind       BarcodeKind    @default(standard)
+  created_at DateTime       @default(now())
+
+  @@unique([tenant_id, code])
+  @@index([tenant_id, variant_id])
 }
 
 // WP-008 Phase A (§9 BR-UOM-1xx): tenant-owned reference data — base units
@@ -599,7 +625,6 @@ model UnitOfMeasure {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, code])
-  @@index([tenant_id])
 }
 
 enum UomConversionStatus {
@@ -632,7 +657,6 @@ model UomConversion {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, from_uom_id, to_uom_id, version])
-  @@index([tenant_id])
   @@index([from_uom_id])
   @@index([to_uom_id])
 }
@@ -657,7 +681,6 @@ model Assortment {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, branch_id, variant_id])
-  @@index([tenant_id])
   @@index([branch_id])
   @@index([variant_id])
 }
@@ -748,7 +771,6 @@ model PriceBook {
   entries        PriceBookEntry[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, status])
 }
 
@@ -790,7 +812,7 @@ model PriceBookEntry {
   min_qty          Decimal             @default(1) @db.Decimal(12, 3)
   // Net, tax-exclusive selling price (BR-PSL-103: never negative, enforced
   // at the service layer and by the migration's validation guard).
-  unit_price       Decimal             @db.Decimal(12, 2)
+  unit_price       Decimal             @db.Decimal(14, 2)
   // BR-PSL-102: a zero price is only valid with this explicit allowance.
   allow_zero_price Boolean             @default(false)
   // SUPERSEDED BY PHASE C — no longer read by "PricingService". The rate now
@@ -813,7 +835,7 @@ model PriceBookEntry {
   // BR-OVP-102: explicit floor for this entry; a manual override below this
   // requires "pricing.manual-override.above-threshold". Null falls back to
   // the priced Variant's "cost_price" (cost-based floor) at evaluation time.
-  floor_price      Decimal?            @db.Decimal(12, 2)
+  floor_price      Decimal?            @db.Decimal(14, 2)
   effective_from   DateTime            @default(now())
   effective_to     DateTime?
   version          Int                 @default(1)
@@ -824,7 +846,6 @@ model PriceBookEntry {
   created_at       DateTime            @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, price_book_id, scope_type, scope_id, status])
 }
 
@@ -837,14 +858,13 @@ model PriceOverridePolicy {
   tenant_id            String         @db.Uuid
   role                 MembershipRole
   max_discount_percent Decimal?       @db.Decimal(5, 2)
-  max_discount_amount  Decimal?       @db.Decimal(12, 2)
+  max_discount_amount  Decimal?       @db.Decimal(14, 2)
   allow_price_increase Boolean        @default(true)
   created_at           DateTime       @default(now())
   updated_at           DateTime       @updatedAt
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, role])
-  @@index([tenant_id])
 }
 
 // WP-008 Phase B (BR-OVP-100): a manual override is a distinct, audited
@@ -862,9 +882,9 @@ model PriceOverride {
   // not an FK so the pricing module stays independent of the sales module
   // (CLAUDE.md §2.2 / Multi-tenancy Blueprint §28).
   reference      String?
-  base_price     Decimal        @db.Decimal(12, 2)
-  override_price Decimal        @db.Decimal(12, 2)
-  floor_price    Decimal?       @db.Decimal(12, 2)
+  base_price     Decimal        @db.Decimal(14, 2)
+  override_price Decimal        @db.Decimal(14, 2)
+  floor_price    Decimal?       @db.Decimal(14, 2)
   is_below_floor Boolean        @default(false)
   reason         String
   applied_by     String         @db.Uuid
@@ -873,7 +893,6 @@ model PriceOverride {
   created_at     DateTime       @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, variant_id])
 }
 
@@ -903,15 +922,14 @@ model Discount {
   reference   String?
   source      String         @default("manual")
   basis       DiscountBasis
-  amount      Decimal        @db.Decimal(12, 2)
-  base_price  Decimal        @db.Decimal(12, 2)
-  final_price Decimal        @db.Decimal(12, 2)
+  amount      Decimal        @db.Decimal(14, 2)
+  base_price  Decimal        @db.Decimal(14, 2)
+  final_price Decimal        @db.Decimal(14, 2)
   reason      String?
   applied_by  String         @db.Uuid
   created_at  DateTime       @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, variant_id])
 }
 
@@ -980,7 +998,6 @@ model TaxCategory {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, code])
-  @@index([tenant_id])
   @@index([tenant_id, is_active])
 }
 
@@ -1039,7 +1056,6 @@ model TaxCode {
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, code, version])
-  @@index([tenant_id])
   @@index([tenant_id, status])
   @@index([tenant_id, tax_category_id, status])
 }
@@ -1075,7 +1091,6 @@ model TaxExemption {
   snapshots          SalesTaxSnapshot[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, customer_id, status])
 }
 
@@ -1115,8 +1130,8 @@ model SalesTaxSnapshot {
   // document must never need a join to a row that may since have changed.
   code_snapshot            String
   rate_snapshot            Decimal           @db.Decimal(7, 4)
-  base_amount              Decimal           @db.Decimal(12, 2)
-  tax_amount               Decimal           @db.Decimal(12, 2)
+  base_amount              Decimal           @db.Decimal(14, 2)
+  tax_amount               Decimal           @db.Decimal(14, 2)
   mode_snapshot            TaxMode
   version_snapshot         Int
   rounding_policy_snapshot TaxRoundingPolicy
@@ -1128,39 +1143,27 @@ model SalesTaxSnapshot {
   created_at               DateTime          @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, sales_invoice_id])
   @@index([sales_invoice_item_id])
   @@index([tenant_id, tax_code_id])
 }
 
+// Operational stock of one variant in one warehouse. Written only by
+// InventoryService (backend/src/inventory). avg_cost is the warehouse's moving
+// weighted-average unit cost.
 model InventoryStock {
-  // WP-009 Phase A (expand/backfill only — this PR does not yet constrain):
-  // warehouse_id is nullable until every row is backfilled and the
-  // (branch_id, variant_id) primary key is swapped for (warehouse_id,
-  // variant_id) in a later PR. branch_id stays a real, stored, NOT NULL
-  // column after that swap too — it is not derived from warehouse_id at read
-  // time. That is safe ONLY because no code path can repoint a Warehouse's
-  // location_id after creation (no warehouses.service.ts/controller exists
-  // as of 2026-08-22). If a warehouse-reassignment feature is ever added,
-  // this column must be kept in sync at write time or retired then — do not
-  // assume it still tracks warehouse_id's location by construction.
-  branch_id    String          @db.Uuid
-  variant_id   String          @db.Uuid
-  warehouse_id String?         @db.Uuid
-  branch       Branch          @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
-  variant      ProductVariant  @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  warehouse    Warehouse?      @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
-  qty_on_hand  Int             @default(0)
-  qty_reserved Int             @default(0)
+  warehouse_id String         @db.Uuid
+  variant_id   String         @db.Uuid
+  warehouse    Warehouse      @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  variant      ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  qty_on_hand  Decimal        @default(0) @db.Decimal(14, 3)
+  qty_reserved Decimal        @default(0) @db.Decimal(14, 3)
+  avg_cost     Decimal        @default(0) @db.Decimal(14, 4)
   last_sold_at DateTime?
-  tenant_id    String          @db.Uuid
+  tenant_id    String         @db.Uuid
 
-  @@id([branch_id, variant_id])
-  @@index([variant_id])
-  @@index([tenant_id])
-  @@index([tenant_id, branch_id])
-  @@index([tenant_id, warehouse_id])
+  @@id([warehouse_id, variant_id])
+  @@index([tenant_id, variant_id])
 }
 
 enum InventoryMovementType {
@@ -1178,42 +1181,109 @@ enum InventoryMovementType {
   reversal
 }
 
+// Append-only stock ledger; one row per variant per InventoryService.apply
+// command. idempotency_key identifies the command, not the row.
 model InventoryMovement {
-  id                String                @id @default(uuid()) @db.Uuid
-  sequence          BigInt                @unique @default(autoincrement())
-  // WP-009 Phase A: same denormalization contract as InventoryStock.branch_id
-  // (see the comment there) — branch_id stays stored and authoritative for
-  // display/filtering; it is not derived from warehouse_id.
-  branch_id         String                @db.Uuid
-  warehouse_id      String?               @db.Uuid
-  branch            Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
-  warehouse         Warehouse?            @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
-  variant_id        String                @db.Uuid
-  variant           ProductVariant        @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  id                String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sequence          BigInt                 @unique @default(autoincrement())
+  warehouse_id      String                 @db.Uuid
+  warehouse         Warehouse              @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  variant_id        String                 @db.Uuid
+  variant           ProductVariant         @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type     InventoryMovementType
-  on_hand_delta     Int
-  reserved_delta    Int                   @default(0)
-  on_hand_after     Int
-  reserved_after    Int
-  reference_type    String                @db.VarChar(64)
-  reference_id      String                @db.VarChar(128)
-  reference_line_id String?               @db.VarChar(128)
-  idempotency_key   String                @unique @db.VarChar(191)
+  on_hand_delta     Decimal                @db.Decimal(14, 3)
+  reserved_delta    Decimal                @default(0) @db.Decimal(14, 3)
+  on_hand_after     Decimal                @db.Decimal(14, 3)
+  reserved_after    Decimal                @db.Decimal(14, 3)
+  reference_type    String                 @db.VarChar(64)
+  reference_id      String                 @db.VarChar(128)
+  reference_line_id String?                @db.VarChar(128)
+  idempotency_key   String                 @db.VarChar(191)
   occurred_at       DateTime
-  recorded_at       DateTime              @default(now())
-  created_by        String?               @db.Uuid
-  creator           User?                 @relation("InventoryMovementCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
+  recorded_at       DateTime               @default(now())
+  created_by        String?                @db.Uuid
+  creator           User?                  @relation("InventoryMovementCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
   metadata          Json?
-  tenant_id         String                @db.Uuid
+  tenant_id         String                 @db.Uuid
+  lot_movements     InventoryLotMovement[]
 
-  @@index([branch_id, variant_id, occurred_at])
+  @@unique([tenant_id, idempotency_key, variant_id])
   @@index([warehouse_id, variant_id, occurred_at])
   @@index([variant_id, sequence], map: "InventoryMovement_variant_sequence_idx")
   @@index([reference_type, reference_id])
   @@index([movement_type, occurred_at])
   @@index([recorded_at])
   @@index([created_by, occurred_at])
-  @@index([tenant_id])
+}
+
+// W2b: stock of a batch-tracked variant in one warehouse, split by batch.
+// `batch_no = ''` is the single "unallocated" row of a (warehouse, variant): it
+// takes what was sold without a batch to draw on and is the only row allowed
+// to be negative (CHECK in the migration). SUM(qty) equals InventoryStock.qty_on_hand.
+model InventoryBatch {
+  id            String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id     String                 @db.Uuid
+  warehouse_id  String                 @db.Uuid
+  warehouse     Warehouse              @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  variant_id    String                 @db.Uuid
+  variant       ProductVariant         @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  batch_no      String                 @db.VarChar(100)
+  expiry_date   DateTime?              @db.Date
+  qty           Decimal                @default(0) @db.Decimal(14, 3)
+  created_at    DateTime               @default(now())
+  lot_movements InventoryLotMovement[]
+
+  @@unique([tenant_id, warehouse_id, variant_id, batch_no])
+  @@unique([tenant_id, id])
+  @@index([tenant_id, warehouse_id, variant_id, expiry_date], map: "InventoryBatch_fefo_idx")
+}
+
+enum SerialStatus {
+  in_stock
+  sold
+  in_transit
+  returned_to_supplier
+}
+
+// W2b: one row per serial number of a serial-tracked variant. `warehouse_id`
+// is where it is while `in_stock` and null otherwise.
+model InventorySerial {
+  id            String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id     String                 @db.Uuid
+  variant_id    String                 @db.Uuid
+  variant       ProductVariant         @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  serial        String                 @db.VarChar(191)
+  warehouse_id  String?                @db.Uuid
+  warehouse     Warehouse?             @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  status        SerialStatus           @default(in_stock)
+  created_at    DateTime               @default(now())
+  lot_movements InventoryLotMovement[]
+
+  @@unique([tenant_id, variant_id, serial])
+  @@unique([tenant_id, id])
+  @@index([tenant_id, warehouse_id, variant_id, status], map: "InventorySerial_stock_idx")
+}
+
+// W2b: append-only record of which batch / serial each stock movement moved
+// (exactly one of the two). It is how a sale line's batches and serials are
+// found again for a return, a warranty claim or a recall. The movement
+// reference is a plain FK: InventoryMovement is the hot ledger and gets no
+// extra (tenant_id, id) index for it.
+model InventoryLotMovement {
+  id          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id   String            @db.Uuid
+  movement_id String            @db.Uuid
+  movement    InventoryMovement @relation(fields: [movement_id], references: [id], onDelete: Restrict)
+  batch_id    String?           @db.Uuid
+  batch       InventoryBatch?   @relation(fields: [tenant_id, batch_id], references: [tenant_id, id], onDelete: Restrict)
+  serial_id   String?           @db.Uuid
+  serial      InventorySerial?  @relation(fields: [tenant_id, serial_id], references: [tenant_id, id], onDelete: Restrict)
+  qty_delta   Decimal           @db.Decimal(14, 3)
+  created_at  DateTime          @default(now())
+
+  @@index([tenant_id, movement_id])
+  @@index([tenant_id, batch_id])
+  @@index([tenant_id, serial_id])
 }
 
 enum InventoryCostMovementType {
@@ -1225,31 +1295,26 @@ enum InventoryCostMovementType {
   adjustment
 }
 
+// Audit log of every avg_cost change (and supplier-return removals) of a
+// warehouse stock row. quantity_before/after are that warehouse's on-hand.
 model InventoryCostMovement {
-  id                       String                    @id @default(uuid()) @db.Uuid
+  id                       String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sequence                 BigInt                    @unique @default(autoincrement())
   variant_id               String                    @db.Uuid
   variant                  ProductVariant            @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  // WP-009 Phase A: warehouse_id mirrors branch_id's existing optionality —
-  // populated only where branch_id is populated, both denormalized (see
-  // InventoryStock.branch_id's comment). Costing stays global per variant
-  // (global_quantity_before/after); this is an added dimension, not a change
-  // to costing semantics.
-  branch_id                String?                   @db.Uuid
-  branch                   Branch?                   @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
-  warehouse_id             String?                   @db.Uuid
-  warehouse                Warehouse?                @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse_id             String                    @db.Uuid
+  warehouse                Warehouse                 @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type            InventoryCostMovementType
-  quantity_delta           Int
-  global_quantity_before   Int
-  global_quantity_after    Int
-  unit_cost                Decimal                   @db.Decimal(18, 6)
-  cost_before              Decimal                   @db.Decimal(12, 2)
-  cost_after               Decimal                   @db.Decimal(12, 2)
-  inventory_value_before   Decimal                   @db.Decimal(18, 2)
-  movement_value           Decimal                   @db.Decimal(18, 2)
-  inventory_value_after    Decimal                   @db.Decimal(18, 2)
-  rounding_adjustment      Decimal                   @default(0) @db.Decimal(18, 2)
+  quantity_delta           Decimal                   @db.Decimal(14, 3)
+  quantity_before          Decimal                   @db.Decimal(14, 3)
+  quantity_after           Decimal                   @db.Decimal(14, 3)
+  unit_cost                Decimal                   @db.Decimal(14, 4)
+  cost_before              Decimal                   @db.Decimal(14, 4)
+  cost_after               Decimal                   @db.Decimal(14, 4)
+  inventory_value_before   Decimal                   @db.Decimal(14, 2)
+  movement_value           Decimal                   @db.Decimal(14, 2)
+  inventory_value_after    Decimal                   @db.Decimal(14, 2)
+  rounding_adjustment      Decimal                   @default(0) @db.Decimal(14, 2)
   reference_type           String                    @db.VarChar(64)
   reference_id             String                    @db.VarChar(128)
   reference_line_id        String?                   @db.VarChar(128)
@@ -1261,7 +1326,7 @@ model InventoryCostMovement {
   supplier_return          SupplierReturn?           @relation(fields: [tenant_id, supplier_return_id], references: [tenant_id, id], onDelete: Restrict)
   supplier_return_item_id  String?                   @db.Uuid
   supplier_return_item     SupplierReturnItem?       @relation(fields: [tenant_id, supplier_return_item_id], references: [tenant_id, id], onDelete: Restrict)
-  idempotency_key          String                    @unique @db.VarChar(191)
+  idempotency_key          String                    @db.VarChar(191)
   occurred_at              DateTime
   recorded_at              DateTime                  @default(now())
   created_by               String?                   @db.Uuid
@@ -1269,86 +1334,92 @@ model InventoryCostMovement {
   metadata                 Json?
   tenant_id                String                    @db.Uuid
 
+  @@unique([tenant_id, idempotency_key, variant_id])
   @@index([variant_id, sequence], map: "InventoryCostMovement_variant_sequence_idx")
-  @@index([branch_id, occurred_at], map: "InventoryCostMovement_branch_occurred_at_idx")
+  @@index([warehouse_id, occurred_at], map: "InventoryCostMovement_warehouse_occurred_at_idx")
   @@index([reference_type, reference_id], map: "InventoryCostMovement_reference_idx")
   @@index([purchase_invoice_id, recorded_at], map: "InventoryCostMovement_purchase_invoice_recorded_at_idx")
   @@index([supplier_return_id, sequence], map: "InventoryCostMovement_supplier_return_sequence_idx")
   @@index([supplier_return_item_id], map: "InventoryCostMovement_supplier_return_item_idx")
   @@index([created_by, occurred_at], map: "InventoryCostMovement_created_by_occurred_at_idx")
-  @@index([tenant_id])
 }
 
 model Customer {
-  id             String         @id @default(uuid()) @db.Uuid
+  id             String                @id @default(uuid()) @db.Uuid
   name           String?
   phone          String?
   whatsapp       String?
   email          String?
-  is_vip         Boolean        @default(false)
-  vip_price_tier String         @default("cost_plus_overhead")
-  total_invoices Int            @default(0)
-  total_spent    Decimal        @default(0) @db.Decimal(12, 2)
-  created_at     DateTime       @default(now())
+  is_vip         Boolean               @default(false)
+  vip_price_tier String                @default("cost_plus_overhead")
+  total_invoices Int                   @default(0)
+  total_spent    Decimal               @default(0) @db.Decimal(14, 2)
+  /// What the customer owes the store (credit sales not yet paid); negative = store credit.
+  /// Always the sum of the customer's ledger entries.
+  balance        Decimal               @default(0) @db.Decimal(14, 2)
+  /// Credit sales beyond this are accepted with a warning; null = no limit.
+  credit_limit   Decimal?              @db.Decimal(14, 2)
+  created_at     DateTime              @default(now())
   sales          SalesInvoice[]
   tax_exemptions TaxExemption[]
-  tenant_id      String         @db.Uuid
+  ledger         CustomerLedgerEntry[]
+  tenant_id      String                @db.Uuid
 
   @@unique([tenant_id, phone])
   @@unique([tenant_id, id])
+  @@index([tenant_id, balance])
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Customer_name_trgm_idx")
-  @@index([tenant_id])
 }
 
 model SalesInvoice {
-  id                    String             @id @default(uuid()) @db.Uuid
+  id                    String                @id @default(uuid()) @db.Uuid
   invoice_number        String
-  branch_id             String             @db.Uuid
-  branch                Branch             @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
-  customer_id           String?            @db.Uuid
-  customer              Customer?          @relation(fields: [tenant_id, customer_id], references: [tenant_id, id], onDelete: SetNull)
+  branch_id             String                @db.Uuid
+  branch                Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  customer_id           String?               @db.Uuid
+  customer              Customer?             @relation(fields: [tenant_id, customer_id], references: [tenant_id, id], onDelete: SetNull)
   // cashier_id is the cashier who collected the payment, even when another
   // authenticated user uploads the command after reconnecting.
-  cashier_id            String?            @db.Uuid
-  cashier               User?              @relation("SalesOriginCashier", fields: [cashier_id], references: [id], onDelete: SetNull)
-  seller_id             String?            @db.Uuid
-  seller                User?              @relation("SalesSeller", fields: [seller_id], references: [id], onDelete: SetNull)
-  received_by           String?            @db.Uuid
-  receiver              User?              @relation("SalesReceivedBy", fields: [received_by], references: [id], onDelete: SetNull)
-  terminal_id           String?            @db.Uuid
-  terminal              PosTerminal?       @relation(fields: [tenant_id, terminal_id], references: [tenant_id, id], onDelete: SetNull)
-  shift_id              String?            @db.Uuid
-  shift                 Shift?             @relation(fields: [tenant_id, shift_id], references: [tenant_id, id], onDelete: SetNull)
-  offline_session_id    String?            @db.Uuid
+  cashier_id            String?               @db.Uuid
+  cashier               User?                 @relation("SalesOriginCashier", fields: [cashier_id], references: [id], onDelete: SetNull)
+  seller_id             String?               @db.Uuid
+  seller                User?                 @relation("SalesSeller", fields: [seller_id], references: [id], onDelete: SetNull)
+  received_by           String?               @db.Uuid
+  receiver              User?                 @relation("SalesReceivedBy", fields: [received_by], references: [id], onDelete: SetNull)
+  terminal_id           String?               @db.Uuid
+  terminal              PosTerminal?          @relation(fields: [tenant_id, terminal_id], references: [tenant_id, id], onDelete: SetNull)
+  shift_id              String?               @db.Uuid
+  shift                 Shift?                @relation(fields: [tenant_id, shift_id], references: [tenant_id, id], onDelete: SetNull)
+  offline_session_id    String?               @db.Uuid
   terminal_sequence     BigInt?
-  command_fingerprint   String?            @db.VarChar(64)
-  event_version         Int                @default(1)
-  warning_codes         String[]           @default([])
-  cashier_name_snapshot String?            @db.VarChar(200)
-  seller_name_snapshot  String?            @db.VarChar(200)
-  status                String             @default("completed")
-  subtotal              Decimal            @db.Decimal(12, 2)
-  discount_amount       Decimal            @default(0) @db.Decimal(12, 2)
-  tax_amount            Decimal            @db.Decimal(12, 2)
-  total                 Decimal            @db.Decimal(12, 2)
-  payment_method        String
-  language              String             @default("ar")
-  sync_id               String?            @unique @db.Uuid
-  occurred_at           DateTime           @default(now())
-  received_at           DateTime           @default(now())
-  created_at            DateTime           @default(now())
+  command_fingerprint   String?               @db.VarChar(64)
+  event_version         Int                   @default(1)
+  warning_codes         String[]              @default([])
+  cashier_name_snapshot String?               @db.VarChar(200)
+  seller_name_snapshot  String?               @db.VarChar(200)
+  status                String                @default("completed")
+  subtotal              Decimal               @db.Decimal(14, 2)
+  discount_amount       Decimal               @default(0) @db.Decimal(14, 2)
+  tax_amount            Decimal               @db.Decimal(14, 2)
+  total                 Decimal               @db.Decimal(14, 2)
+  payments              SalesPayment[]
+  ledger_entries        CustomerLedgerEntry[]
+  language              String                @default("ar")
+  sync_id               String?               @unique @db.Uuid
+  occurred_at           DateTime              @default(now())
+  received_at           DateTime              @default(now())
+  created_at            DateTime              @default(now())
   items                 SalesInvoiceItem[]
   tax_snapshots         SalesTaxSnapshot[]
-  original_returns      Return[]           @relation("OriginalInvoiceReturns")
-  exchange_returns      Return[]           @relation("ExchangeInvoiceReturns")
-  tenant_id             String             @db.Uuid
+  original_returns      Return[]              @relation("OriginalInvoiceReturns")
+  exchange_returns      Return[]              @relation("ExchangeInvoiceReturns")
+  tenant_id             String                @db.Uuid
 
   @@unique([tenant_id, invoice_number])
   @@unique([tenant_id, id])
-  @@unique([terminal_id, terminal_sequence])
-  @@index([branch_id, occurred_at])
-  @@index([occurred_at(sort: Desc), id(sort: Desc)])
-  @@index([branch_id, payment_method, occurred_at])
+  @@index([terminal_id, terminal_sequence])
+  @@index([tenant_id, branch_id, occurred_at])
+  @@index([tenant_id, occurred_at(sort: Desc), id(sort: Desc)])
   @@index([branch_id, status, occurred_at])
   @@index([terminal_id, occurred_at])
   @@index([shift_id, occurred_at])
@@ -1357,7 +1428,80 @@ model SalesInvoice {
   @@index([customer_id, occurred_at(sort: Desc), id(sort: Desc)])
   @@index([received_at])
   @@index([invoice_number(ops: raw("gin_trgm_ops"))], type: Gin, map: "SalesInvoice_invoice_number_trgm_idx")
-  @@index([tenant_id])
+}
+
+enum CustomerLedgerType {
+  sale_credit
+  payment
+  refund_credit
+  adjustment
+}
+
+/// Append-only account of what a customer owes. `amount` is signed (+ the customer owes
+/// more, - owes less); `balance_after` is the customer's balance right after this entry.
+model CustomerLedgerEntry {
+  id               String             @id @default(uuid()) @db.Uuid
+  tenant_id        String             @db.Uuid
+  customer_id      String             @db.Uuid
+  customer         Customer           @relation(fields: [tenant_id, customer_id], references: [tenant_id, id], onDelete: Restrict)
+  type             CustomerLedgerType
+  amount           Decimal            @db.Decimal(14, 2)
+  balance_after    Decimal            @db.Decimal(14, 2)
+  /// How a payment was made (cash collected at a till enters that shift's expected cash).
+  method           PaymentMethod?
+  sales_invoice_id String?            @db.Uuid
+  sales_invoice    SalesInvoice?      @relation(fields: [tenant_id, sales_invoice_id], references: [tenant_id, id], onDelete: Restrict)
+  return_id        String?            @db.Uuid
+  return_record    Return?            @relation(fields: [tenant_id, return_id], references: [tenant_id, id], onDelete: Restrict)
+  shift_id         String?            @db.Uuid
+  shift            Shift?             @relation(fields: [tenant_id, shift_id], references: [tenant_id, id], onDelete: Restrict)
+  idempotency_key  String?            @db.VarChar(191)
+  note             String?            @db.VarChar(300)
+  created_by       String?            @db.Uuid
+  creator          User?              @relation("CustomerLedgerCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
+  occurred_at      DateTime           @default(now())
+
+  @@unique([tenant_id, idempotency_key])
+  @@index([tenant_id, customer_id, occurred_at(sort: Desc), id(sort: Desc)])
+  @@index([tenant_id, shift_id])
+}
+
+/// How a sale is paid. `credit` puts the amount on the customer's account.
+enum PaymentMethod {
+  cash
+  card
+  wallet
+  bank_transfer
+  credit
+  other
+}
+
+/// How a return is refunded. `credit` reduces what the customer owes.
+enum RefundMethod {
+  cash
+  credit
+  card
+  wallet
+  other
+}
+
+/// One tender of a sale (split payment = several rows). The amounts sum to the
+/// invoice total unless the sale was accepted with PAYMENT_TOTAL_MISMATCH.
+model SalesPayment {
+  id               String        @id @default(uuid()) @db.Uuid
+  tenant_id        String        @db.Uuid
+  sales_invoice_id String        @db.Uuid
+  invoice          SalesInvoice  @relation(fields: [tenant_id, sales_invoice_id], references: [tenant_id, id], onDelete: Cascade)
+  sequence         Int
+  method           PaymentMethod
+  amount           Decimal       @db.Decimal(14, 2)
+  /// Cash handed over, for the receipt only; `amount` is what stayed in the till.
+  tendered         Decimal?      @db.Decimal(14, 2)
+  reference        String?       @db.VarChar(100)
+
+  @@unique([sales_invoice_id, sequence])
+  @@index([tenant_id, sales_invoice_id])
+  @@index([tenant_id, method])
 }
 
 model PosTerminal {
@@ -1374,6 +1518,9 @@ model PosTerminal {
   last_error         String?
   pending_count      Int            @default(0)
   last_sale_sequence BigInt         @default(0)
+  // Last sync cursor ("txid:sequence") this till pulled up to; compaction never
+  // removes changes above the lowest cursor of the active tills.
+  sync_cursor        String?
   is_revoked         Boolean        @default(false)
   device_token_hash  String?        @unique
   enrolled_by        String?        @db.Uuid
@@ -1387,7 +1534,6 @@ model PosTerminal {
   @@unique([tenant_id, terminal_code])
   @@unique([tenant_id, id])
   @@index([branch_id, last_seen_at])
-  @@index([tenant_id])
 }
 
 model PosTerminalEnrollment {
@@ -1408,70 +1554,78 @@ model PosTerminalEnrollment {
 }
 
 model SyncChange {
-  sequence   BigInt   @id @default(autoincrement())
+  sequence   BigInt               @id @default(autoincrement())
   kind       String
-  branch_id  String?  @db.Uuid
+  // null = catalog-wide change, visible to every branch.
+  branch_id  String?              @db.Uuid
   entity_key String?
-  created_at DateTime @default(now())
-  tenant_id  String   @db.Uuid
+  // The writing transaction. Pull hands out only changes whose transaction
+  // has finished (txid < snapshot xmin), ordered by (txid, sequence), so a
+  // late commit is never skipped. Read and written by SQL only.
+  txid       Unsupported("xid8")? @default(dbgenerated("pg_current_xact_id()"))
+  created_at DateTime             @default(now())
+  tenant_id  String               @db.Uuid
 
-  @@index([branch_id, sequence])
-  @@index([sequence, kind])
-  @@index([tenant_id])
+  @@index([tenant_id, txid, sequence])
+  @@index([tenant_id, branch_id, sequence])
 }
 
 model SalesInvoiceItem {
-  id               String             @id @default(uuid()) @db.Uuid
-  sales_invoice_id String             @db.Uuid
-  invoice          SalesInvoice       @relation(fields: [tenant_id, sales_invoice_id], references: [tenant_id, id], onDelete: Cascade)
-  variant_id       String             @db.Uuid
-  variant          ProductVariant     @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  qty              Int
-  unit_price       Decimal            @db.Decimal(12, 2)
-  unit_cost        Decimal            @db.Decimal(12, 2)
-  unit_tax         Decimal            @default(0) @db.Decimal(12, 2)
-  sku_snapshot     String?            @db.VarChar(191)
-  name_ar_snapshot String?            @db.VarChar(300)
-  name_en_snapshot String?            @db.VarChar(300)
-  size_snapshot    String?            @db.VarChar(100)
-  color_snapshot   String?            @db.VarChar(100)
-  return_items     ReturnItem[]
-  tax_snapshots    SalesTaxSnapshot[]
-  tenant_id        String             @db.Uuid
+  id                     String             @id @default(uuid()) @db.Uuid
+  sales_invoice_id       String             @db.Uuid
+  invoice                SalesInvoice       @relation(fields: [tenant_id, sales_invoice_id], references: [tenant_id, id], onDelete: Cascade)
+  variant_id             String             @db.Uuid
+  variant                ProductVariant     @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  qty                    Decimal            @db.Decimal(14, 3)
+  unit_price             Decimal            @db.Decimal(14, 2)
+  unit_cost              Decimal            @db.Decimal(14, 4)
+  unit_tax               Decimal            @default(0) @db.Decimal(14, 2)
+  /// Tax-exclusive discount on this line: its own plus its share of the invoice discount.
+  discount_amount        Decimal            @default(0) @db.Decimal(14, 2)
+  /// Tax of the whole line after the discount (unit_tax is the quoted tax of one unit before it).
+  tax_amount             Decimal            @default(0) @db.Decimal(14, 2)
+  sku_snapshot           String?            @db.VarChar(191)
+  name_ar_snapshot       String?            @db.VarChar(300)
+  name_en_snapshot       String?            @db.VarChar(300)
+  variant_label_snapshot String?            @db.VarChar(200)
+  return_items           ReturnItem[]
+  tax_snapshots          SalesTaxSnapshot[]
+  tenant_id              String             @db.Uuid
 
   @@unique([tenant_id, id])
   @@index([sales_invoice_id])
-  @@index([tenant_id])
 }
 
 model Return {
-  id                    String        @id @default(uuid()) @db.Uuid
-  original_invoice_id   String        @db.Uuid
-  original_invoice      SalesInvoice  @relation("OriginalInvoiceReturns", fields: [tenant_id, original_invoice_id], references: [tenant_id, id], onDelete: Restrict)
-  new_invoice_id        String?       @db.Uuid
-  new_invoice           SalesInvoice? @relation("ExchangeInvoiceReturns", fields: [tenant_id, new_invoice_id], references: [tenant_id, id], onDelete: SetNull)
-  branch_id             String        @db.Uuid
-  branch                Branch        @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
-  shift_id              String?       @db.Uuid
-  shift                 Shift?        @relation(fields: [tenant_id, shift_id], references: [tenant_id, id], onDelete: SetNull)
+  id                    String                @id @default(uuid()) @db.Uuid
+  original_invoice_id   String                @db.Uuid
+  original_invoice      SalesInvoice          @relation("OriginalInvoiceReturns", fields: [tenant_id, original_invoice_id], references: [tenant_id, id], onDelete: Restrict)
+  new_invoice_id        String?               @db.Uuid
+  new_invoice           SalesInvoice?         @relation("ExchangeInvoiceReturns", fields: [tenant_id, new_invoice_id], references: [tenant_id, id], onDelete: SetNull)
+  branch_id             String                @db.Uuid
+  branch                Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  shift_id              String?               @db.Uuid
+  shift                 Shift?                @relation(fields: [tenant_id, shift_id], references: [tenant_id, id], onDelete: SetNull)
   return_invoice_number String
   reason                String?
-  is_partial            Boolean       @default(false)
-  created_by            String?       @db.Uuid
-  creator               User?         @relation("ReturnCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
-  refund_subtotal       Decimal       @default(0) @db.Decimal(12, 2)
-  refund_tax            Decimal       @default(0) @db.Decimal(12, 2)
-  refund_total          Decimal       @default(0) @db.Decimal(12, 2)
-  status                ReturnStatus  @default(completed)
-  created_at            DateTime      @default(now())
+  is_partial            Boolean               @default(false)
+  created_by            String?               @db.Uuid
+  creator               User?                 @relation("ReturnCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
+  refund_subtotal       Decimal               @default(0) @db.Decimal(14, 2)
+  refund_tax            Decimal               @default(0) @db.Decimal(14, 2)
+  refund_total          Decimal               @default(0) @db.Decimal(14, 2)
+  refund_method         RefundMethod          @default(cash)
+  status                ReturnStatus          @default(completed)
+  created_at            DateTime              @default(now())
   items                 ReturnItem[]
-  tenant_id             String        @db.Uuid
+  ledger_entries        CustomerLedgerEntry[]
+  tenant_id             String                @db.Uuid
 
   @@unique([tenant_id, return_invoice_number])
   @@unique([tenant_id, id])
   @@index([original_invoice_id, created_at])
   @@index([shift_id, created_at])
-  @@index([tenant_id])
+  @@index([tenant_id, created_at])
 }
 
 enum ReturnStatus {
@@ -1487,14 +1641,18 @@ model ReturnItem {
   sales_invoice_item    SalesInvoiceItem @relation(fields: [tenant_id, sales_invoice_item_id], references: [tenant_id, id], onDelete: Restrict)
   variant_id            String           @db.Uuid
   variant               ProductVariant   @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  qty                   Int
-  unit_price            Decimal          @db.Decimal(12, 2)
-  unit_cost             Decimal          @db.Decimal(12, 2)
-  unit_tax              Decimal          @db.Decimal(12, 2)
+  qty                   Decimal          @db.Decimal(14, 3)
+  unit_price            Decimal          @db.Decimal(14, 2)
+  unit_cost             Decimal          @db.Decimal(14, 4)
+  unit_tax              Decimal          @db.Decimal(14, 2)
+  /// What this return refunds for the line, tax excluded and after the line's discount.
+  net_amount            Decimal          @default(0) @db.Decimal(14, 2)
+  /// The tax refunded with it.
+  tax_amount            Decimal          @default(0) @db.Decimal(14, 2)
   tenant_id             String           @db.Uuid
 
   @@index([sales_invoice_item_id])
-  @@index([tenant_id])
+  @@index([tenant_id, return_id])
 }
 
 enum PurchaseInvoiceStatus {
@@ -1513,17 +1671,17 @@ model PurchaseInvoice {
   invoice_date                 DateTime?               @db.Date
   status                       PurchaseInvoiceStatus   @default(posted)
   accounting_version           Int                     @default(1)
-  idempotency_key              String                  @unique @default(uuid()) @db.VarChar(191)
+  idempotency_key              String                  @default(uuid()) @db.VarChar(191)
   command_fingerprint          String?                 @db.VarChar(64)
-  subtotal                     Decimal                 @db.Decimal(18, 2)
-  discount_amount              Decimal                 @default(0) @db.Decimal(18, 2)
+  subtotal                     Decimal                 @db.Decimal(14, 2)
+  discount_amount              Decimal                 @default(0) @db.Decimal(14, 2)
   discount_percent             Decimal                 @default(0) @db.Decimal(5, 2)
-  total                        Decimal                 @db.Decimal(18, 2)
+  total                        Decimal                 @db.Decimal(14, 2)
   ocr_source_file              String?
   received_at                  DateTime                @default(now())
   created_by                   String?                 @db.Uuid
   creator                      User?                   @relation("PurchaseCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
-  reversal_idempotency_key     String?                 @unique @db.VarChar(191)
+  reversal_idempotency_key     String?                 @db.VarChar(191)
   reversal_command_fingerprint String?                 @db.VarChar(64)
   reversal_reason              String?
   reversed_at                  DateTime?
@@ -1536,11 +1694,13 @@ model PurchaseInvoice {
   tenant_id                    String                  @db.Uuid
 
   @@unique([supplier_id, normalized_invoice_number], map: "PurchaseInvoice_supplier_normalized_number_key")
+  @@unique([tenant_id, idempotency_key])
+  @@unique([tenant_id, reversal_idempotency_key])
   @@unique([tenant_id, id])
+  @@index([tenant_id, received_at])
   @@index([branch_id, received_at], map: "PurchaseInvoice_branch_received_at_idx")
   @@index([supplier_id, invoice_date], map: "PurchaseInvoice_supplier_invoice_date_idx")
   @@index([status, received_at], map: "PurchaseInvoice_status_received_at_idx")
-  @@index([tenant_id])
 }
 
 model PurchaseInvoiceItem {
@@ -1549,16 +1709,12 @@ model PurchaseInvoiceItem {
   purchase_invoice      PurchaseInvoice         @relation(fields: [tenant_id, purchase_invoice_id], references: [tenant_id, id], onDelete: Cascade)
   variant_id            String                  @db.Uuid
   variant               ProductVariant          @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  qty                   Int
-  unit_cost             Decimal                 @db.Decimal(18, 6)
-  line_subtotal         Decimal?                @db.Decimal(18, 2)
-  allocated_discount    Decimal?                @db.Decimal(18, 2)
-  net_line_total        Decimal?                @db.Decimal(18, 2)
-  net_unit_cost         Decimal?                @db.Decimal(18, 6)
-  global_qty_before     Int?
-  global_qty_after      Int?
-  cost_before           Decimal?                @db.Decimal(12, 2)
-  cost_after            Decimal?                @db.Decimal(12, 2)
+  qty                   Decimal                 @db.Decimal(14, 3)
+  unit_cost             Decimal                 @db.Decimal(14, 4)
+  line_subtotal         Decimal?                @db.Decimal(14, 2)
+  allocated_discount    Decimal?                @db.Decimal(14, 2)
+  net_line_total        Decimal?                @db.Decimal(14, 2)
+  net_unit_cost         Decimal?                @db.Decimal(14, 4)
   cost_movements        InventoryCostMovement[]
   supplier_return_items SupplierReturnItem[]
   tenant_id             String                  @db.Uuid
@@ -1566,7 +1722,6 @@ model PurchaseInvoiceItem {
   @@unique([tenant_id, id])
   @@index([purchase_invoice_id])
   @@index([variant_id])
-  @@index([tenant_id])
 }
 
 enum SupplierReturnStatus {
@@ -1583,12 +1738,12 @@ model SupplierReturn {
   branch                  Branch                  @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   return_number           String                  @db.VarChar(100)
   status                  SupplierReturnStatus    @default(posted)
-  idempotency_key         String                  @unique @db.VarChar(191)
+  idempotency_key         String                  @db.VarChar(191)
   command_fingerprint     String                  @db.VarChar(64)
   reason                  String
-  credit_total            Decimal                 @db.Decimal(18, 2)
-  inventory_value_removed Decimal                 @db.Decimal(18, 2)
-  purchase_price_variance Decimal                 @db.Decimal(18, 2)
+  credit_total            Decimal                 @db.Decimal(14, 2)
+  inventory_value_removed Decimal                 @db.Decimal(14, 2)
+  purchase_price_variance Decimal                 @db.Decimal(14, 2)
   occurred_at             DateTime
   created_by              String?                 @db.Uuid
   creator                 User?                   @relation("SupplierReturnCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
@@ -1598,11 +1753,11 @@ model SupplierReturn {
   tenant_id               String                  @db.Uuid
 
   @@unique([tenant_id, return_number])
+  @@unique([tenant_id, idempotency_key])
   @@unique([tenant_id, id])
   @@index([purchase_invoice_id, occurred_at])
   @@index([supplier_id, occurred_at])
   @@index([branch_id, occurred_at])
-  @@index([tenant_id])
 }
 
 model SupplierReturnItem {
@@ -1613,12 +1768,12 @@ model SupplierReturnItem {
   purchase_invoice_item    PurchaseInvoiceItem     @relation(fields: [tenant_id, purchase_invoice_item_id], references: [tenant_id, id], onDelete: Cascade)
   variant_id               String                  @db.Uuid
   variant                  ProductVariant          @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  qty                      Int
-  credit_unit_cost         Decimal                 @db.Decimal(18, 6)
-  credit_total             Decimal                 @db.Decimal(18, 2)
-  inventory_unit_cost      Decimal                 @db.Decimal(12, 2)
-  inventory_value_removed  Decimal                 @db.Decimal(18, 2)
-  purchase_price_variance  Decimal                 @db.Decimal(18, 2)
+  qty                      Decimal                 @db.Decimal(14, 3)
+  credit_unit_cost         Decimal                 @db.Decimal(14, 4)
+  credit_total             Decimal                 @db.Decimal(14, 2)
+  inventory_unit_cost      Decimal                 @db.Decimal(14, 4)
+  inventory_value_removed  Decimal                 @db.Decimal(14, 2)
+  purchase_price_variance  Decimal                 @db.Decimal(14, 2)
   cost_movements           InventoryCostMovement[]
   tenant_id                String                  @db.Uuid
 
@@ -1626,7 +1781,6 @@ model SupplierReturnItem {
   @@index([supplier_return_id])
   @@index([purchase_invoice_item_id])
   @@index([variant_id])
-  @@index([tenant_id])
 }
 
 model Transfer {
@@ -1660,10 +1814,10 @@ model Transfer {
 
   @@unique([tenant_id, transfer_number])
   @@unique([tenant_id, id])
+  @@index([tenant_id, created_at])
   @@index([from_branch_id, created_at])
   @@index([to_branch_id, created_at])
   @@index([status, updated_at], map: "Transfer_status_updated_at_idx")
-  @@index([tenant_id])
 }
 
 enum TransferStatus {
@@ -1680,17 +1834,19 @@ model TransferItem {
   transfer          Transfer                  @relation(fields: [tenant_id, transfer_id], references: [tenant_id, id], onDelete: Cascade)
   variant_id        String                    @db.Uuid
   variant           ProductVariant            @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  qty               Int
-  shipped_qty       Int                       @default(0)
-  received_qty      Int                       @default(0)
-  damaged_qty       Int                       @default(0)
-  missing_qty       Int                       @default(0)
+  qty               Decimal                   @db.Decimal(14, 3)
+  shipped_qty       Decimal                   @default(0) @db.Decimal(14, 3)
+  received_qty      Decimal                   @default(0) @db.Decimal(14, 3)
+  damaged_qty       Decimal                   @default(0) @db.Decimal(14, 3)
+  missing_qty       Decimal                   @default(0) @db.Decimal(14, 3)
+  // Source warehouse average cost at shipment; the receiving warehouse
+  // averages the goods in at this cost.
+  unit_cost         Decimal?                  @db.Decimal(14, 4)
   transit_movements TransferTransitMovement[]
   tenant_id         String                    @db.Uuid
 
   @@unique([transfer_id, variant_id], map: "TransferItem_transfer_id_variant_id_key")
   @@unique([tenant_id, id])
-  @@index([tenant_id])
 }
 
 enum TransferCommandType {
@@ -1704,7 +1860,7 @@ model TransferCommand {
   transfer_id         String              @db.Uuid
   transfer            Transfer            @relation(fields: [tenant_id, transfer_id], references: [tenant_id, id], onDelete: Restrict)
   command_type        TransferCommandType
-  idempotency_key     String              @unique @db.VarChar(191)
+  idempotency_key     String              @db.VarChar(191)
   command_fingerprint String              @db.VarChar(64)
   result_status       String              @db.VarChar(32)
   created_by          String?             @db.Uuid
@@ -1712,8 +1868,8 @@ model TransferCommand {
   created_at          DateTime            @default(now())
   tenant_id           String              @db.Uuid
 
+  @@unique([tenant_id, idempotency_key])
   @@index([transfer_id, created_at])
-  @@index([tenant_id])
 }
 
 enum TransferTransitMovementType {
@@ -1725,7 +1881,7 @@ enum TransferTransitMovementType {
 }
 
 model TransferTransitMovement {
-  id               String                      @id @default(uuid()) @db.Uuid
+  id               String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sequence         BigInt                      @unique @default(autoincrement())
   transfer_id      String                      @db.Uuid
   transfer         Transfer                    @relation(fields: [tenant_id, transfer_id], references: [tenant_id, id], onDelete: Restrict)
@@ -1734,9 +1890,9 @@ model TransferTransitMovement {
   variant_id       String                      @db.Uuid
   variant          ProductVariant              @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
   movement_type    TransferTransitMovementType
-  quantity_delta   Int
-  in_transit_after Int
-  idempotency_key  String                      @unique @db.VarChar(191)
+  quantity_delta   Decimal                     @db.Decimal(14, 3)
+  in_transit_after Decimal                     @db.Decimal(14, 3)
+  idempotency_key  String                      @db.VarChar(191)
   occurred_at      DateTime
   recorded_at      DateTime                    @default(now())
   created_by       String?                     @db.Uuid
@@ -1744,10 +1900,10 @@ model TransferTransitMovement {
   metadata         Json?
   tenant_id        String                      @db.Uuid
 
+  @@unique([tenant_id, idempotency_key])
   @@index([transfer_id, sequence], map: "TransferTransitMovement_transfer_sequence_idx")
   @@index([transfer_item_id, sequence], map: "TransferTransitMovement_item_sequence_idx")
   @@index([variant_id, sequence], map: "TransferTransitMovement_variant_sequence_idx")
-  @@index([tenant_id])
 }
 
 model OfferSuggestion {
@@ -1757,9 +1913,9 @@ model OfferSuggestion {
   branch_id         String         @db.Uuid
   branch            Branch         @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
   days_unsold       Int
-  current_price     Decimal        @db.Decimal(12, 2)
-  suggested_price   Decimal        @db.Decimal(12, 2)
-  min_allowed_price Decimal        @db.Decimal(12, 2)
+  current_price     Decimal        @db.Decimal(14, 2)
+  suggested_price   Decimal        @db.Decimal(14, 2)
+  min_allowed_price Decimal        @db.Decimal(14, 2)
   status            String         @default("pending")
   reviewed_by       String?        @db.Uuid
   reviewer          User?          @relation("OfferReviewedBy", fields: [reviewed_by], references: [id], onDelete: SetNull)
@@ -1767,7 +1923,7 @@ model OfferSuggestion {
   tenant_id         String         @db.Uuid
 
   @@index([branch_id, status, created_at])
-  @@index([tenant_id])
+  @@index([tenant_id, status, created_at(sort: Desc)])
 }
 
 model AuditLog {
@@ -1780,32 +1936,33 @@ model AuditLog {
   created_at DateTime @default(now())
   tenant_id  String   @db.Uuid
 
-  @@index([tenant_id])
+  @@index([tenant_id, created_at])
 }
 
 model Shift {
-  id            String         @id @default(uuid()) @db.Uuid
-  branch_id     String         @db.Uuid
-  branch        Branch         @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
-  opened_by     String         @db.Uuid
-  opener        User           @relation("ShiftOpenedBy", fields: [opened_by], references: [id], onDelete: Restrict)
-  closed_by     String?        @db.Uuid
-  closer        User?          @relation("ShiftClosedBy", fields: [closed_by], references: [id], onDelete: SetNull)
-  opening_cash  Decimal        @default(0) @db.Decimal(12, 2)
-  closing_cash  Decimal?       @db.Decimal(12, 2)
-  expected_cash Decimal?       @db.Decimal(12, 2)
-  difference    Decimal?       @db.Decimal(12, 2)
-  opened_at     DateTime       @default(now())
-  closed_at     DateTime?
-  status        String         @default("open")
-  notes         String?
-  sales         SalesInvoice[]
-  returns       Return[]
-  tenant_id     String         @db.Uuid
+  id             String                @id @default(uuid()) @db.Uuid
+  branch_id      String                @db.Uuid
+  branch         Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  opened_by      String                @db.Uuid
+  opener         User                  @relation("ShiftOpenedBy", fields: [opened_by], references: [id], onDelete: Restrict)
+  closed_by      String?               @db.Uuid
+  closer         User?                 @relation("ShiftClosedBy", fields: [closed_by], references: [id], onDelete: SetNull)
+  opening_cash   Decimal               @default(0) @db.Decimal(14, 2)
+  closing_cash   Decimal?              @db.Decimal(14, 2)
+  expected_cash  Decimal?              @db.Decimal(14, 2)
+  difference     Decimal?              @db.Decimal(14, 2)
+  opened_at      DateTime              @default(now())
+  closed_at      DateTime?
+  status         String                @default("open")
+  notes          String?
+  sales          SalesInvoice[]
+  returns        Return[]
+  ledger_entries CustomerLedgerEntry[]
+  tenant_id      String                @db.Uuid
 
   @@unique([tenant_id, id])
   @@index([branch_id, opened_at])
-  @@index([tenant_id])
+  @@index([tenant_id, opened_at(sort: Desc)])
 }
 
 // ---------------------------------------------------------------------------
@@ -1918,10 +2075,10 @@ enum PromotionReturnPolicy {
 /// whose correctness depends on preserving an exact version chain today.
 /// Flagged as a scope decision, not silently the only reading of BR-PMT-101.
 model Promotion {
-  id             String                  @id @default(uuid()) @db.Uuid
-  tenant_id      String                  @db.Uuid
-  name           String
-  status         PromotionStatus         @default(draft)
+  id           String                @id @default(uuid()) @db.Uuid
+  tenant_id    String                @db.Uuid
+  name         String
+  status       PromotionStatus       @default(draft)
   // BR-PMT-102: the promotion's declared timezone. `starts_at`/`ends_at` are
   // stored as absolute UTC instants (the timezone the operator entered them
   // in is already baked into the instant); this column records which
@@ -1929,83 +2086,82 @@ model Promotion {
   // A full per-branch DST-aware evaluation matrix is BR §26/OD-CAT-011
   // territory and is not built here -- see the offline-evaluability note in
   // the Phase D PR description.
-  timezone       String                  @default("Africa/Cairo")
-  starts_at      DateTime
-  ends_at        DateTime?
+  timezone     String                @default("Africa/Cairo")
+  starts_at    DateTime
+  ends_at      DateTime?
   // BR-PMT-105: explicit, not database row order. Lower number = higher
   // priority (matches nothing implicit -- a tenant sets this deliberately).
-  priority       Int                     @default(100)
-  stackability   PromotionStackability   @default(exclusive)
-  stack_group    String?
+  priority     Int                   @default(100)
+  stackability PromotionStackability @default(exclusive)
+  stack_group  String?
 
-  benefit_type                PromotionBenefitType
+  benefit_type              PromotionBenefitType
   // Meaning depends on benefit_type: percent (0-100) for `percentage`, a
   // money amount for `fixed_amount`, the resulting unit price for
   // `fixed_price`. Null for `bogo`, which uses the bogo_* columns instead.
-  benefit_value                Decimal?             @db.Decimal(12, 4)
-  bogo_buy_qty                 Int?
-  bogo_get_qty                 Int?
+  benefit_value             Decimal?             @db.Decimal(12, 4)
+  bogo_buy_qty              Int?
+  bogo_get_qty              Int?
   // BR-BEN-103: 100 = the "get" item(s) are free; a value below 100 is a
   // partial discount on the "get" portion rather than a separate 5th type.
-  bogo_get_discount_percent    Decimal?             @db.Decimal(5, 2)
+  bogo_get_discount_percent Decimal?             @db.Decimal(5, 2)
   // BR-BEN-105: explicit tenant-configured caps.
-  max_discount_amount          Decimal?             @db.Decimal(12, 2)
-  max_units_per_order          Int?
-  max_uses_per_customer        Int?
+  max_discount_amount       Decimal?             @db.Decimal(14, 2)
+  max_units_per_order       Int?
+  max_uses_per_customer     Int?
 
   // --- Eligibility (BR-CND-1xx), single condition set (no composite AND/OR
   // per OD-CAT-007) ---------------------------------------------------------
-  scope_type       PromotionScopeType       @default(all)
+  scope_type      PromotionScopeType      @default(all)
   // Polymorphic, no FK -- same reason `PriceBookEntry.scope_id` has none.
-  scope_id         String?                  @db.Uuid
-  min_qty          Decimal?                 @db.Decimal(12, 3)
-  min_spend        Decimal?                 @db.Decimal(12, 2)
-  min_spend_basis  PromotionMinSpendBasis?
+  scope_id        String?                 @db.Uuid
+  min_qty         Decimal?                @db.Decimal(12, 3)
+  min_spend       Decimal?                @db.Decimal(14, 2)
+  min_spend_basis PromotionMinSpendBasis?
   // Location condition (BR-CND-100 "location/channel"). Polymorphic-style
   // plain UUID kept nullable+unenforced-by-FK deliberately: a Branch delete
   // must not be blocked by a promotion condition referencing it historically.
-  branch_id        String?                  @db.Uuid
+  branch_id       String?                 @db.Uuid
   // Customer-bound eligibility (distinct from a Coupon's own
   // `customer_bound` type -- a promotion can target one customer with no
   // coupon involved at all).
-  customer_id      String?                  @db.Uuid
+  customer_id     String?                 @db.Uuid
   // BR-CND-100 "coupon": true means this Promotion is reachable ONLY via a
   // valid Coupon that references it; false means it applies automatically to
   // any eligible line.
-  requires_coupon  Boolean                  @default(false)
+  requires_coupon Boolean                 @default(false)
 
   // OD-CAT-012 / BR-BEN-104: deliberately NO database default -- see the enum
   // comment above. `PromotionService.activate` rejects a null value here.
-  return_policy    PromotionReturnPolicy?
+  return_policy PromotionReturnPolicy?
 
-  created_by     String?   @db.Uuid
-  submitted_by   String?   @db.Uuid
-  submitted_at   DateTime?
-  approved_by    String?   @db.Uuid
-  approved_at    DateTime?
-  scheduled_by   String?   @db.Uuid
-  scheduled_at   DateTime?
-  activated_by   String?   @db.Uuid
-  activated_at   DateTime?
-  paused_by      String?   @db.Uuid
-  paused_at      DateTime?
-  resumed_by     String?   @db.Uuid
-  resumed_at     DateTime?
+  created_by   String?   @db.Uuid
+  submitted_by String?   @db.Uuid
+  submitted_at DateTime?
+  approved_by  String?   @db.Uuid
+  approved_at  DateTime?
+  scheduled_by String?   @db.Uuid
+  scheduled_at DateTime?
+  activated_by String?   @db.Uuid
+  activated_at DateTime?
+  paused_by    String?   @db.Uuid
+  paused_at    DateTime?
+  resumed_by   String?   @db.Uuid
+  resumed_at   DateTime?
   // BR-PMT-103/104: ending/pausing never rewrites history -- these columns
   // record WHEN the promotion stopped applying to NEW use; nothing about a
   // sale that already applied it is touched (no Sale integration exists yet
   // in this phase to touch regardless).
-  ended_by       String?   @db.Uuid
-  ended_at       DateTime?
-  cancelled_by   String?   @db.Uuid
-  cancelled_at   DateTime?
-  created_at     DateTime  @default(now())
-  updated_at     DateTime  @updatedAt
+  ended_by     String?   @db.Uuid
+  ended_at     DateTime?
+  cancelled_by String?   @db.Uuid
+  cancelled_at DateTime?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
 
-  coupons        Coupon[]
+  coupons Coupon[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, status])
   @@index([tenant_id, status, priority])
   @@index([tenant_id, scope_type, scope_id])
@@ -2028,40 +2184,39 @@ enum CouponStatus {
 /// "normalized uppercase/trimmed form" pattern, already used for SKU),
 /// `code_display` preserves what the operator typed.
 model Coupon {
-  id                     String         @id @default(uuid()) @db.Uuid
-  tenant_id              String         @db.Uuid
-  promotion_id           String         @db.Uuid
-  promotion              Promotion      @relation(fields: [tenant_id, promotion_id], references: [tenant_id, id], onDelete: Restrict)
-  code_normalized        String
-  code_display           String
-  type                   CouponType     @default(public)
-  status                 CouponStatus   @default(active)
+  id                    String       @id @default(uuid()) @db.Uuid
+  tenant_id             String       @db.Uuid
+  promotion_id          String       @db.Uuid
+  promotion             Promotion    @relation(fields: [tenant_id, promotion_id], references: [tenant_id, id], onDelete: Restrict)
+  code_normalized       String
+  code_display          String
+  type                  CouponType   @default(public)
+  status                CouponStatus @default(active)
   // Required (service-enforced) when type = customer_bound; ignored otherwise.
-  customer_id            String?        @db.Uuid
+  customer_id           String?      @db.Uuid
   // BR-CPN-205: centralized limits -- null means "no cap on this dimension".
   // BR-CPN-202 (service-enforced): `type = single_use` forces this to
   // exactly 1 in `CouponService.create` -- `type` alone has no effect on
   // `CouponRepository.redeem`'s capacity gate, only this column does.
-  max_total_uses         Int?
-  max_uses_per_customer  Int?
+  max_total_uses        Int?
+  max_uses_per_customer Int?
   // Denormalized counter maintained ONLY by `CouponRepository.redeem`'s
   // atomic conditional UPDATE (`use_count < max_total_uses`), never by a
   // read-then-write service-layer check -- see that method and
   // `verify-promotion-behaviour.cjs`.
-  use_count              Int            @default(0)
-  expires_at             DateTime?
-  created_by             String?        @db.Uuid
-  created_at             DateTime       @default(now())
-  updated_at             DateTime       @updatedAt
+  use_count             Int          @default(0)
+  expires_at            DateTime?
+  created_by            String?      @db.Uuid
+  created_at            DateTime     @default(now())
+  updated_at            DateTime     @updatedAt
 
-  redemptions            CouponRedemption[]
+  redemptions CouponRedemption[]
 
   @@unique([tenant_id, id])
   // BR-CPN-201: normalized code uniqueness IS the tenant-scoped identity of a
   // coupon. Proven against real Postgres in `verify-promotion-behaviour.cjs`
   // -- `fakePrisma` enforces no unique constraint (backlog item F7c).
   @@unique([tenant_id, code_normalized])
-  @@index([tenant_id])
   @@index([tenant_id, promotion_id])
 }
 
@@ -2074,19 +2229,18 @@ model Coupon {
 /// makes redemption idempotent STRUCTURALLY: a second attempt with the same
 /// key hits P2002, not a second row.
 model CouponRedemption {
-  id               String    @id @default(uuid()) @db.Uuid
-  tenant_id        String    @db.Uuid
-  coupon_id        String    @db.Uuid
-  coupon           Coupon    @relation(fields: [tenant_id, coupon_id], references: [tenant_id, id], onDelete: Restrict)
-  idempotency_key  String
-  customer_id      String?   @db.Uuid
-  amount_applied   Decimal?  @db.Decimal(12, 2)
-  redeemed_by      String?   @db.Uuid
-  redeemed_at      DateTime  @default(now())
+  id              String   @id @default(uuid()) @db.Uuid
+  tenant_id       String   @db.Uuid
+  coupon_id       String   @db.Uuid
+  coupon          Coupon   @relation(fields: [tenant_id, coupon_id], references: [tenant_id, id], onDelete: Restrict)
+  idempotency_key String
+  customer_id     String?  @db.Uuid
+  amount_applied  Decimal? @db.Decimal(14, 2)
+  redeemed_by     String?  @db.Uuid
+  redeemed_at     DateTime @default(now())
 
   @@unique([tenant_id, id])
   @@unique([tenant_id, coupon_id, idempotency_key])
-  @@index([tenant_id])
   @@index([tenant_id, coupon_id])
 }
 
@@ -2119,34 +2273,33 @@ enum BundleReturnPolicy {
 /// composition does not change past sales") holds once a real Sale
 /// integration exists to reference a specific version.
 model Bundle {
-  id                 String                   @id @default(uuid()) @db.Uuid
-  tenant_id          String                   @db.Uuid
-  name               String
-  status             BundleStatus             @default(draft)
-  allocation_method  BundleAllocationMethod   @default(proportional_price)
+  id                String                 @id @default(uuid()) @db.Uuid
+  tenant_id         String                 @db.Uuid
+  name              String
+  status            BundleStatus           @default(draft)
+  allocation_method BundleAllocationMethod @default(proportional_price)
   // Deliberately NO database default (mirrors `PriceBookEntry.tax_mode`'s
   // reasoning) -- BR-BND-105 requires this decided before activation, and a
   // silent default here would be exactly the kind of un-evidenced policy
   // choice CLAUDE.md §6 forbids. `BundleService.activate` rejects a null value.
-  return_policy      BundleReturnPolicy?
-  version            Int                      @default(1)
-  supersedes_id      String?                  @db.Uuid
-  supersedes         Bundle?                  @relation("BundleVersion", fields: [tenant_id, supersedes_id], references: [tenant_id, id], onDelete: Restrict)
-  superseded_by      Bundle[]                 @relation("BundleVersion")
-  superseded_at      DateTime?
-  superseded_by_id   String?                  @db.Uuid
-  created_by         String?                  @db.Uuid
-  activated_by       String?                  @db.Uuid
-  activated_at       DateTime?
-  ended_by           String?                  @db.Uuid
-  ended_at           DateTime?
-  created_at         DateTime                 @default(now())
-  updated_at         DateTime                 @updatedAt
+  return_policy     BundleReturnPolicy?
+  version           Int                    @default(1)
+  supersedes_id     String?                @db.Uuid
+  supersedes        Bundle?                @relation("BundleVersion", fields: [tenant_id, supersedes_id], references: [tenant_id, id], onDelete: Restrict)
+  superseded_by     Bundle[]               @relation("BundleVersion")
+  superseded_at     DateTime?
+  superseded_by_id  String?                @db.Uuid
+  created_by        String?                @db.Uuid
+  activated_by      String?                @db.Uuid
+  activated_at      DateTime?
+  ended_by          String?                @db.Uuid
+  ended_at          DateTime?
+  created_at        DateTime               @default(now())
+  updated_at        DateTime               @updatedAt
 
-  components         BundleComponent[]
+  components BundleComponent[]
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, status])
 }
 
@@ -2156,16 +2309,258 @@ model Bundle {
 /// .assertEntriesManageable`'s draft/active distinction, simplified since a
 /// Bundle has no maker-checker lifecycle, just `catalog.bundle.manage`).
 model BundleComponent {
-  id          String          @id @default(uuid()) @db.Uuid
-  tenant_id   String          @db.Uuid
-  bundle_id   String          @db.Uuid
-  bundle      Bundle          @relation(fields: [tenant_id, bundle_id], references: [tenant_id, id], onDelete: Restrict)
-  variant_id  String          @db.Uuid
-  variant     ProductVariant  @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
-  qty         Decimal         @db.Decimal(12, 3)
-  created_at  DateTime        @default(now())
+  id         String         @id @default(uuid()) @db.Uuid
+  tenant_id  String         @db.Uuid
+  bundle_id  String         @db.Uuid
+  bundle     Bundle         @relation(fields: [tenant_id, bundle_id], references: [tenant_id, id], onDelete: Restrict)
+  variant_id String         @db.Uuid
+  variant    ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  qty        Decimal        @db.Decimal(12, 3)
+  created_at DateTime       @default(now())
 
   @@unique([tenant_id, id])
-  @@index([tenant_id])
   @@index([tenant_id, bundle_id])
+}
+
+// Plans are data: prices, limits and features are edited from the platform
+// console. Feature/limit keys come from src/entitlements/catalog.ts.
+model Plan {
+  id            String         @id @default(uuid()) @db.Uuid
+  code          String         @unique
+  name_ar       String
+  name_en       String
+  description   String?
+  // Display only -- billing happens outside the system.
+  price_monthly Decimal        @db.Decimal(14, 2)
+  currency      String         @default("EGP")
+  // { branches: 3, terminals: 6, ... }; a missing/null key means unlimited.
+  limits        Json           @default("{}")
+  features      String[]       @default([])
+  is_public     Boolean        @default(true)
+  sort_order    Int            @default(0)
+  is_active     Boolean        @default(true)
+  created_at    DateTime       @default(now())
+  updated_at    DateTime       @updatedAt
+  subscriptions Subscription[]
+}
+
+enum SubscriptionStatus {
+  trial
+  active
+  expired
+  suspended
+  cancelled
+}
+
+// One current subscription per tenant.
+model Subscription {
+  id                 String             @id @default(uuid()) @db.Uuid
+  tenant_id          String             @unique @db.Uuid
+  tenant             Tenant             @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
+  plan_id            String             @db.Uuid
+  plan               Plan               @relation(fields: [plan_id], references: [id], onDelete: Restrict)
+  status             SubscriptionStatus @default(trial)
+  // When `status` last changed: the moment suspension/expiry began.
+  status_changed_at  DateTime           @default(now())
+  trial_ends_at      DateTime?
+  current_period_end DateTime?
+  notes              String?
+  updated_by         String?            @db.Uuid
+  created_at         DateTime           @default(now())
+  updated_at         DateTime           @updatedAt
+
+  @@index([plan_id])
+}
+
+// Audit log of every subscription change made by the platform owner or signup.
+model SubscriptionEvent {
+  id              String              @id @default(uuid()) @db.Uuid
+  tenant_id       String              @db.Uuid
+  tenant          Tenant              @relation(fields: [tenant_id], references: [id], onDelete: Restrict)
+  action          String
+  from_plan_code  String?
+  to_plan_code    String?
+  from_status     SubscriptionStatus?
+  to_status       SubscriptionStatus?
+  from_period_end DateTime?
+  to_period_end   DateTime?
+  actor_user_id   String?             @db.Uuid
+  note            String?
+  created_at      DateTime            @default(now())
+
+  @@index([tenant_id, created_at])
+}
+
+// L1: a stock adjustment document (draft -> approved -> posted, or cancelled).
+// Posting is one InventoryService.apply command (type adjustment); the item
+// rows are stamped with the quantities and cost it was valued at. A posted or
+// cancelled document is immutable (trigger in the migration). Actor ids are
+// plain columns like AuditLog: the audit log records every step.
+enum StockAdjustmentStatus {
+  draft
+  approved
+  posted
+  cancelled
+}
+
+// W3: per-tenant document numbers (returns, adjustments, counts, exchange
+// invoices, terminal codes). `last_value` is the number most recently issued;
+// the next one is taken by one `INSERT ... ON CONFLICT DO UPDATE ... RETURNING`
+// (see `common/document-sequence.ts`), a single statement that locks one row.
+model DocumentSequence {
+  tenant_id  String @db.Uuid
+  key        String @db.VarChar(40)
+  last_value BigInt
+
+  @@id([tenant_id, key])
+}
+
+model StockAdjustment {
+  id                  String                @id @default(uuid()) @db.Uuid
+  tenant_id           String                @db.Uuid
+  branch_id           String                @db.Uuid
+  branch              Branch                @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse_id        String                @db.Uuid
+  warehouse           Warehouse             @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  adjustment_number   String                @db.VarChar(40)
+  status              StockAdjustmentStatus @default(draft)
+  note                String?               @db.VarChar(300)
+  idempotency_key     String?               @db.VarChar(191)
+  command_fingerprint String?               @db.VarChar(64)
+  created_by          String?               @db.Uuid
+  approved_by         String?               @db.Uuid
+  approved_at         DateTime?
+  posted_by           String?               @db.Uuid
+  posted_at           DateTime?
+  cancelled_by        String?               @db.Uuid
+  cancelled_at        DateTime?
+  cancellation_reason String?               @db.VarChar(500)
+  created_at          DateTime              @default(now())
+  updated_at          DateTime              @default(now())
+  items               StockAdjustmentItem[]
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, adjustment_number])
+  @@unique([tenant_id, idempotency_key])
+  @@index([tenant_id, status, created_at(sort: Desc)])
+  @@index([tenant_id, branch_id, created_at(sort: Desc)])
+}
+
+model StockAdjustmentItem {
+  id            String          @id @default(uuid()) @db.Uuid
+  tenant_id     String          @db.Uuid
+  adjustment_id String          @db.Uuid
+  adjustment    StockAdjustment @relation(fields: [tenant_id, adjustment_id], references: [tenant_id, id], onDelete: Cascade)
+  variant_id    String          @db.Uuid
+  variant       ProductVariant  @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  qty_delta     Decimal         @db.Decimal(14, 3)
+  reason_code   String          @db.VarChar(32)
+  note          String?         @db.VarChar(300)
+  // Stamped when the document is posted.
+  qty_before    Decimal?        @db.Decimal(14, 3)
+  qty_after     Decimal?        @db.Decimal(14, 3)
+  unit_cost     Decimal?        @db.Decimal(14, 4)
+  value         Decimal?        @db.Decimal(14, 2)
+
+  @@unique([tenant_id, adjustment_id, variant_id])
+  @@unique([tenant_id, id])
+  @@index([tenant_id, variant_id])
+}
+
+// L1: a stock count session of one warehouse, optionally limited to a category
+// or product type. Nothing is snapshotted at the start: an item's expected
+// quantity is the on-hand quantity at the moment it is first counted (stored on
+// its line), so sales made before and after it is counted are both preserved.
+// Posting applies `counted - expected` of every line as one engine command.
+enum StockCountStatus {
+  open
+  posted
+  cancelled
+}
+
+enum StockCountScope {
+  all
+  category
+  product_type
+}
+
+model StockCount {
+  id               String            @id @default(uuid()) @db.Uuid
+  tenant_id        String            @db.Uuid
+  branch_id        String            @db.Uuid
+  branch           Branch            @relation(fields: [tenant_id, branch_id], references: [tenant_id, id], onDelete: Restrict)
+  warehouse_id     String            @db.Uuid
+  warehouse        Warehouse         @relation(fields: [tenant_id, warehouse_id], references: [tenant_id, id], onDelete: Restrict)
+  count_number     String            @db.VarChar(40)
+  name             String            @db.VarChar(200)
+  status           StockCountStatus  @default(open)
+  scope_type       StockCountScope   @default(all)
+  category_id      String?           @db.Uuid
+  category         Category?         @relation(fields: [tenant_id, category_id], references: [tenant_id, id], onDelete: Restrict)
+  product_type_id  String?           @db.Uuid
+  product_type     ProductType?      @relation(fields: [tenant_id, product_type_id], references: [tenant_id, id], onDelete: Restrict)
+  // 'all', or the id of the category / product type: what the one-open-count index keys on.
+  scope_key        String            @db.VarChar(40)
+  idempotency_key  String?           @db.VarChar(191)
+  // 'ignore' | 'zero': what posting did with items nobody counted.
+  uncounted_choice String?           @db.VarChar(10)
+  started_by       String?           @db.Uuid
+  posted_by        String?           @db.Uuid
+  posted_at        DateTime?
+  cancelled_by     String?           @db.Uuid
+  cancelled_at     DateTime?
+  created_at       DateTime          @default(now())
+  updated_at       DateTime          @default(now())
+  lines            StockCountLine[]
+  entries          StockCountEntry[]
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, count_number])
+  @@unique([tenant_id, idempotency_key])
+  @@index([tenant_id, status, created_at(sort: Desc)])
+  @@index([tenant_id, warehouse_id, status])
+}
+
+model StockCountLine {
+  id               String         @id @default(uuid()) @db.Uuid
+  tenant_id        String         @db.Uuid
+  count_id         String         @db.Uuid
+  count            StockCount     @relation(fields: [tenant_id, count_id], references: [tenant_id, id], onDelete: Cascade)
+  variant_id       String         @db.Uuid
+  variant          ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  // On-hand quantity when this item was first counted in the session.
+  expected_qty     Decimal        @db.Decimal(14, 3)
+  // Running sum of the entries of every counter.
+  counted_qty      Decimal        @default(0) @db.Decimal(14, 3)
+  // Added at posting as "counted as zero" (nobody counted it).
+  zeroed           Boolean        @default(false)
+  // Stamped at posting: the change applied to stock and the average cost it was valued at.
+  applied_delta    Decimal?       @db.Decimal(14, 3)
+  unit_cost        Decimal?       @db.Decimal(14, 4)
+  first_counted_at DateTime       @default(now())
+  updated_at       DateTime       @default(now())
+
+  @@unique([tenant_id, count_id, variant_id])
+  @@index([tenant_id, variant_id])
+}
+
+// One scan or typed quantity of one counter. `entry_key` is chosen by the
+// client, so a retried request adds nothing twice. Unknown barcodes are kept
+// (variant_id null) for the review.
+model StockCountEntry {
+  id         String          @id @default(uuid()) @db.Uuid
+  tenant_id  String          @db.Uuid
+  count_id   String          @db.Uuid
+  count      StockCount      @relation(fields: [tenant_id, count_id], references: [tenant_id, id], onDelete: Cascade)
+  entry_key  String          @db.VarChar(100)
+  variant_id String?         @db.Uuid
+  variant    ProductVariant? @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  barcode    String?         @db.VarChar(64)
+  qty_delta  Decimal         @db.Decimal(14, 3)
+  counted_by String?         @db.Uuid
+  created_at DateTime        @default(now())
+
+  @@unique([tenant_id, count_id, entry_key])
+  @@index([tenant_id, count_id, variant_id])
+  @@index([tenant_id, count_id, counted_by, created_at])
 }

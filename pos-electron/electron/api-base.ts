@@ -1,3 +1,5 @@
+import { BRAND_NAME, POS_APP_NAME } from './brand'
+
 export class ApiConfigurationError extends Error {
   readonly code = 'API_CONFIGURATION_REQUIRED'
 
@@ -17,27 +19,27 @@ export function normalizeApiBase(
 ) {
   const value = String(rawValue || '').trim()
   if (!value) {
-    throw new ApiConfigurationError('عنوان خادم ATHR مطلوب قبل تسجيل الجهاز.')
+    throw new ApiConfigurationError(`عنوان خادم ${BRAND_NAME} مطلوب قبل تسجيل الجهاز.`)
   }
 
   let url: URL
   try {
     url = new URL(value)
   } catch {
-    throw new ApiConfigurationError('عنوان خادم ATHR غير صالح.')
+    throw new ApiConfigurationError(`عنوان خادم ${BRAND_NAME} غير صالح.`)
   }
 
   if (url.username || url.password || url.search || url.hash) {
     throw new ApiConfigurationError(
-      'عنوان خادم ATHR لا يقبل بيانات دخول أو query أو fragment.',
+      `عنوان خادم ${BRAND_NAME} لا يقبل بيانات دخول أو query أو fragment.`,
     )
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new ApiConfigurationError('عنوان خادم ATHR يجب أن يستخدم HTTP أو HTTPS.')
+    throw new ApiConfigurationError(`عنوان خادم ${BRAND_NAME} يجب أن يستخدم HTTP أو HTTPS.`)
   }
   if (options.packaged && url.protocol !== 'https:') {
     throw new ApiConfigurationError(
-      'نسخة الإنتاج من ATHR POS تتطلب عنوان HTTPS.',
+      `نسخة الإنتاج من ${POS_APP_NAME} تتطلب عنوان HTTPS.`,
     )
   }
   if (
@@ -53,7 +55,7 @@ export function normalizeApiBase(
   const path = url.pathname.replace(/\/+$/, '')
   if (!path.endsWith('/api/v1')) {
     throw new ApiConfigurationError(
-      'عنوان خادم ATHR يجب أن ينتهي بالمسار /api/v1.',
+      `عنوان خادم ${BRAND_NAME} يجب أن ينتهي بالمسار /api/v1.`,
     )
   }
 

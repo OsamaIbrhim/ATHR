@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // WP-008 Phase B — database-level proof for the three defects whose fixes
 // live in SQL, not in application code. Runs against a real, freshly-migrated
-// Postgres (wired into the CI `migration-gate` job's `athr_migrations_clean`
+// Postgres (run by `npm run test:db` against the CI backend job's
 // database), same convention as `verify-tenant-constraints.cjs`: the `backend`
 // jest job has no live database, so a spec against `fakePrisma` can only prove
 // what the fake does — which is exactly how the original PR shipped a

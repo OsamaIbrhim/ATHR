@@ -1,3 +1,4 @@
+import type { PageQuery } from '../common/pagination';
 import {
   ConflictException,
   ForbiddenException,
@@ -7,7 +8,8 @@ import {
 import { PosTerminal, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
-import { assertBranchAccess } from '../auth/branch-access';
+import { assertBranchAccess, hasBranchAccess } from '../auth/branch-access';
+import { CLIENT_ROLE_NAME } from '../auth/session-user';
 import { randomUUID } from 'crypto';
 import { requireResourceId } from '../common/resource-id';
 import { ShiftsRepository } from './shifts.repository';
@@ -53,7 +55,8 @@ export class ShiftsService {
     terminal: Pick<PosTerminal, 'id' | 'branch_id' | 'last_sale_sequence'>,
   ) {
     const shiftId = requireResourceId(id, 'shift_id');
-    if (actor.role !== 'cashier' && actor.role !== 'branch_manager') {
+    // Only till operators (cashiers and branch managers) work offline.
+    if (actor.membership_role !== 'cashier' && actor.membership_role !== 'location_manager') {
       throw new ForbiddenException('Only POS cashiers and branch managers can receive an offline accounting context');
     }
     const shift = await this.repository.findById(context, shiftId);
@@ -61,10 +64,7 @@ export class ShiftsService {
     if (shift.status !== 'open' || shift.closed_at) {
       throw new ConflictException('Offline accounting context requires an open shift');
     }
-    if (
-      actor.branch_id !== shift.branch_id ||
-      terminal.branch_id !== shift.branch_id
-    ) {
+    if (!hasBranchAccess(actor, shift.branch_id) || terminal.branch_id !== shift.branch_id) {
       throw new ForbiddenException('The cashier, terminal and shift must belong to the same branch');
     }
 
@@ -80,7 +80,7 @@ export class ShiftsService {
       context_version: 2,
       session_id: randomUUID(),
       user_id: actor.sub,
-      role: actor.role,
+      role: CLIENT_ROLE_NAME[actor.membership_role],
       branch_id: shift.branch_id,
       terminal_id: terminal.id,
       shift_id: shift.id,
@@ -109,13 +109,15 @@ export class ShiftsService {
     // Both cash aggregates are tenant-scoped: an unscoped sum would fold
     // another tenant's cash sales into this shift's expected drawer total and
     // report the difference as a till discrepancy.
-    const [cashSales, cashReturns] = await Promise.all([
+    const [cashSales, cashReturns, cashCollections] = await Promise.all([
       this.repository.sumCashSales(context, shift.id),
       this.repository.sumCashReturns(context, shift.id),
+      this.repository.sumCashCollections(context, shift.id),
     ]);
 
     const expectedCash = new Prisma.Decimal(shift.opening_cash)
-      .plus(cashSales._sum.total ?? 0)
+      .plus(cashSales._sum.amount ?? 0)
+      .minus(cashCollections._sum.amount ?? 0)
       .minus(cashReturns._sum.refund_total ?? 0)
       .toDecimalPlaces(2);
     const difference = new Prisma.Decimal(closing_cash)
@@ -136,8 +138,8 @@ export class ShiftsService {
     return this.repository.findById(context, shiftId);
   }
 
-  list(context: TenantContext, branch_id?: string) {
-    return this.repository.list(context, branch_id);
+  list(context: TenantContext, branch_id?: string, paging?: PageQuery) {
+    return this.repository.list(context, branch_id, paging);
   }
 
   current(context: TenantContext, branch_id: string) {

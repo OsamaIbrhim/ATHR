@@ -18,16 +18,17 @@ describe('financial precision contract', () => {
   it('keeps report aggregation on Decimal arithmetic', () => {
     const reports = source('src/reports/reports.service.ts');
 
-    expect(reports).toContain('sumMoney(');
-    expect(reports).toContain('lineMoney(');
+    // Sums are SQL `numeric`, rounded per line (`round(price * qty, 2)`) exactly as `lineMoney` does.
+    expect(reports).toContain('round(it."unit_price" * it."qty", 2)');
+    expect(reports).toContain('moneyNumber(');
     expect(reports).not.toMatch(/\bMath\.round\s*\(/);
     expect(reports).not.toMatch(/\bNumber\s*\(\s*(?:invoice|item|record|row)\./);
   });
 
   it('keeps sale and return reconciliation off binary cent comparisons', () => {
-    const sales = source('src/sales/sales.service.ts');
+    const sales = source('src/sales/sales.service.ts') + source('src/sales/returns.service.ts');
 
-    expect(sales).toContain('sameMoney(dto.local_total, total)');
+    expect(sales).toContain('sameMoney(total, till.total)');
     expect(sales).not.toMatch(/Math\.round\s*\(\s*dto\.local_total\s*\*\s*100/);
     expect(sales).not.toContain('Number(variant.cost_price)');
     expect(sales).not.toContain('Number(soldItem.unit_price)');

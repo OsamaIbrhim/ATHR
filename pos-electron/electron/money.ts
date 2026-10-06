@@ -1,3 +1,5 @@
+import { quantityToMilli } from './quantity'
+
 export type MoneyInput = number | string
 
 const MONEY_PATTERN = /^([+-]?)(\d+)(?:\.(\d*))?$/
@@ -33,14 +35,19 @@ export function formatMoney(value: MoneyInput): string {
   return `${sign}${Math.floor(absolute / 100)}.${String(absolute % 100).padStart(2, '0')}`
 }
 
+/**
+ * A line amount in cents for a (possibly fractional) quantity. Mirrors the
+ * backend's `lineMoney`: exact unit x quantity, rounded HALF_UP to a cent, so
+ * POS and server totals agree for e.g. 1.235 kg.
+ */
 export function lineCents(
   unitValue: MoneyInput,
   quantity: number,
 ): number {
-  if (!Number.isSafeInteger(quantity)) {
-    throw new TypeError('Money quantity must be a safe integer')
-  }
-  const result = toCents(unitValue) * quantity
+  const thousandths = BigInt(quantityToMilli(quantity)) * BigInt(toCents(unitValue))
+  const magnitude = thousandths < 0n ? -thousandths : thousandths
+  const rounded = (magnitude + 500n) / 1000n
+  const result = Number(thousandths < 0n ? -rounded : rounded)
   if (!Number.isSafeInteger(result)) {
     throw new RangeError('Money line exceeds the safe cents range')
   }

@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { createHash } from 'node:crypto'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 import { resolveAdminApiBase } from './api-base'
@@ -53,6 +54,32 @@ export async function sessionTokens() {
   }
 }
 
+// The backend rotates refresh tokens, so concurrent 401s carrying the same
+// token must share one refresh call. The settled entry is kept briefly so a
+// slightly late 401 (still holding the old cookie) reuses the result too.
+const REFRESH_REUSE_MS = 10_000
+const refreshes = new Map<string, Promise<BackendSession | null>>()
+
+function refreshOnce(refreshToken: string) {
+  const key = createHash('sha256').update(refreshToken).digest('hex')
+  let inFlight = refreshes.get(key)
+  if (!inFlight) {
+    const expire = () => refreshes.delete(key)
+    inFlight = fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      cache: 'no-store',
+    }).then(res => (res.ok ? res.json() as Promise<BackendSession> : null))
+    inFlight.then(
+      session => (session ? setTimeout(expire, REFRESH_REUSE_MS).unref?.() : expire()),
+      expire,
+    )
+    refreshes.set(key, inFlight)
+  }
+  return inFlight
+}
+
 export async function backendRequest(
   path: string,
   init: RequestInit = {},
@@ -68,14 +95,8 @@ export async function backendRequest(
   })
   if (backend.status !== 401 || !retry || !tokens.refresh) return { backend }
 
-  const refresh = await fetch(`${API_BASE}/auth/refresh`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ refresh_token: tokens.refresh }),
-    cache: 'no-store',
-  })
-  if (!refresh.ok) return { backend }
-  const rotated = await refresh.json() as BackendSession
+  const rotated = await refreshOnce(tokens.refresh)
+  if (!rotated) return { backend }
   headers.set('authorization', `Bearer ${rotated.access_token}`)
   return {
     backend: await fetch(`${API_BASE}${path}`, {

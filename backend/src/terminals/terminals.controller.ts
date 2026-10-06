@@ -1,11 +1,11 @@
 import { Body, Controller, Get, Headers, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
-import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { CreateTerminalEnrollmentDto, DecommissionTerminalDto, EnrollTerminalDto, TerminalHeartbeatDto, UpdateTerminalDto } from './dto/terminal.dto';
 import { TerminalsService } from './terminals.service';
 import { Public } from '../auth/public.decorator';
 import { PosProtocolGuard } from '../updates/pos-protocol.guard';
+import { AllowInAnyAccessMode } from '../entitlements/entitlement.decorators';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -14,8 +14,6 @@ import type { TenantContext } from '../identity/tenant-context.type';
 export class TerminalsController {
   constructor(private service: TerminalsService) {}
 
-  @Roles('owner', 'branch_manager')
-  @RequireCapabilities('terminals.manage')
   @RequirePermission('terminal.provision')
   @Post('enrollment-codes')
   createEnrollment(
@@ -32,8 +30,8 @@ export class TerminalsController {
     return this.service.enroll(dto);
   }
 
-  @Roles('branch_manager', 'cashier')
-  @RequireCapabilities('sales.create')
+  // The POS learns its subscription mode from this call, so it must work in every mode.
+  @AllowInAnyAccessMode()
   @UseGuards(new PosProtocolGuard())
   @RequirePermission('terminal.view-health')
   @Post('heartbeat')
@@ -45,8 +43,6 @@ export class TerminalsController {
     return this.service.heartbeat(dto, deviceToken, req.user);
   }
 
-  @Roles('branch_manager')
-  @RequireCapabilities('terminals.manage')
   @UseGuards(new PosProtocolGuard())
   @RequirePermission('terminal.retire')
   @Post('self-decommission')
@@ -59,8 +55,6 @@ export class TerminalsController {
     return this.service.selfDecommission(ctx, dto, deviceToken, req.user);
   }
 
-  @Roles('owner', 'branch_manager')
-  @RequireCapabilities('terminals.read')
   @RequirePermission('terminal.view')
   @Get()
   list(
@@ -70,8 +64,6 @@ export class TerminalsController {
     return this.service.list(ctx, req.user);
   }
 
-  @Roles('owner', 'branch_manager')
-  @RequireCapabilities('terminals.manage')
   @RequirePermission('terminal.block')
   @Patch(':id')
   update(

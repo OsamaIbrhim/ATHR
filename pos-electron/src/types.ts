@@ -1,3 +1,5 @@
+import type { Discount } from '../electron/sale-math'
+
 export type User = {
   id: string
   name: string
@@ -18,10 +20,7 @@ export type DeviceCredential = {
   branch_id: string
   terminal_id: string
   terminal_code: string
-  // WP-007 Phase C: optional, not required, so a terminal enrolled before
-  // this release (whose local state predates this field) keeps working
-  // without re-enrollment. It is learned from the next heartbeat if absent.
-  tenant_id?: string
+  tenant_id: string
 }
 
 export type Shift = {
@@ -42,12 +41,17 @@ export type Product = {
   sku: string
   name_en?: string
   name_ar?: string
-  barcode_ean13?: string | null
-  barcode_internal?: string | null
-  size?: string | null
-  color?: string | null
+  /** What tells this variant apart ("L · أسود"). */
+  label?: string | null
+  uom_code?: string | null
+  uom_name_ar?: string | null
+  /** Decimal places the unit allows: 0 = pieces, 3 = kg. */
+  uom_precision?: number
   selling_price?: number | string
   unit_tax?: number | string
+  /** Percent (14 = 14%); null on a row cached before W3. */
+  tax_rate?: string | number | null
+  tax_mode?: 'inclusive' | 'exclusive' | null
   catalog_version?: number
   qty?: number | string
 }
@@ -59,6 +63,8 @@ export type CartItem = Product & {
   unit_price: number
   unit_tax: number
   available_qty: number
+  /** A discount on this line (amount in pounds, or percent). */
+  discount?: Discount | null
 }
 
 export type Customer = {
@@ -86,8 +92,7 @@ export type InvoiceItem = {
   sku_snapshot?: string
   name_ar_snapshot?: string
   name_en_snapshot?: string | null
-  size_snapshot?: string | null
-  color_snapshot?: string | null
+  variant_label_snapshot?: string | null
   qty: number
   unit_price: number | string
   unit_tax: number | string
@@ -96,13 +101,18 @@ export type InvoiceItem = {
   return_items?: ReturnedInvoiceItem[]
   variant?: {
     sku?: string
-    size?: string | null
-    color?: string | null
+    label?: string | null
     product?: {
       name_ar?: string
       name_en?: string
     }
   }
+}
+
+export type InvoicePayment = {
+  method: string
+  amount: number | string
+  tendered?: number | string | null
 }
 
 export type Invoice = {
@@ -118,7 +128,8 @@ export type Invoice = {
   subtotal: number | string
   tax_amount: number | string
   total: number | string
-  payment_method: string
+  discount_amount?: number | string | null
+  payments?: InvoicePayment[]
   status: string
   event_version?: number
   warning_codes?: string[]
@@ -153,6 +164,9 @@ export type SyncState = {
   blocked_reason?: string | null
   terminal_sale_sequence?: string
   sync_cursor?: string | null
+  /** Set while a catalog snapshot is only partly downloaded; the next sync resumes from here. */
+  snapshot_after?: string | null
+  snapshot_cursor?: string | null
   catalog_valid_until?: string | null
   backend_version?: string | null
   backend_deployment_sha?: string | null
@@ -192,7 +206,6 @@ export type ReturnRecord = {
     id: string
     invoice_number: string
     total: number | string
-    payment_method: string
     customer?: {
       id: string
       name?: string | null

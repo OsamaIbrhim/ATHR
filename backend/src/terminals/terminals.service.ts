@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { nextDocumentNumber } from '../common/document-sequence';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import {
@@ -16,15 +17,19 @@ import {
   TerminalHeartbeatDto,
   UpdateTerminalDto,
 } from './dto/terminal.dto';
-import { assertBranchAccess } from '../auth/branch-access';
+import { assertBranchAccess, hasBranchAccess, primaryBranchId, resolveBranchScope } from '../auth/branch-access';
 import { TerminalsRepository } from './terminals.repository';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { EntitlementService } from '../entitlements/entitlement.service';
+import { LimitService } from '../entitlements/limit.service';
 
 @Injectable()
 export class TerminalsService {
   constructor(
     private prisma: PrismaService,
     private readonly repository: TerminalsRepository,
+    private readonly entitlements: EntitlementService,
+    private readonly limits: LimitService,
   ) {}
 
   async createEnrollment(
@@ -32,15 +37,17 @@ export class TerminalsService {
     dto: CreateTerminalEnrollmentDto,
     actor: AuthenticatedUser,
   ) {
-    const branchId = actor.role === 'owner' ? dto.branch_id || actor.branch_id : actor.branch_id;
+    const branchId = dto.branch_id || primaryBranchId(actor);
     if (!branchId) throw new BadRequestException('branch_id is required for terminal enrollment');
-    if (actor.role !== 'owner' && dto.branch_id && dto.branch_id !== actor.branch_id) {
+    if (dto.branch_id && !hasBranchAccess(actor, dto.branch_id)) {
       throw new ForbiddenException('You cannot enroll a terminal for another branch');
     }
     // Previously any active branch id was accepted, so an operator could mint
     // an enrollment code against another tenant's branch just by passing its id.
     const branch = await this.repository.findBranch(context, branchId);
     if (!branch) throw new NotFoundException('Active branch not found');
+    // Fail here, where the manager sees it, rather than on the device at enrollment.
+    await this.limits.assertCanCreate(context.tenantId, 'terminals');
 
     const code = randomBytes(9).toString('base64url').toUpperCase();
     const expiresAt = new Date(Date.now() + Number(process.env.POS_ENROLLMENT_TTL_MS || 10 * 60 * 1000));
@@ -72,23 +79,34 @@ export class TerminalsService {
 
     const deviceToken = randomBytes(48).toString('base64url');
     const now = new Date();
+    const tenantId = enrollment.tenant_id ?? enrollment.branch.tenant_id;
+    // Device enrollment has no session, so the subscription is checked here.
+    await this.entitlements.assertCanWrite(tenantId);
     const terminal = await this.prisma.$transaction(async (tx) => {
+      // Re-enrolling a known device does not use another terminal slot.
+      if (!existing) await this.limits.assertCanCreate(tenantId, 'terminals', tx);
       const claimed = await tx.posTerminalEnrollment.updateMany({
         where: { id: enrollment.id, used_at: null, expires_at: { gt: now } },
         data: { used_at: now },
       });
       if (claimed.count !== 1) throw new UnauthorizedException('Enrollment code was already used');
+      // The code is the prefix of every invoice number this till prints
+      // (`POS3-000123`), so it must never be shared. It comes from a per-tenant
+      // counter, not from the device id (two devices could share 8 characters of
+      // it), and only a device enrolling for the first time takes a number: a
+      // known device keeps its code, and with it the high-water mark below.
+      const terminalCode = existing ? existing.terminal_code : await nextDocumentNumber(tx, tenantId, 'terminal');
       return tx.posTerminal.upsert({
         where: { device_id: dto.device_id },
         create: {
           device_id: dto.device_id,
-          terminal_code: `POS-${dto.device_id.slice(0, 8).toUpperCase()}`,
+          terminal_code: terminalCode,
           name: dto.name?.trim() || enrollment.terminal_name || `POS ${dto.device_id.slice(0, 8)}`,
           branch_id: enrollment.branch_id,
           // The terminal inherits its Tenant from the branch it enrolls into.
           // Without this a newly enrolled terminal would carry no tenant_id and
           // deviceTenantContext() would fail closed, so it could not sell.
-          tenant_id: enrollment.tenant_id ?? enrollment.branch.tenant_id,
+          tenant_id: tenantId,
           app_version: dto.app_version,
           device_token_hash: this.hash(deviceToken),
           enrolled_by: enrollment.created_by,
@@ -109,6 +127,11 @@ export class TerminalsService {
         id: terminal.id,
         device_id: terminal.device_id,
         terminal_code: terminal.terminal_code,
+        // Highest sale sequence the server has for this device. A till that was
+        // wiped and re-enrolled continues its invoice numbers after it (its next
+        // `terminal_sequence` is max(local, this) + 1) instead of reusing numbers
+        // the server already holds. 0 for a device that never sold.
+        last_sale_sequence: String(terminal.last_sale_sequence ?? 0),
         name: terminal.name,
         branch: terminal.branch,
         // WP-007 Phase C (BR-TRM-101/BR-ENR-102): the enrollment contract now
@@ -138,7 +161,18 @@ export class TerminalsService {
       },
       { branch: { select: { code: true, name_ar: true, name_en: true } } },
     );
-    return { terminal, online: true, server_time: now.toISOString() };
+    // Lets the POS react to the subscription (banner, read-only, suspended).
+    const access = await this.entitlements.resolve(existing.tenant_id);
+    return {
+      terminal,
+      online: true,
+      server_time: now.toISOString(),
+      subscription: {
+        mode: access.mode,
+        grace_until: access.graceUntil,
+        plan_code: access.planCode,
+      },
+    };
   }
 
   async selfDecommission(
@@ -147,14 +181,13 @@ export class TerminalsService {
     deviceToken: string | undefined,
     actor: AuthenticatedUser,
   ) {
-    if (actor.role !== 'branch_manager') {
-      throw new ForbiddenException('Only a branch manager can decommission this POS terminal');
-    }
-
-    if (!actor.branch_id) throw new ForbiddenException('POS manager must be linked to a branch');
+    // `terminal.retire` is enforced by the route; the manager must also be
+    // scoped to a branch, and only that branch's terminal can be retired here.
+    const branchId = primaryBranchId(actor);
+    if (!branchId) throw new ForbiddenException('POS manager must be linked to a branch');
     const existing = await this.repository.findByDeviceId(context, dto.device_id);
     if (!existing) throw new UnauthorizedException('This POS terminal must be enrolled before use');
-    if (existing.branch_id !== actor.branch_id) {
+    if (existing.branch_id !== branchId) {
       throw new ConflictException('This POS terminal is registered to another branch');
     }
     if (existing.terminal_code !== dto.terminal_code.trim().toUpperCase()) {
@@ -214,7 +247,7 @@ export class TerminalsService {
   }
 
   async authenticate(deviceId: string | undefined, deviceToken: string | undefined, actor: AuthenticatedUser) {
-    if (!actor.branch_id) throw new ForbiddenException('POS user must be linked to a branch');
+    if (!primaryBranchId(actor)) throw new ForbiddenException('POS user must be linked to a branch');
     const existing = await this.authenticateDevice(deviceId, deviceToken);
     // WP-007 Phase C (§C.3.3): every sync/offline handshake through this
     // method (pull, heartbeat, return, invoice lookup, offline-context issue,
@@ -226,7 +259,7 @@ export class TerminalsService {
     if (existing.tenant_id !== actor.tenant_id) {
       throw new ConflictException('This POS terminal is registered to another branch');
     }
-    if (existing.branch_id !== actor.branch_id) {
+    if (!hasBranchAccess(actor, existing.branch_id)) {
       throw new ConflictException('This POS terminal is registered to another branch');
     }
     return existing;
@@ -246,10 +279,7 @@ export class TerminalsService {
   }
 
   async list(context: TenantContext, actor: AuthenticatedUser) {
-    const terminals = await this.repository.list(
-      context,
-      actor.role === 'owner' ? undefined : actor.branch_id || undefined,
-    );
+    const terminals = await this.repository.list(context, resolveBranchScope(actor));
     const now = Date.now();
     const onlineThreshold = Number(process.env.POS_ONLINE_THRESHOLD_MS || 90000);
     return {
@@ -272,7 +302,7 @@ export class TerminalsService {
   ) {
     const terminal = await this.repository.findById(context, id);
     if (!terminal) throw new NotFoundException('POS terminal not found');
-    assertBranchAccess(actor, terminal.branch_id, ['owner']);
+    assertBranchAccess(actor, terminal.branch_id);
     return this.repository.update(context, id, {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
         ...(dto.revoked !== undefined ? { is_revoked: dto.revoked } : {}),

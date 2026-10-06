@@ -1,19 +1,18 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { CustomersService } from './customers.service';
-import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
+import { PageQueryDto } from '../common/page-query.dto';
 import { CreateCustomerDto, SetCustomerVipDto, UpdateCustomerDto } from './dto/customer.dto';
 
 @Controller('customers')
-@RequireCapabilities('customers.read')
 export class CustomersController {
   constructor(private svc: CustomersService) {}
 
   @RequirePermission('customer.profile.search')
-  @Get() list(@TenantCtx() ctx: TenantContext, @Query('q') q?: string) {
-    return q && q.startsWith('01') ? this.svc.searchByPhone(ctx, q) : this.svc.findAll(ctx, q);
+  @Get() list(@TenantCtx() ctx: TenantContext, @Query() paging: PageQueryDto, @Query('q') q?: string) {
+    return q && q.startsWith('01') ? this.svc.searchByPhone(ctx, q) : this.svc.findAll(ctx, q, paging);
   }
 
   @RequirePermission('customer.profile.search')
@@ -36,8 +35,6 @@ export class CustomersController {
     return this.svc.create(ctx, dto);
   }
 
-  @Roles('owner', 'branch_manager')
-  @RequireCapabilities('customers.manage')
   @RequirePermission('customer.profile.update')
   @Patch(':id') update(
     @TenantCtx() ctx: TenantContext,
@@ -47,8 +44,6 @@ export class CustomersController {
     return this.svc.update(ctx, id, dto);
   }
 
-  @Roles('owner', 'branch_manager')
-  @RequireCapabilities('customers.manage')
   @RequirePermission('customer.profile.update')
   @Post(':id/vip') setVip(
     @TenantCtx() ctx: TenantContext,
@@ -58,8 +53,6 @@ export class CustomersController {
     return this.svc.setVip(ctx, id, dto.is_vip, dto.vip_price_tier);
   }
 
-  @Roles('owner', 'branch_manager')
-  @RequireCapabilities('customers.manage')
   @RequirePermission('customer.profile.update')
   @Delete(':id') remove(@TenantCtx() ctx: TenantContext, @Param('id') id: string) {
     return this.svc.remove(ctx, id);

@@ -1,6 +1,8 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
+  IsArray,
   IsDateString,
   IsIn,
   IsInt,
@@ -13,13 +15,39 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsQuantity } from '../../common/quantity';
+import { cleanInvoiceNumber } from '../invoice-number';
+import { SalePaymentDto } from './sale-payment.dto';
+import { cleanDiscount, type SaleDiscount } from '../sale-discounts';
+
+const MAX_SERIALS_PER_LINE = 1000;
+
+/**
+ * Serial numbers reach the API from a scanner in a shop with no way to fix a
+ * rejected sale, so they are cleaned, not validated: trimmed, blanks and
+ * over-long entries dropped, duplicates removed. Whatever is left is what the
+ * server records; an unusable value simply means "not captured".
+ */
+function cleanSerialList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const serials = value
+    .filter((entry): entry is string | number => typeof entry === 'string' || typeof entry === 'number')
+    .map((entry) => String(entry).trim())
+    .filter((entry) => entry.length > 0 && entry.length <= 191);
+  const unique = [...new Set(serials)].slice(0, MAX_SERIALS_PER_LINE);
+  return unique.length ? unique : undefined;
+}
+
+function cleanBatchNo(value: unknown): string | undefined {
+  const batchNo = typeof value === 'string' ? value.trim() : '';
+  return batchNo.length > 0 && batchNo.length <= 100 ? batchNo : undefined;
+}
 
 export class CreateSaleItemDto {
   @IsUUID()
   variant_id: string;
 
-  @IsInt()
-  @Min(1)
+  @IsQuantity()
   qty: number;
 
   @Type(() => Number)
@@ -45,15 +73,36 @@ export class CreateSaleItemDto {
   @MaxLength(300)
   name_en_snapshot?: string;
 
+  /**
+   * A discount on this line (`{ type: 'amount' | 'percent', value }`), taken off
+   * the price as the cashier saw it. Cleaned, not validated: an unusable discount is none.
+   */
   @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  size_snapshot?: string;
+  @Transform(({ value }) => cleanDiscount(value))
+  discount?: SaleDiscount;
 
+  /** "L · أسود": what the cashier saw. POS <= 1.5 sent size/color instead. */
   @IsOptional()
   @IsString()
-  @MaxLength(100)
-  color_snapshot?: string;
+  @MaxLength(200)
+  variant_label_snapshot?: string;
+
+  /**
+   * Serial numbers of the units sold, one per unit (POS >= 1.7, serial-tracked
+   * items). Always optional: a sale is never refused over tracking data; missing
+   * or unknown serials are accepted and reported as warning codes.
+   */
+  @IsOptional()
+  @Transform(({ value }) => cleanSerialList(value))
+  @IsArray()
+  @IsString({ each: true })
+  serials?: string[];
+
+  /** Batch the cashier picked for a batch-tracked item; absent = the server draws FEFO. */
+  @IsOptional()
+  @Transform(({ value }) => cleanBatchNo(value))
+  @IsString()
+  batch_no?: string;
 }
 
 export class CreateSaleDto {
@@ -94,6 +143,16 @@ export class CreateSaleDto {
   })
   terminal_sequence: string;
 
+  /**
+   * The number the till printed on the receipt (`POS1-000123`); stored verbatim
+   * unless it collides. Cleaned, not validated: a missing or malformed number
+   * never refuses a finished sale, the server derives one from terminal + sequence.
+   */
+  @IsOptional()
+  @Transform(({ value }) => cleanInvoiceNumber(value))
+  @IsString()
+  invoice_number?: string;
+
   @IsDateString()
   occurred_at: string;
 
@@ -108,9 +167,18 @@ export class CreateSaleDto {
   @ArrayMinSize(1)
   items: CreateSaleItemDto[];
 
-  @IsString()
-  @IsIn(['cash', 'card', 'instapay', 'vodafone_cash', 'installment'])
-  payment_method: string;
+  /** A discount on the whole invoice, spread over the lines (same shape as a line discount). */
+  @IsOptional()
+  @Transform(({ value }) => cleanDiscount(value))
+  discount?: SaleDiscount;
+
+  /** How the sale was paid; one entry per tender (split payment = several). */
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => SalePaymentDto)
+  payments: SalePaymentDto[];
 
   @IsOptional()
   @IsIn(['ar', 'en'])

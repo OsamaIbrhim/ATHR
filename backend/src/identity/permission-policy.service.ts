@@ -1,5 +1,5 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { Prisma, type MembershipRole, type PermissionPolicySnapshot } from '@prisma/client';
+import { Prisma, type PermissionPolicySnapshot } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   ALL_ROLE_PERMISSIONS,
@@ -10,11 +10,10 @@ import {
 const UNIQUE_CONSTRAINT_VIOLATION = 'P2002';
 
 /**
- * ADR-0005: a Membership's effective permissions are a resolvable, versioned
- * snapshot — never a live join computed differently every time. `grants` is
- * global and platform-wide (system roles are not tenant-editable in MVP, per
- * ADR-0003 item 6), so there is exactly one active snapshot at a time, not
- * one per Tenant.
+ * Versions the platform-wide role grants (ADR-0005). System roles are not
+ * tenant-editable in MVP, so there is exactly one active snapshot at a time.
+ * Effective permissions themselves are computed in code from the catalog by
+ * `effectivePermissions`; the snapshot records which grant set was in force.
  */
 @Injectable()
 export class PermissionPolicyService implements OnModuleInit {
@@ -72,17 +71,5 @@ export class PermissionPolicyService implements OnModuleInit {
   async getCurrentVersion(): Promise<number> {
     const snapshot = await this.ensureSeeded();
     return snapshot.version;
-  }
-
-  async getGrants(role: MembershipRole): Promise<readonly AthrPermission[]> {
-    const snapshot = await this.ensureSeeded();
-    const grants = snapshot.grants as Record<string, readonly AthrPermission[]>;
-    return grants[role] ?? [];
-  }
-
-  /** Allow-only (ADR-0005 / Matrix §3 rule 1): absent means denied. */
-  async hasPermission(role: MembershipRole, permission: AthrPermission): Promise<boolean> {
-    const grants = await this.getGrants(role);
-    return grants.includes(permission);
   }
 }

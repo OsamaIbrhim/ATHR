@@ -15,6 +15,16 @@ export function money(value: MoneyInput): Prisma.Decimal {
   return decimal(value).toDecimalPlaces(MONEY_SCALE, MONEY_ROUNDING);
 }
 
+/** Unit costs keep 4 decimals (Decimal(14,4)); money amounts keep 2. */
+export const UNIT_COST_SCALE = 4;
+
+export function unitCost(value: MoneyInput): Prisma.Decimal {
+  return decimal(value).toDecimalPlaces(UNIT_COST_SCALE, MONEY_ROUNDING);
+}
+
+/** Largest amount a Decimal(14,2) column holds. */
+export const MAX_MONEY = new Prisma.Decimal('999999999999.99');
+
 export function moneyString(value: MoneyInput): string {
   return money(value).toFixed(MONEY_SCALE);
 }
@@ -37,9 +47,7 @@ export function sumMoney(values: Iterable<MoneyInput>): Prisma.Decimal {
   return money(total);
 }
 
-export function lineMoney(unit: MoneyInput, quantity: number): Prisma.Decimal {
-  if (!Number.isSafeInteger(quantity)) {
-    throw new TypeError('Money quantity must be a safe integer');
-  }
-  return money(decimal(unit).mul(quantity));
+/** Line amount for a (possibly fractional, e.g. kg) quantity. */
+export function lineMoney(unit: MoneyInput, quantity: MoneyInput): Prisma.Decimal {
+  return money(decimal(unit).mul(decimal(quantity)));
 }

@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { SalesService } from './sales.service';
+import { ReturnsService } from './returns.service';
+import { ReturnsReadService } from './returns-read.service';
 import { SalesReadService } from './sales-read.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aBranch, aCustomer, aSalesInvoice } from '../identity/testing/fixture-builders';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
@@ -64,8 +66,8 @@ function setup() {
   });
   prisma.$transaction = async (fn: any) => fn(prisma);
   // WP-T2/F4 audit: no test in this file reaches a raw-SQL call site in
-  // sales.service.ts (createSale's terminal lock, the record_inventory_movement
-  // stored-function calls, or createReturn's item lock) — every raw-SQL-gated
+  // sales.service.ts (createSale's terminal lock, the InventoryService statements,
+  // or createReturn's item lock) — every raw-SQL-gated
   // method here is exercised only via a rejection that fires from an earlier
   // ORM check. The `$queryRaw = async () => []` override this file used to
   // carry was therefore dead code re-declaring fakePrisma's old silent no-op;
@@ -76,18 +78,18 @@ function setup() {
   // with the fail-closed answer so the isolation checks run against the same
   // projection an unprivileged actor would get; `sales.cost-visibility.spec.ts`
   // is what pins the gate itself.
-  const costVisibility = new CostVisibilityService({
-    hasPermission: async () => false,
-  } as unknown as PermissionPolicyService);
+  const costVisibility = new CostVisibilityService();
   return {
     prisma,
-    service: new SalesService(prisma, pricing, costVisibility, new SalesTaxSnapshotService()),
+    service: new SalesService(prisma, pricing, costVisibility, new SalesTaxSnapshotService(), {} as any),
+    returns: new ReturnsService(prisma, costVisibility, {} as any),
+    returnsRead: new ReturnsReadService(prisma),
     reads: new SalesReadService(prisma),
   };
 }
 
-const actorFor = (branchId: string) =>
-  ({ sub: randomUUID(), role: 'owner', branch_id: branchId, capabilities: [] }) as any;
+const ownerFor = (branchId: string) =>
+  actorFor('tenant_owner', { sub: randomUUID(), tenantWide: true, branchId });
 
 const listDto = { q: '', page: 1, page_size: 20 } as any;
 
@@ -126,35 +128,35 @@ describe('sales — cross-tenant isolation', () => {
   it('does not return another tenant\'s invoice by id', async () => {
     const { service } = setup();
     await expect(
-      service.getInvoice(contextFor(TENANT_B), INVOICE_A, actorFor(BRANCH_B)),
+      service.getInvoice(contextFor(TENANT_B), INVOICE_A, ownerFor(BRANCH_B)),
     ).rejects.toThrow();
   });
 
   /** `SalesInvoice.invoice_number` is still globally unique until Phase B. */
   it('does not resolve another tenant\'s invoice by invoice number', async () => {
-    const { service } = setup();
-    const found: any = await service.findReturnableInvoice(
+    const { returnsRead } = setup();
+    const found: any = await returnsRead.findReturnableInvoice(
       contextFor(TENANT_A),
       'B-100',
-      actorFor(BRANCH_A),
+      ownerFor(BRANCH_A),
     );
     expect(found.id).toBe(INVOICE_A);
   });
 
   it('lists only the calling tenant\'s returns', async () => {
-    const { service } = setup();
-    const forA: any = await service.listReturns(contextFor(TENANT_A), listDto);
+    const { returnsRead } = setup();
+    const forA: any = await returnsRead.listReturns(contextFor(TENANT_A), listDto);
     expect(forA.items).toHaveLength(1);
     expect(forA.items[0].tenant_id ?? TENANT_A).toBe(TENANT_A);
   });
 
   it('does not create a return against another tenant\'s invoice', async () => {
-    const { service } = setup();
+    const { returns } = setup();
     await expect(
-      service.createReturn(
+      returns.createReturn(
         contextFor(TENANT_B),
         { original_invoice_id: INVOICE_A, items: [] } as any,
-        actorFor(BRANCH_B),
+        ownerFor(BRANCH_B),
       ),
     ).rejects.toThrow();
   });

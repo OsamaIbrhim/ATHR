@@ -1,15 +1,20 @@
 import { Prisma } from '@prisma/client'
 import { createHash } from 'node:crypto'
 import { ReceivePurchaseDto } from './dto/receive-purchase.dto'
+import { MAX_MONEY, unitCost } from '../common/money'
+import { MAX_QUANTITY, quantity, quantityNumber } from '../common/quantity'
+import { addItemLots, emptyLots, lotsFingerprint, type ItemLots } from './purchasing-lots'
 
 export type PreparedPurchaseLine = {
   variant_id: string
-  qty: number
+  qty: Prisma.Decimal
   unit_cost: Prisma.Decimal
   line_subtotal: Prisma.Decimal
   allocated_discount: Prisma.Decimal
   net_line_total: Prisma.Decimal
   net_unit_cost: Prisma.Decimal
+  /** Serials / batches the line names (empty for an untracked variant). */
+  lots: ItemLots
 }
 
 export type PreparedPurchaseReceipt = {
@@ -52,28 +57,24 @@ export function normalizeSupplierInvoiceNumber(value?: string) {
 
 
 export function calculateSupplierReturnCredit(input: {
-  lineQty: number
+  lineQty: Prisma.Decimal | number | string
   lineCreditTotal: Prisma.Decimal | number | string
-  returnedQty: number
+  returnedQty: Prisma.Decimal | number | string
   returnedCredit: Prisma.Decimal | number | string
-  requestedQty: number
+  requestedQty: Prisma.Decimal | number | string
   defaultUnitCredit: Prisma.Decimal | number | string
 }) {
-  if (
-    !Number.isSafeInteger(input.lineQty) ||
-    !Number.isSafeInteger(input.returnedQty) ||
-    !Number.isSafeInteger(input.requestedQty) ||
-    input.lineQty < 1 ||
-    input.returnedQty < 0 ||
-    input.requestedQty < 1
-  ) {
-    throw new Error('Supplier return quantities must be positive integers')
+  const lineQty = quantity(input.lineQty)
+  const returnedQty = quantity(input.returnedQty)
+  const requestedQty = quantity(input.requestedQty)
+  if (lineQty.lte(0) || returnedQty.isNegative() || requestedQty.lte(0)) {
+    throw new Error('Supplier return quantities must be positive')
   }
 
-  const remainingQty = input.lineQty - input.returnedQty
-  if (remainingQty < 0 || input.requestedQty > remainingQty) {
+  const remainingQty = lineQty.minus(returnedQty)
+  if (remainingQty.isNegative() || requestedQty.gt(remainingQty)) {
     throw new Error(
-      `Only ${Math.max(0, remainingQty)} unit(s) remain returnable`,
+      `Only ${quantityNumber(Prisma.Decimal.max(0, remainingQty))} unit(s) remain returnable`,
     )
   }
 
@@ -85,21 +86,19 @@ export function calculateSupplierReturnCredit(input: {
   }
 
   const creditTotal =
-    input.requestedQty === remainingQty
+    requestedQty.equals(remainingQty)
       ? remainingCredit
       : Prisma.Decimal.min(
           remainingCredit,
           decimal(input.defaultUnitCredit)
-            .mul(input.requestedQty)
+            .mul(requestedQty)
             .toDecimalPlaces(2),
         )
 
   return {
     remainingQty,
     creditTotal,
-    creditUnitCost: creditTotal
-      .div(input.requestedQty)
-      .toDecimalPlaces(6),
+    creditUnitCost: unitCost(creditTotal.div(requestedQty)),
   }
 }
 
@@ -108,26 +107,26 @@ export function preparePurchaseReceipt(
 ): PreparedPurchaseReceipt {
   const aggregated = new Map<
     string,
-    { qty: number; gross: Prisma.Decimal }
+    { qty: Prisma.Decimal; gross: Prisma.Decimal; lots: ItemLots }
   >()
 
   for (const item of dto.items) {
     const current = aggregated.get(item.variant_id) || {
-      qty: 0,
+      qty: decimal(0),
       gross: decimal(0),
+      lots: emptyLots(),
     }
-    const nextQty = current.qty + item.qty
-    if (
-      !Number.isSafeInteger(nextQty) ||
-      nextQty > 2_147_483_647
-    ) {
+    addItemLots(current.lots, item, quantity(item.qty))
+    const nextQty = current.qty.plus(quantity(item.qty))
+    if (nextQty.gt(MAX_QUANTITY)) {
       throw new Error(
         `Purchase quantity exceeds supported range for variant ${item.variant_id}`,
       )
     }
     aggregated.set(item.variant_id, {
       qty: nextQty,
-      gross: current.gross.plus(decimal(item.unit_cost).mul(item.qty)),
+      gross: current.gross.plus(decimal(item.unit_cost).mul(quantity(item.qty))),
+      lots: current.lots,
     })
   }
 
@@ -136,6 +135,7 @@ export function preparePurchaseReceipt(
       variant_id,
       qty: value.qty,
       gross: value.gross.toDecimalPlaces(2),
+      lots: value.lots,
     }))
     .sort((left, right) => left.variant_id.localeCompare(right.variant_id))
 
@@ -146,7 +146,7 @@ export function preparePurchaseReceipt(
   if (subtotal.isNegative()) {
     throw new Error('Purchase subtotal cannot be negative')
   }
-  if (subtotal.greaterThan(decimal('9999999999999999.99'))) {
+  if (subtotal.greaterThan(MAX_MONEY)) {
     throw new Error('Purchase subtotal exceeds supported monetary range')
   }
 
@@ -216,11 +216,12 @@ export function preparePurchaseReceipt(
     return {
       variant_id: line.variant_id,
       qty: line.qty,
-      unit_cost: line.gross.div(line.qty).toDecimalPlaces(6),
+      unit_cost: unitCost(line.gross.div(line.qty)),
       line_subtotal: line.gross,
       allocated_discount: allocatedDiscount,
       net_line_total: netLineTotal,
-      net_unit_cost: netLineTotal.div(line.qty).toDecimalPlaces(6),
+      net_unit_cost: unitCost(netLineTotal.div(line.qty)),
+      lots: line.lots,
     }
   })
 
@@ -259,10 +260,12 @@ export function preparePurchaseReceipt(
     ocr_source_file: dto.ocr_source_file || null,
     items: lines.map((line) => ({
       variant_id: line.variant_id,
-      qty: line.qty,
+      qty: quantityNumber(line.qty),
       line_subtotal: line.line_subtotal.toFixed(2),
       allocated_discount: line.allocated_discount.toFixed(2),
       net_line_total: line.net_line_total.toFixed(2),
+      // Only when named: a receipt without tracking keeps its exact fingerprint.
+      ...lotsFingerprint(line.lots),
     })),
   }
   const commandFingerprint = createHash('sha256')

@@ -64,17 +64,13 @@ describe('POS secure startup state', () => {
   })
 
   it('accepts a complete enrolled device and cashier session', () => {
-    // WP-007 Phase C: this fixture has no `tenant_id`, matching every
-    // terminal enrolled before this release (Phase B only backfilled the
-    // database column, not this terminal's local state). It must keep
-    // working with zero re-enrollment — tenant_id is self-healed from the
-    // next heartbeat (`reconcileDeviceTenantId`), never required at bootstrap.
     expect(
       validDevice({
         device_id: 'device-1',
         branch_id: 'branch-1',
         terminal_id: 'terminal-1',
         terminal_code: 'POS-1',
+        tenant_id: 'tenant-1',
       }),
     ).toBe(true)
 

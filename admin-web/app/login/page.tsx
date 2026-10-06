@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { ApiError } from '@/lib/api'
 import { canAccessPath, firstAccessiblePath } from '@/lib/permissions'
+import { ADMIN_APP_NAME } from '@/lib/brand'
 export default function Login(){
   const [phone,setPhone] = useState('')
   const [password,setPassword] = useState('')
@@ -38,7 +39,7 @@ export default function Login(){
   }
   return (
     <div className="card max-w-sm mx-auto mt-20">
-      <h1 className="text-xl font-bold mb-4">تسجيل الدخول – ATHR Operations</h1>
+      <h1 className="text-xl font-bold mb-4">تسجيل الدخول – {ADMIN_APP_NAME}</h1>
       <label className="text-sm" htmlFor="phone">رقم الهاتف</label>
       <input id="phone" className={`input mb-2 ${field==='phone'?'border-red-600':''}`} placeholder="01xxxxxxxxx" value={phone} onChange={e=>setPhone(e.target.value)} autoFocus aria-invalid={field==='phone'} />
       <label className="text-sm" htmlFor="password">كلمة المرور</label>

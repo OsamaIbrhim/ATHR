@@ -36,7 +36,7 @@ const me = await fetch(`${adminBase}/api/backend/auth/me`, {
 })
 await assertResponseOk(me, 'Authenticated /auth/me failed')
 const user = await me.json()
-assert(Array.isArray(user.capabilities), 'Authenticated user has no capabilities')
+assert(Array.isArray(user.permissions), 'Authenticated user has no permissions')
 
 const products = await fetch(`${adminBase}/api/backend/products?page=1&page_size=1`, {
   headers: { cookie },

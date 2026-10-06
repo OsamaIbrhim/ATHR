@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { IDEMPOTENCY_KEY_HEADER } from '@athr/contracts';
-import { RequireCapabilities } from '../auth/roles.guard';
+import { RequireFeature } from '../entitlements/entitlement.decorators';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -27,8 +27,8 @@ const IDEMPOTENCY_KEY_HEADER_NAME = IDEMPOTENCY_KEY_HEADER.toLowerCase();
  * left to whoever grants a `coupon.*` view without it — flagged, not
  * silently assumed permanent.
  */
+@RequireFeature('promotions')
 @Controller('coupons')
-@RequireCapabilities('products.read')
 export class CouponController {
   constructor(private readonly coupons: CouponService) {}
 

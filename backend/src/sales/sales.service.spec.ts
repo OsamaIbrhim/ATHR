@@ -1,3 +1,4 @@
+import { normalizeLines, saleCommandFingerprint } from './sale-command';
 import {
   BadRequestException,
   ConflictException,
@@ -6,10 +7,24 @@ import {
 } from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, contextFor } from '../identity/testing/cross-tenant-harness';
 import { SalesTaxSnapshotService } from '../tax/sales-tax-snapshot.service';
 import { Prisma } from '@prisma/client';
+import { inventoryDouble, warehouseId } from './testing/inventory-double';
+import 'reflect-metadata';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
+import { CreateSaleItemDto } from './dto/create-sale.dto';
+
+// The per-tenant counter is one real statement (covered against Postgres by
+// scripts/verify-document-sequence.cjs); these specs only need a number back.
+jest.mock('../common/document-sequence', () => ({
+  ...jest.requireActual('../common/document-sequence'),
+  nextDocumentValue: jest.fn().mockResolvedValue(1n),
+  nextDocumentNumber: jest.fn().mockImplementation((_tx: unknown, _tenant: string, key: string) =>
+    Promise.resolve(key === 'terminal' ? 'POS1' : 'R-000001')),
+}));
 
 const TAX_CODE_ID = '00000000-0000-0000-0000-0000000c0de1';
 
@@ -19,11 +34,6 @@ const TAX_CODE_ID = '00000000-0000-0000-0000-0000000c0de1';
  * `sales.sale.view-cost-margin` receives; `sales.cost-visibility.spec.ts` pins
  * the gate's own behaviour on both sides.
  */
-const costVisibilityAnswering = (allowed: boolean) =>
-  new CostVisibilityService({
-    hasPermission: async () => allowed,
-  } as unknown as PermissionPolicyService);
-const maskedCostVisibility = () => costVisibilityAnswering(false);
 
 // WP-007 Phase A: sales entry points take the resolved TenantContext first.
 const ctx = contextFor(TENANT_A);
@@ -46,11 +56,7 @@ const syncId = '66666666-6666-4666-8666-666666666666';
 const sellerId = '77777777-7777-4777-8777-777777777777';
 const cashierId = '88888888-8888-4888-8888-888888888888';
 const occurredAt = '2026-07-22T10:00:00.000Z';
-const actor = {
-  sub: cashierId,
-  role: 'cashier' as const,
-  branch_id: branchId,
-};
+const actor = actorFor('cashier', { sub: cashierId, branchId });
 
 function saleDto(overrides: Record<string, unknown> = {}) {
   return {
@@ -64,6 +70,7 @@ function saleDto(overrides: Record<string, unknown> = {}) {
     seller_name_snapshot: 'Seller One',
     offline_session_id: sessionId,
     terminal_sequence: '1',
+    invoice_number: 'POS1-000001',
     occurred_at: occurredAt,
     items: [
       {
@@ -74,11 +81,10 @@ function saleDto(overrides: Record<string, unknown> = {}) {
         sku_snapshot: 'SKU-1',
         name_ar_snapshot: 'قميص',
         name_en_snapshot: 'Shirt',
-        size_snapshot: 'M',
-        color_snapshot: 'Blue',
+        variant_label_snapshot: 'M · Blue',
       },
     ],
-    payment_method: 'cash',
+    payments: [{ method: 'cash', amount: 342 }],
     language: 'ar',
     local_total: 342,
     ...overrides,
@@ -95,30 +101,22 @@ function setupSale(options: {
   closedShift?: boolean;
   missingCashier?: boolean;
   missingSeller?: boolean;
-  /** Only the POS-response cost case needs this — see that test for why. */
-  hasCostMargin?: boolean;
+  itemType?: string;
+  uomPrecision?: number;
 } = {}) {
-  let rawCall = 0;
   const tx = {
-    $queryRaw: jest.fn().mockImplementation(() => {
-      rawCall += 1;
-      if (rawCall === 1) {
-        return Promise.resolve([
-          {
-            id: terminal.id,
-            branch_id: branchId,
-            last_sale_sequence: options.lastSequence ?? 0n,
-          },
-        ]);
-      }
-      return Promise.resolve([]);
-    }),
-    branch: {
-      findFirst: jest.fn().mockResolvedValue({
-        id: branchId,
-        code: 'BOLD-01',
-      }),
-    },
+    // The terminal claim (lock + advance + branch code); the customer upsert is
+    // the only other raw statement a sale issues.
+    $queryRaw: jest.fn().mockImplementation(() =>
+      Promise.resolve([
+        {
+          branch_id: branchId,
+          branch_code: 'BOLD-01',
+          terminal_code: 'POS1',
+          previous_sequence: options.lastSequence ?? 0n,
+        },
+      ]),
+    ),
     shift: {
       // Both the by-id lookup (sale) and the open-shift lookup (return) are
       // now tenant-scoped `findFirst` calls, so one double serves both and
@@ -144,51 +142,30 @@ function setupSale(options: {
       ),
       update: jest.fn().mockResolvedValue({}),
     },
-    user: {
-      findFirst: jest.fn().mockImplementation(({ where }) => {
-        if (where.id === sellerId) {
-          return Promise.resolve(
-            options.missingSeller
-              ? null
-              : {
-                  id: sellerId,
-                  name: 'Seller One',
-                  role: 'seller',
-                  branch_id: branchId,
-                },
-          );
-        }
-        return Promise.resolve(
-          options.missingCashier
-            ? null
-            : {
-                id: cashierId,
-                name: 'Cashier One',
-                role: 'cashier',
-                branch_id: branchId,
-              },
-        );
+    // Staff are looked up through their Membership (role + branch scope).
+    membership: {
+      findMany: jest.fn().mockImplementation(() => {
+        const scope = [
+          { scope_type: 'location', scope_ref_id: branchId, effective_from: new Date('2020-01-01'), effective_to: null },
+        ];
+        return Promise.resolve([
+          ...(options.missingCashier ? [] : [{ user_id: cashierId, role: 'cashier', access_scope_assignments: scope }]),
+          ...(options.missingSeller ? [] : [{ user_id: sellerId, role: 'seller', access_scope_assignments: scope }]),
+        ]);
       }),
     },
-    posTerminal: {
-      update: jest.fn().mockResolvedValue({}),
-    },
     salesInvoice: {
-      // Both the sync-id replay lookup and the terminal-sequence owner check
-      // are tenant-scoped findFirst calls now; discriminate on the filter.
-      findFirst: jest.fn().mockImplementation(({ where }) =>
-        Promise.resolve(where?.sync_id ? (options.existing ?? null) : null),
+      // One lookup finds both the sync-id replay and the terminal-sequence owner.
+      findMany: jest.fn().mockImplementation(() =>
+        Promise.resolve(options.existing ? [{ sync_id: syncId, ...options.existing }] : []),
       ),
-      create: jest.fn().mockImplementation(({ data }) =>
-        Promise.resolve({
-          id: 'sale-1',
-          ...data,
-          items: data.items.create.map((item: any, index: number) => ({
-            id: `sale-item-${index + 1}`,
-            sales_invoice_id: 'sale-1',
-            ...item,
-          })),
-        }),
+      create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'sale-1', ...data })),
+    },
+    salesPayment: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    customerLedgerEntry: { create: jest.fn().mockResolvedValue({}) },
+    salesInvoiceItem: {
+      createManyAndReturn: jest.fn().mockImplementation(({ data }) =>
+        Promise.resolve(data.map((item: any) => ({ ...item }))),
       ),
     },
     productVariant: {
@@ -197,6 +174,8 @@ function setupSale(options: {
           id: variantId,
           product_id: 'product-1',
           cost_price: 100,
+          item_type: options.itemType ?? 'stocked',
+          base_uom: options.uomPrecision === undefined ? null : { precision: options.uomPrecision },
           is_active: true,
           product: {
             is_active: true,
@@ -205,12 +184,6 @@ function setupSale(options: {
           },
         },
       ]),
-    },
-    inventoryStock: {
-      upsert: jest.fn().mockResolvedValue({
-        qty_on_hand: options.stockAfter ?? 8,
-        qty_reserved: options.stockReserved ?? 0,
-      }),
     },
     customer: {
       upsert: jest.fn(),
@@ -256,78 +229,29 @@ function setupSale(options: {
       ]),
     ),
   };
+  const inventory = inventoryDouble(options.stockAfter ?? 8, options.stockReserved ?? 0);
   return {
     service: new SalesService(
       prisma as any,
       pricing as any,
-      costVisibilityAnswering(options.hasCostMargin ?? false),
+      new CostVisibilityService(),
       new SalesTaxSnapshotService(),
+      inventory as any,
     ),
     prisma,
     pricing,
     tx,
+    inventory,
   };
 }
 
 function fingerprint(service: SalesService, dto: any) {
-  return (service as any).saleCommandFingerprint(
+  return saleCommandFingerprint(
     dto,
     terminal.id,
     new Date(occurredAt),
-    (service as any).normalizeLines(dto.items),
+    normalizeLines(dto.items),
   );
-}
-
-function setupReturn(alreadyReturned = 0, hasCostMargin = false) {
-  const soldItem = {
-    id: 'sale-item-1',
-    variant_id: variantId,
-    qty: 3,
-    unit_price: 150,
-    unit_cost: 100,
-    unit_tax: 21,
-  };
-  const tx = {
-    $queryRaw: jest.fn().mockResolvedValue([]),
-    shift: { findFirst: jest.fn().mockResolvedValue({ id: shiftId }) },
-    salesInvoice: {
-      findFirst: jest.fn().mockResolvedValue({
-        id: 'sale-1',
-        branch_id: branchId,
-        customer_id: null,
-        occurred_at: new Date(),
-        created_at: new Date(),
-        subtotal: 450,
-        tax_amount: 63,
-        items: [soldItem],
-      }),
-    },
-    returnItem: {
-      aggregate: jest.fn().mockResolvedValue({
-        _sum: { qty: alreadyReturned },
-      }),
-    },
-    return: {
-      create: jest.fn().mockImplementation(({ data }) =>
-        Promise.resolve({
-          id: 'return-1',
-          ...data,
-          items: data.items.create,
-        }),
-      ),
-    },
-    inventoryStock: { upsert: jest.fn().mockResolvedValue({}) },
-    productVariant: {
-      update: jest.fn().mockResolvedValue({}),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-    },
-    customer: { findUnique: jest.fn(), update: jest.fn() },
-  };
-  const prisma = { $transaction: jest.fn((callback) => callback(tx)) };
-  return {
-    service: new SalesService(prisma as any, {} as any, costVisibilityAnswering(hasCostMargin), new SalesTaxSnapshotService()),
-    tx,
-  };
 }
 
 describe('SalesService acceptance-first sale synchronization', () => {
@@ -342,8 +266,8 @@ describe('SalesService acceptance-first sale synchronization', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('persists immutable snapshots and one inventory ledger movement', async () => {
-    const { service, tx } = setupSale();
+  it('persists immutable snapshots and posts one inventory command for the whole sale', async () => {
+    const { service, tx, inventory } = setupSale();
     const result = await service.createSale(saleDto(), terminal);
 
     expect(tx.salesInvoice.create).toHaveBeenCalledWith(
@@ -354,21 +278,37 @@ describe('SalesService acceptance-first sale synchronization', () => {
           cashier_name_snapshot: 'Cashier One',
           seller_name_snapshot: 'Seller One',
           terminal_sequence: 1n,
-          items: {
-            create: [
-              expect.objectContaining({
-                sku_snapshot: 'SKU-1',
-                name_ar_snapshot: 'قميص',
-                unit_price: expect.anything(),
-              }),
-            ],
-          },
         }),
       }),
     );
+    expect(tx.salesInvoiceItem.createManyAndReturn).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          sku_snapshot: 'SKU-1',
+          name_ar_snapshot: 'قميص',
+          unit_price: expect.anything(),
+        }),
+      ],
+    });
     expect(result.items.every((item: any) => !('unit_cost' in item))).toBe(true);
-    expect(tx.inventoryStock.upsert).toHaveBeenCalledTimes(1);
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    // One statement of its own (the terminal lock); stock goes through the engine.
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(inventory.apply).toHaveBeenCalledTimes(1);
+    const [, command] = inventory.apply.mock.calls[0];
+    expect(command).toMatchObject({
+      tenantId,
+      warehouseId,
+      type: 'sale',
+      allowNegative: true,
+      idempotencyKey: `sale:${syncId}`,
+      reference: { type: 'SalesInvoice' },
+    });
+    expect(command.lines).toHaveLength(1);
+    expect(command.lines[0].qtyDelta.toString()).toBe('-2');
+    // The sale line is stamped with the warehouse average cost at the sale.
+    const line = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data[0];
+    expect(line.unit_cost.toFixed(4)).toBe('100.0000');
+    expect(line.id).toBe(command.lines[0].referenceLineId);
     expect(String(result.total)).toBe('342');
   });
 
@@ -392,51 +332,78 @@ describe('SalesService acceptance-first sale synchronization', () => {
     expect(result.warning_codes).toContain('NEGATIVE_STOCK');
   });
 
+  it('never sends a service or non-stock item to the inventory engine', async () => {
+    const { service, inventory } = setupSale({ itemType: 'service' });
+    const result = await service.createSale(saleDto(), terminal);
+
+    expect(result.warning_codes).not.toContain('NEGATIVE_STOCK');
+    expect(inventory.apply).toHaveBeenCalledTimes(1);
+    expect(inventory.apply.mock.calls[0][1].lines).toEqual([]);
+  });
+
+  it('accepts a fractional quantity for a unit that allows it and rejects it for pieces', async () => {
+    const kgDto = saleDto({
+      items: [{ ...saleDto().items[0], qty: 1.25, unit_price: 100, unit_tax: 14 }],
+      local_total: 142.5,
+    });
+    const kg = setupSale({ uomPrecision: 3, currentPrice: 100, currentTax: 14 });
+    // The mocked quote is per unit; 1.25 kg x (100 + 14) = 142.50.
+    await kg.service.createSale(kgDto, terminal);
+    expect(kg.inventory.apply.mock.calls[0][1].lines[0].qtyDelta.toString()).toBe('-1.25');
+
+    const piece = setupSale({ uomPrecision: 0, currentPrice: 100, currentTax: 14 });
+    await expect(piece.service.createSale(kgDto, terminal)).rejects.toMatchObject({
+      response: { code: 'QUANTITY_PRECISION_EXCEEDED' },
+    });
+    // No unit at all behaves like pieces: integers only.
+    const noUnit = setupSale({ currentPrice: 100, currentTax: 14 });
+    await expect(noUnit.service.createSale(kgDto, terminal)).rejects.toMatchObject({
+      response: { code: 'QUANTITY_PRECISION_EXCEEDED' },
+    });
+    expect(piece.inventory.apply).not.toHaveBeenCalled();
+  });
+
   it('accepts a sequence gap and advances the terminal high-water mark', async () => {
-    const { service, tx } = setupSale({ lastSequence: 1n });
+    const { service } = setupSale({ lastSequence: 1n });
     const result = await service.createSale(
       saleDto({ terminal_sequence: '3' }),
       terminal,
     );
 
+    // The high-water mark itself moves in the claim statement (GREATEST in SQL),
+    // which verify-inventory-engine.cjs runs against Postgres.
     expect(result.warning_codes).toContain('SEQUENCE_GAP');
-    expect(tx.posTerminal.update).toHaveBeenCalledWith({
-      where: { id: terminal.id },
-      data: { last_sale_sequence: 3n },
-    });
   });
 
   it('accepts an older delayed sequence without moving the high-water mark back', async () => {
-    const { service, tx } = setupSale({ lastSequence: 5n });
+    const { service } = setupSale({ lastSequence: 5n });
     const result = await service.createSale(
       saleDto({ terminal_sequence: '3' }),
       terminal,
     );
 
     expect(result.warning_codes).toContain('OUT_OF_ORDER_SEQUENCE');
-    expect(tx.posTerminal.update).not.toHaveBeenCalled();
   });
 
   /**
    * Unconditional, unlike every other cost mask in this codebase: `POST
    * /pos/sale` is authenticated by device token, so there is no membership for
-   * the gate to resolve. `hasCostMargin: true` is the point of the case — even
-   * an answering gate must not put cost on the wire here.
+   * the gate to resolve, so cost never goes on the wire here.
    */
-  it('never returns unit_cost on the POS sale response, whatever the gate answers', async () => {
-    const { service, tx } = setupSale({ hasCostMargin: true });
+  it('never returns unit_cost on the POS sale response', async () => {
+    const { service, tx } = setupSale();
     const result: any = await service.createSale(saleDto(), terminal);
 
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).not.toHaveProperty('unit_cost');
     // The persisted line still carries it — the ledger and the margin reports
     // are built from this row, not from the response.
-    const written = tx.salesInvoice.create.mock.calls[0][0].data.items.create[0];
+    const written = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data[0];
     expect(written.unit_cost).toBeDefined();
   });
 
   it('returns the existing invoice for an identical replay', async () => {
-    const { service, tx } = setupSale();
+    const { service, tx, inventory } = setupSale();
     const dto = saleDto();
     const existing = {
       id: 'sale-1',
@@ -449,41 +416,36 @@ describe('SalesService acceptance-first sale synchronization', () => {
       warning_codes: [],
       items: [],
     };
-    tx.salesInvoice.findFirst.mockImplementation(({ where }: any) =>
-      Promise.resolve(where?.sync_id ? existing : null),
-    );
+    tx.salesInvoice.findMany.mockResolvedValue([{ ...existing, sync_id: syncId }]);
 
     // `toEqual`, not `toBe`: the replay returns the same invoice through the
     // same cost projection as a first-time post, which is a copy rather than
     // the stored row. Identity was never what this case was pinning — that the
     // replay neither re-posts inventory nor writes a second invoice is.
-    await expect(service.createSale(dto, terminal)).resolves.toEqual(existing);
-    expect(tx.inventoryStock.upsert).not.toHaveBeenCalled();
+    await expect(service.createSale(dto, terminal)).resolves.toEqual({ ...existing, sync_id: syncId });
+    expect(inventory.apply).not.toHaveBeenCalled();
     expect(tx.salesInvoice.create).not.toHaveBeenCalled();
   });
 
   it('quarantines a reused sync id carrying different financial content', async () => {
     const { service, tx } = setupSale();
     const original = saleDto();
-    tx.salesInvoice.findFirst.mockImplementation(({ where }: any) =>
-      Promise.resolve(
-        where?.sync_id
-          ? {
-              id: 'sale-1',
-              branch_id: branchId,
-              terminal_id: terminal.id,
-              shift_id: shiftId,
-              offline_session_id: sessionId,
-              terminal_sequence: 1n,
-              command_fingerprint: fingerprint(service, original),
-              items: [],
-            }
-          : null,
-      ),
-    );
+    tx.salesInvoice.findMany.mockResolvedValue([
+      {
+        id: 'sale-1',
+        sync_id: syncId,
+        branch_id: branchId,
+        terminal_id: terminal.id,
+        shift_id: shiftId,
+        offline_session_id: sessionId,
+        terminal_sequence: 1n,
+        command_fingerprint: fingerprint(service, original),
+        items: [],
+      },
+    ]);
 
     await expect(
-      service.createSale(saleDto({ payment_method: 'card' }), terminal),
+      service.createSale(saleDto({ payments: [{ method: 'card', amount: 342 }] }), terminal),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
@@ -519,124 +481,258 @@ describe('SalesService acceptance-first sale synchronization', () => {
     });
   });
 
-  it('rejects only an internally inconsistent immutable local total', async () => {
+  it('reconciles a closed shift by the cash tendered only, not by the whole total', async () => {
+    const { service, tx } = setupSale({ closedShift: true });
+    await service.createSale(saleDto({ payments: [{ method: 'cash', amount: 100 }, { method: 'card', amount: 242 }] }), terminal);
+    expect(tx.shift.update.mock.calls[0][0].data.expected_cash.increment.toString()).toBe('100');
+
+    const cardOnly = setupSale({ closedShift: true });
+    await cardOnly.service.createSale(saleDto({ payments: [{ method: 'card', amount: 342 }] }), terminal);
+    expect(cardOnly.tx.shift.update).not.toHaveBeenCalled();
+  });
+
+  it('accepts a total that does not match its lines: the till total is stored, with a warning', async () => {
     const { service, tx } = setupSale();
-    await expect(
-      service.createSale(saleDto({ local_total: 999 }), terminal),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(tx.salesInvoice.create).not.toHaveBeenCalled();
+    const result = await service.createSale(saleDto({ local_total: 999 }), terminal);
+    expect(result.warning_codes).toContain('LOCAL_TOTAL_MISMATCH');
+    expect(tx.salesInvoice.create.mock.calls[0][0].data.total.toString()).toBe('999');
+    expect(tx.salesInvoice.create.mock.calls[0][0].data.subtotal.toString()).toBe('300');
+  });
+
+  it('stores one row per tender, in order, with the cash handed over', async () => {
+    const { service, tx } = setupSale();
+    const result = await service.createSale(
+      saleDto({ payments: [{ method: 'cash', amount: 300, tendered: 500 }, { method: 'card', amount: 42, reference: 'R1' }] }),
+      terminal,
+    );
+    const rows = tx.salesPayment.createMany.mock.calls[0][0].data;
+    expect(rows.map((row: any) => [row.sequence, row.method, row.amount.toString(), row.tendered?.toString() ?? null])).toEqual([
+      [1, 'cash', '300', '500'],
+      [2, 'card', '42', null],
+    ]);
+    expect(rows.every((row: any) => row.sales_invoice_id === result.id && row.tenant_id === tenantId)).toBe(true);
+    expect(result.warning_codes).not.toContain('PAYMENT_TOTAL_MISMATCH');
+  });
+
+  it('accepts payments that do not add up, and a method the tenant disabled, with warnings', async () => {
+    const { service, tx } = setupSale();
+    const result = await service.createSale(saleDto({ payments: [{ method: 'bank_transfer', amount: 100 }] }), terminal);
+    expect(result.warning_codes).toEqual(expect.arrayContaining(['PAYMENT_TOTAL_MISMATCH', 'PAYMENT_METHOD_DISABLED']));
+    expect(tx.salesPayment.createMany).toHaveBeenCalled();
+  });
+
+  describe('sales on credit', () => {
+    const creditSale = (extra: Record<string, unknown> = {}) =>
+      saleDto({ customer_phone: '01012345678', payments: [{ method: 'cash', amount: 142 }, { method: 'credit', amount: 200 }], ...extra });
+    /** The claim statement answers first, the customer upsert second. */
+    const withCustomer = (setup: ReturnType<typeof setupSale>, customer: { balance: number; credit_limit: number | null }) => {
+      const claim = {
+        branch_id: branchId, branch_code: 'BOLD-01', terminal_code: 'POS1', settings: {}, previous_sequence: 0n,
+      };
+      setup.tx.$queryRaw.mockReset();
+      setup.tx.$queryRaw.mockResolvedValueOnce([claim]).mockResolvedValueOnce([{ id: 'customer-1', ...customer }]);
+    };
+
+    it('books the credit part on the customer and writes one ledger entry with the balance it produced', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 200, credit_limit: null });
+      const result = await setup.service.createSale(creditSale(), terminal);
+      const upsert = setup.tx.$queryRaw.mock.calls[1];
+      expect(upsert[0].join('?')).toContain('"balance" = "Customer"."balance" + EXCLUDED."balance"');
+      expect(upsert.slice(1).map((value: unknown) => String(value))).toContain('200');
+      expect(setup.tx.customerLedgerEntry.create).toHaveBeenCalledTimes(1);
+      const entry = setup.tx.customerLedgerEntry.create.mock.calls[0][0].data;
+      expect([entry.type, entry.amount.toString(), entry.balance_after.toString(), entry.customer_id, entry.sales_invoice_id]).toEqual([
+        'sale_credit', '200', '200', 'customer-1', result.id,
+      ]);
+      expect(result.warning_codes).not.toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+    });
+
+    it('accepts a credit sale beyond the credit limit, with a warning', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 600, credit_limit: 500 });
+      const result = await setup.service.createSale(creditSale(), terminal);
+      expect(result.warning_codes).toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+      expect(setup.tx.customerLedgerEntry.create).toHaveBeenCalled();
+    });
+
+    it('accepts credit without a customer, with a warning and no ledger entry', async () => {
+      const { service, tx } = setupSale();
+      const result = await service.createSale(creditSale({ customer_phone: undefined }), terminal);
+      expect(result.warning_codes).toContain('CREDIT_WITHOUT_CUSTOMER');
+      expect(tx.customerLedgerEntry.create).not.toHaveBeenCalled();
+    });
+
+    it('writes no ledger entry for a sale without credit', async () => {
+      const setup = setupSale();
+      withCustomer(setup, { balance: 0, credit_limit: 10 });
+      const result = await setup.service.createSale(saleDto({ customer_phone: '01012345678' }), terminal);
+      expect(setup.tx.customerLedgerEntry.create).not.toHaveBeenCalled();
+      expect(result.warning_codes).not.toContain('CUSTOMER_CREDIT_LIMIT_EXCEEDED');
+    });
+  });
+
+  describe('discounts', () => {
+    const lineWith = (discount?: unknown) => [{ ...saleDto().items[0], discount }];
+    const tenPercent = () =>
+      saleDto({ items: lineWith({ type: 'percent', value: 10 }), payments: [{ method: 'cash', amount: 307.8 }], local_total: 307.8 });
+    const halfOff = () =>
+      saleDto({ items: lineWith({ type: 'percent', value: 50 }), payments: [{ method: 'cash', amount: 171 }], local_total: 171 });
+
+    it('stores the discount and the tax after it on the line, and the discount total on the invoice', async () => {
+      const { service, tx } = setupSale();
+      const result = await service.createSale(tenPercent(), terminal);
+      const line = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data[0];
+      expect([line.unit_price.toString(), line.unit_tax.toString(), line.discount_amount.toString(), line.tax_amount.toString()]).toEqual(['150', '21', '30', '37.8']);
+      const invoice = tx.salesInvoice.create.mock.calls[0][0].data;
+      expect([invoice.subtotal.toString(), invoice.discount_amount.toString(), invoice.tax_amount.toString(), invoice.total.toString()]).toEqual(['300', '30', '37.8', '307.8']);
+      expect(result.warning_codes).not.toContain('LOCAL_TOTAL_MISMATCH');
+      expect(result.warning_codes).not.toContain('DISCOUNT_ABOVE_LIMIT');
+    });
+
+    it('records the tax snapshot over the discounted base', async () => {
+      const { service, tx } = setupSale();
+      await service.createSale(tenPercent(), terminal);
+      const snapshot = tx.salesTaxSnapshot.createMany.mock.calls[0][0].data[0];
+      expect([snapshot.base_amount.toString(), snapshot.tax_amount.toString()]).toEqual(['270', '37.8']);
+    });
+
+    it('accepts a discount above the cashier limit, flagged', async () => {
+      const { service } = setupSale();
+      expect((await service.createSale(halfOff(), terminal)).warning_codes).toContain('DISCOUNT_ABOVE_LIMIT');
+    });
+
+    it('lets a manager (override) discount beyond the limit without a flag', async () => {
+      const { service, tx } = setupSale();
+      tx.membership.findMany.mockImplementation(() =>
+        Promise.resolve([
+          {
+            user_id: cashierId,
+            role: 'location_manager',
+            granted_permissions: [],
+            revoked_permissions: [],
+            access_scope_assignments: [{ scope_type: 'location', scope_ref_id: branchId, effective_from: new Date('2020-01-01'), effective_to: null }],
+          },
+        ]),
+      );
+      expect((await service.createSale(halfOff(), terminal)).warning_codes).not.toContain('DISCOUNT_ABOVE_LIMIT');
+    });
+
+    it('merges two lines of one variant that carry different discounts instead of refusing the sale', async () => {
+      const { service, tx } = setupSale();
+      const base = saleDto().items[0];
+      await service.createSale(
+        saleDto({
+          items: [{ ...base, qty: 1, discount: { type: 'amount', value: 10 } }, { ...base, qty: 1 }],
+          payments: [{ method: 'cash', amount: 330.6 }],
+          local_total: 330.6,
+        }),
+        terminal,
+      );
+      const rows = tx.salesInvoiceItem.createManyAndReturn.mock.calls[0][0].data;
+      expect(rows).toHaveLength(1);
+      expect([rows[0].qty.toString(), rows[0].discount_amount.toString()]).toEqual(['2', '10']);
+    });
+
+    it('fingerprints the discounts, and leaves a sale without any untouched', () => {
+      const { service } = setupSale();
+      const plain = fingerprint(service, saleDto());
+      expect(fingerprint(service, saleDto({ items: lineWith({ type: 'amount', value: 5 }) }))).not.toBe(plain);
+      expect(fingerprint(service, saleDto({ discount: { type: 'percent', value: 5 } }))).not.toBe(plain);
+      expect(fingerprint(service, saleDto({ items: lineWith(undefined) }))).toBe(plain);
+    });
+  });
+
+  it('stores the printed invoice number verbatim', async () => {
+    const { service } = setupSale();
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.invoice_number).toBe('POS1-000001');
+    expect(result.warning_codes).not.toContain('INVOICE_NUMBER_REASSIGNED');
+  });
+
+  it('prints {terminal_code}-{sequence} when the till sent no usable number', async () => {
+    const { service } = setupSale();
+    const result = await service.createSale(saleDto({ invoice_number: undefined, terminal_sequence: '7' }), terminal);
+    expect(result.invoice_number).toBe('POS1-000007');
+    expect(result.warning_codes).toContain('INVOICE_NUMBER_REASSIGNED');
+  });
+
+  it('stores a sale whose number is already taken under a suffix and warns, never refuses', async () => {
+    const { service, tx } = setupSale();
+    tx.salesInvoice.findMany.mockResolvedValue([
+      { sync_id: 'another-sync', invoice_number: 'POS1-000001' },
+      { sync_id: 'third-sync', invoice_number: 'POS1-000001-2' },
+    ]);
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.invoice_number).toBe('POS1-000001-3');
+    expect(result.warning_codes).toContain('INVOICE_NUMBER_REASSIGNED');
   });
 });
 
-describe('SalesService returns', () => {
-  it('rejects an item that was not sold on the original invoice', async () => {
-    const { service } = setupReturn();
-    await expect(
-      service.createReturn(
-      ctx,
-        {
-          original_invoice_id: 'sale-1',
-          items: [{ sales_invoice_item_id: 'not-on-sale', qty: 1 }],
-        },
-        actor,
-      ),
-    ).rejects.toBeInstanceOf(BadRequestException);
+describe('SalesService tracked items', () => {
+  const withLots = (item: Record<string, unknown>) => saleDto({ items: [{ ...saleDto().items[0], ...item }] });
+
+  it('hands the serials and the picked batch of a line to the engine', async () => {
+    const serial = setupSale();
+    await serial.service.createSale(withLots({ serials: ['S1', 'S2'] }), terminal);
+    expect(serial.inventory.apply.mock.calls[0][1].lines[0].lots).toEqual({ serials: ['S1', 'S2'] });
+
+    const batch = setupSale();
+    await batch.service.createSale(withLots({ batch_no: 'LOT-7' }), terminal);
+    const [entry] = batch.inventory.apply.mock.calls[0][1].lines[0].lots.batches;
+    expect(entry.batchNo).toBe('LOT-7');
+    expect(entry.qty.toString()).toBe('2');
   });
 
-  it('rejects quantities greater than the returnable quantity', async () => {
-    const { service } = setupReturn(2);
-    await expect(
-      service.createReturn(
-      ctx,
-        {
-          original_invoice_id: 'sale-1',
-          items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        },
-        actor,
-      ),
-    ).rejects.toBeInstanceOf(ConflictException);
+  it('sends no lots at all for a line that names none (a POS without tracking)', async () => {
+    const { service, inventory } = setupSale();
+    await service.createSale(saleDto(), terminal);
+    expect(inventory.apply.mock.calls[0][1].lines[0]).not.toHaveProperty('lots');
   });
 
-  it('links a POS return to the currently open shift', async () => {
-    const { service, tx } = setupReturn();
-    const result = await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        reason: 'Wrong size',
-      },
-      actor,
-    );
-
-    expect(tx.return.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          branch_id: branchId,
-          shift_id: shiftId,
-          created_by: cashierId,
-        }),
+  it('merges the serials and batches of duplicate lines of one variant', async () => {
+    const line = saleDto().items[0];
+    const { service, inventory } = setupSale();
+    await service.createSale(
+      saleDto({
+        items: [
+          { ...line, qty: 1, serials: ['A'], batch_no: 'X' },
+          { ...line, qty: 1, serials: ['B', 'A'], batch_no: 'Y' },
+        ],
       }),
+      terminal,
     );
-    expect(String(result.refund_total)).toBe('342');
+    const lots = inventory.apply.mock.calls[0][1].lines[0].lots;
+    expect(lots.serials).toEqual(['A', 'B']);
+    expect(lots.batches.map((batch: any) => [batch.batchNo, batch.qty.toString()])).toEqual([['X', '1'], ['Y', '1']]);
   });
 
-  /**
-   * BR-CST-101 / Matrix §17 §51. `ReturnItem.unit_cost` is the sale line's cost
-   * carried onto the return, so the return response is the same disclosure as
-   * `GET /sales/:id` under a different table — see `sales.cost-visibility.spec.ts`
-   * for the read-path half.
-   */
-  it('strips unit_cost from the return response for an actor without cost/margin visibility', async () => {
-    const { service, tx } = setupReturn();
-    const result: any = await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        reason: 'Wrong size',
-      },
-      actor,
+  it('records what the engine caveats about serials and batches as warning codes, never as a refusal', async () => {
+    const { service, inventory } = setupSale();
+    inventory.apply.mockImplementation(async (_tx: unknown, command: any) =>
+      command.lines.map((line: any) => ({
+        variantId: line.variantId,
+        qtyBefore: new Prisma.Decimal(5),
+        qtyAfter: new Prisma.Decimal(3),
+        reserved: new Prisma.Decimal(0),
+        avgCostBefore: new Prisma.Decimal(100),
+        avgCost: new Prisma.Decimal(100),
+        warnings: ['SERIAL_NOT_CAPTURED', 'SERIAL_NOT_IN_STOCK', 'BATCH_UNALLOCATED'],
+      })),
     );
-
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]).not.toHaveProperty('unit_cost');
-    // Only the response is projected — the written row keeps the true cost.
-    const written = tx.return.create.mock.calls[0][0].data.items.create[0];
-    expect(Number(written.unit_cost)).toBe(100);
+    const result = await service.createSale(saleDto(), terminal);
+    expect(result.warning_codes).toEqual(['BATCH_UNALLOCATED', 'SERIAL_NOT_CAPTURED', 'SERIAL_NOT_IN_STOCK']);
   });
 
-  it('returns unit_cost on a return to an actor holding cost/margin visibility', async () => {
-    const { service } = setupReturn(0, true);
-    const result: any = await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        reason: 'Wrong size',
-      },
-      // `membership_role` is what the gate resolves the grant against; the
-      // module's other cases omit it, which is why they mask regardless.
-      { ...actor, membership_role: 'location_manager' } as any,
-    );
-
-    expect(Number(result.items[0].unit_cost)).toBe(100);
+  it('cleans serials instead of validating them: garbage never blocks an upload', () => {
+    const dto = (serials: unknown, batch_no?: unknown) =>
+      plainToInstance(CreateSaleItemDto, { ...saleDto().items[0], serials, batch_no });
+    expect(dto([' A ', '', 'A', 7, null, {}, 'x'.repeat(192)]).serials).toEqual(['A', '7']);
+    expect(dto('not-an-array').serials).toBeUndefined();
+    expect(dto([]).serials).toBeUndefined();
+    expect(dto(undefined, '  ').batch_no).toBeUndefined();
+    expect(dto(undefined, ' L1 ').batch_no).toBe('L1');
+    expect(validateSync(dto(['A', ''], 42), { whitelist: true, forbidNonWhitelisted: true })).toEqual([]);
   });
 
-  it('masks the return response when the actor carries no membership_role, gate permissive', async () => {
-    // Fail-closed: no membership means no resolvable grant, so the answer is
-    // "no" even against a gate that would otherwise allow it.
-    const { service } = setupReturn(0, true);
-    const result: any = await service.createReturn(
-      ctx,
-      {
-        original_invoice_id: 'sale-1',
-        items: [{ sales_invoice_item_id: 'sale-item-1', qty: 2 }],
-        reason: 'Wrong size',
-      },
-      actor,
-    );
-
-    expect(result.items[0]).not.toHaveProperty('unit_cost');
-  });
 });

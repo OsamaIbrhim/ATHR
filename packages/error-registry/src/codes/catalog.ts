@@ -63,4 +63,26 @@ export const CATALOG_ERROR_CODES = [
     severity: 'error',
     auditRequired: true,
   },
+  {
+    // W2a: a product type used by products can only gain attributes.
+    code: 'CATALOG_PRODUCT_TYPE_IN_USE',
+    category: 'state_conflict',
+    defaultHttpStatus: 409,
+    retryable: false,
+    retryMode: 'after_user_action',
+    outcome: 'no_effect',
+    severity: 'warning',
+    auditRequired: false,
+  },
+  {
+    // W2a: a barcode is unique within the tenant.
+    code: 'CATALOG_BARCODE_CONFLICT',
+    category: 'state_conflict',
+    defaultHttpStatus: 409,
+    retryable: false,
+    retryMode: 'after_user_action',
+    outcome: 'no_effect',
+    severity: 'warning',
+    auditRequired: false,
+  },
 ] as const satisfies readonly ErrorMetadata[];

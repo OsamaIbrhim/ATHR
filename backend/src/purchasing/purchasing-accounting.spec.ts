@@ -64,9 +64,10 @@ describe('purchase accounting preparation', () => {
     });
 
     expect(prepared.lines).toHaveLength(1);
-    expect(prepared.lines[0].qty).toBe(3);
+    expect(prepared.lines[0].qty.toString()).toBe('3');
     expect(prepared.lines[0].line_subtotal.toFixed(2)).toBe('31.00');
-    expect(prepared.lines[0].unit_cost.toFixed(6)).toBe('10.333333');
+    // Unit costs are Decimal(14,4); the exact line value stays 31.00.
+    expect(prepared.lines[0].unit_cost.toFixed(4)).toBe('10.3333');
   });
 
   it('normalizes supplier invoice identity and fingerprints canonical data', () => {

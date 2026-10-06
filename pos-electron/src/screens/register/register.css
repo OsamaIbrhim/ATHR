@@ -1,0 +1,15 @@
+/* Register additions (W3): line and invoice discounts. */
+.line-discount{justify-self:start;margin-top:3px;border:1px dashed #9a9a9a;background:#fff;border-radius:7px;padding:2px 8px;font-size:11px;color:#444}
+.line-discount.applied{border-style:solid;border-color:#111;background:#111;color:#fff;font-weight:700}
+.invoice-discount{border:1px dashed #9a9a9a;background:#fff;border-radius:9px;padding:6px 10px;color:#333;font-weight:700}
+.invoice-discount.applied{border-style:solid;border-color:#111;background:#111;color:#fff}
+.cart-summary .discount-row b{color:#05603a}
+.discount-form{display:grid;gap:10px}
+.discount-type{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.discount-type button{border:1px solid #d0d5dd;border-radius:11px;background:#fff;padding:11px;font-weight:700}
+.discount-type button.active{border-color:#111;background:#111;color:#fff}
+.discount-form input{font-size:26px;font-weight:800;text-align:center;min-height:56px}
+.discount-limit{margin:0;font-size:13px}
+.exchange-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#fffaeb;border-bottom:1px solid #b54708;padding:10px 14px;color:#7a2e0e}
+.exchange-banner>div{display:grid;gap:2px}
+.exchange-banner span{font-size:12px}

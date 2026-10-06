@@ -209,16 +209,14 @@ export interface ProductVariantRow {
   tenant_id: string;
   product_id: string;
   sku: string;
-  barcode_ean13: string | null;
-  barcode_internal: string | null;
-  size: string | null;
-  color: string | null;
-  style: string | null;
+  attributes: unknown;
+  label: string;
   cost_price: Prisma.Decimal;
   return_count: number;
   qa_flag: boolean;
   is_active: boolean;
   item_type: string;
+  tracking: string;
   base_uom_id: string | null;
   /**
    * WP-008 Phase C (OD-CAT-014): the variant-level tax OVERRIDE. Defaults to
@@ -241,16 +239,14 @@ export function aProductVariant(
       tax_category_id: null,
       product_id: randomUUID(),
       sku: `SKU-${nextSequence()}`,
-      barcode_ean13: null,
-      barcode_internal: null,
-      size: null,
-      color: null,
-      style: null,
+      attributes: {},
+      label: '',
       cost_price: zero(),
       return_count: 0,
       qa_flag: false,
       is_active: true,
       item_type: 'stocked',
+      tracking: 'none',
       base_uom_id: null,
       created_at: new Date(),
     },
@@ -316,13 +312,14 @@ export function aSupplier(overrides: FixtureOverrides<SupplierRow> = {}): BuiltR
   );
 }
 
-/** `InventoryStock` is keyed on `@@id([branch_id, variant_id])` — it has no `id`. */
+/** `InventoryStock` is keyed on `@@id([warehouse_id, variant_id])` — it has no `id`. */
 export interface InventoryStockRow {
   tenant_id: string;
-  branch_id: string;
+  warehouse_id: string;
   variant_id: string;
   qty_on_hand: number;
   qty_reserved: number;
+  avg_cost: number;
   last_sold_at: Date | null;
 }
 
@@ -332,10 +329,11 @@ export function anInventoryStock(
   return withOverrides<InventoryStockRow>(
     {
       tenant_id: TENANT_A,
-      branch_id: randomUUID(),
+      warehouse_id: randomUUID(),
       variant_id: randomUUID(),
       qty_on_hand: 0,
       qty_reserved: 0,
+      avg_cost: 0,
       last_sold_at: null,
     },
     overrides,
@@ -365,12 +363,40 @@ export interface SalesInvoiceRow {
   discount_amount: Prisma.Decimal;
   tax_amount: Prisma.Decimal;
   total: Prisma.Decimal;
-  payment_method: string;
   language: string;
   sync_id: string | null;
   occurred_at: Date;
   received_at: Date;
   created_at: Date;
+}
+
+export interface SalesPaymentRow {
+  id: string;
+  tenant_id: string;
+  sales_invoice_id: string;
+  sequence: number;
+  method: string;
+  amount: Prisma.Decimal;
+  tendered: Prisma.Decimal | null;
+  reference: string | null;
+}
+
+export function aSalesPayment(
+  overrides: FixtureOverrides<SalesPaymentRow> = {},
+): BuiltRow<SalesPaymentRow> {
+  return withOverrides<SalesPaymentRow>(
+    {
+      id: randomUUID(),
+      tenant_id: TENANT_A,
+      sales_invoice_id: randomUUID(),
+      sequence: 1,
+      method: 'cash',
+      amount: zero(),
+      tendered: null,
+      reference: null,
+    },
+    overrides,
+  );
 }
 
 export function aSalesInvoice(
@@ -401,7 +427,6 @@ export function aSalesInvoice(
       discount_amount: zero(),
       tax_amount: zero(),
       total: zero(),
-      payment_method: 'cash',
       language: 'ar',
       sync_id: null,
       occurred_at: now,

@@ -1,3 +1,4 @@
+import { ProductTypesService } from '../catalog/product-types.service';
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { ProductsRepository } from './products.repository';
@@ -7,6 +8,7 @@ import { TENANT_A, TENANT_B, contextFor, fakePrisma } from '../identity/testing/
 import { aBrand, aProduct, aProductVariant, aTaxCategory, aTaxCode } from '../identity/testing/fixture-builders';
 import { TaxCodeService } from '../tax/tax-code.service';
 import { TaxCodeRepository } from '../tax/tax-code.repository';
+import { fullAccess, unlimited } from '../entitlements/testing';
 
 /** WP-007 Phase A §A.3.6 / WP-008 Phase A — cross-tenant isolation for the `products` module. */
 
@@ -48,6 +50,7 @@ function setup() {
       }),
     ],
     inventoryStock: [],
+    productBarcode: [],
     inventoryMovement: [],
     salesInvoiceItem: [],
     purchaseInvoiceItem: [],
@@ -64,7 +67,7 @@ function setup() {
   });
   const repository = new ProductsRepository(prisma);
   const brands = new BrandsRepository(prisma);
-  return { prisma, repository, brands, service: new ProductsService(repository, brands, new TaxCodeService(new TaxCodeRepository(prisma))) };
+  return { prisma, repository, brands, service: new ProductsService(repository, brands, new TaxCodeService(new TaxCodeRepository(prisma)), unlimited, new ProductTypesService(prisma), fullAccess) };
 }
 
 describe('products — cross-tenant isolation', () => {
@@ -132,8 +135,7 @@ describe('products — cross-tenant isolation', () => {
     const { service } = setup();
     const created: any = await service.createProduct(contextFor(TENANT_B), {
       name_en: 'New',
-      sku: 'SKU-NEW',
-      cost_price: 5,
+      variants: [{ sku: 'SKU-NEW', cost_price: 5 }],
     } as any);
 
     expect(created.tenant_id).toBe(TENANT_B);
@@ -150,8 +152,7 @@ describe('products — cross-tenant isolation', () => {
     await expect(
       service.createProduct(contextFor(TENANT_B), {
         name_en: 'New',
-        sku: 'SKU-NEW-2',
-        cost_price: 5,
+        variants: [{ sku: 'SKU-NEW-2', cost_price: 5 }],
         brand_id: BRAND_A,
       } as any),
     ).rejects.toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
@@ -161,8 +162,7 @@ describe('products — cross-tenant isolation', () => {
     const { service } = setup();
     const created: any = await service.createProduct(contextFor(TENANT_A), {
       name_en: 'New',
-      sku: 'SKU-NEW-3',
-      cost_price: 5,
+      variants: [{ sku: 'SKU-NEW-3', cost_price: 5 }],
       brand_id: BRAND_A,
     } as any);
     expect(created.brand_id).toBe(BRAND_A);

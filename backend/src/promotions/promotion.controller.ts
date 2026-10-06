@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
-import { RequireCapabilities } from '../auth/roles.guard';
+import { RequireFeature } from '../entitlements/entitlement.decorators';
 import { RequirePermission } from '../identity/permission.guard';
 import { TenantCtx } from '../identity/tenant-context.decorator';
 import type { TenantContext } from '../identity/tenant-context.type';
@@ -21,8 +21,8 @@ type AuthedRequest = Request & { user: AuthenticatedUser };
  * instead (gated by the pre-existing `pricing.price-book.view`), not through
  * a dedicated simulate endpoint.
  */
+@RequireFeature('promotions')
 @Controller('promotions')
-@RequireCapabilities('products.read')
 export class PromotionController {
   constructor(private readonly promotions: PromotionService) {}
 

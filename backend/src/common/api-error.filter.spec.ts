@@ -45,6 +45,15 @@ describe('friendly API errors', () => {
     });
   });
 
+  it('passes the machine-readable data of a structured error through', () => {
+    expect(toFriendlyError(new UnprocessableEntityException({
+      code: 'X_IN_THE_WAY',
+      message: 'in the way',
+      message_ar: 'في الطريق',
+      data: { record_id: 'abc' },
+    }))).toMatchObject({ code: 'X_IN_THE_WAY', data: { record_id: 'abc' } });
+  });
+
   it('preserves retry metadata for transient structured failures', () => {
     expect(toFriendlyError(new ServiceUnavailableException({
       code: 'SALE_TRANSACTION_EXPIRED',

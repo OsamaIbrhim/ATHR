@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
 import type { AccessScopeType, Invitation, Membership, MembershipRole } from '@prisma/client';
 import { DomainFailure, Result, fail, ok } from '@athr/domain-core';
+import { LimitService } from '../entitlements/limit.service';
 import { AccessScopeService } from './access-scope.service';
 import { InvitationFilters, InvitationRepository } from './invitation.repository';
 import { MembershipRepository } from './membership.repository';
@@ -41,6 +42,7 @@ export class InvitationService {
     private readonly repository: InvitationRepository,
     private readonly membershipRepository: MembershipRepository,
     private readonly accessScope: AccessScopeService,
+    private readonly limits: LimitService,
   ) {}
 
   async findById(context: TenantContext, id: string): Promise<Invitation | null> {
@@ -115,7 +117,7 @@ export class InvitationService {
     const tenantScope: TenantScope = { tenantId: invitation.tenant_id as TenantContext['tenantId'] };
 
     // BR-MEM-100: at most one active Membership per (Identity, Tenant) pair.
-    const existingMembership = await this.membershipRepository.findByIdentity(tenantScope, input.acceptingIdentityId);
+    const existingMembership = await this.membershipRepository.findByUser(tenantScope, input.acceptingIdentityId);
     if (existingMembership && existingMembership.status !== 'deactivated') {
       return fail({
         code: 'MEMBERSHIP_ALREADY_EXISTS',
@@ -123,8 +125,10 @@ export class InvitationService {
       });
     }
 
+    await this.limits.assertCanCreate(invitation.tenant_id, 'users');
+
     const membership = await this.membershipRepository.save(tenantScope, {
-      identityId: input.acceptingIdentityId,
+      userId: input.acceptingIdentityId,
       role: invitation.role,
       status: 'active',
     });

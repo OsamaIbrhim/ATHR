@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { OffersService } from './offers.service';
 import { PricingService } from '../pricing/pricing.service';
 import { CostVisibilityService } from '../pricing/cost-visibility.service';
-import { PermissionPolicyService } from '../identity/permission-policy.service';
+import { actorFor } from '../auth/testing/actors';
 import { TENANT_A, contextFor, fakePrisma } from '../identity/testing/cross-tenant-harness';
 import { aProductVariant, aTaxCategory, aTaxCode, anInventoryStock, taxCategoryIdFor } from '../identity/testing/fixture-builders';
 import { TaxResolutionService } from '../tax/tax-resolution.service';
@@ -28,21 +28,22 @@ import { TaxResolutionService } from '../tax/tax-resolution.service';
 const ctx = contextFor(TENANT_A);
 const VARIANT_ID = randomUUID();
 const BRANCH_ID = randomUUID();
+const WAREHOUSE_ID = randomUUID();
 const UNIT_PRICE = 100;
 /** Floor loses the max: suggested = max(50, 100 x 0.90) = 90, strictly above cost. */
 const COST_PRICE = 50;
 /** Floor wins the max: suggested = max(95, 100 x 0.90) = 95, i.e. cost exactly. */
 const CLAMPING_COST_PRICE = 95;
 
-function actor(overrides: Record<string, unknown> = {}) {
-  return {
+/** Set by `setup()`: whether the actors built by `actor()` may see cost/margin. */
+let canSeeCost = true;
+
+function actor() {
+  return actorFor('location_manager', {
     sub: randomUUID(),
-    role: 'branch_manager',
-    branch_id: BRANCH_ID,
-    membership_role: 'location_manager',
-    capabilities: [],
-    ...overrides,
-  } as any;
+    branchId: BRANCH_ID,
+    revoked: canSeeCost ? [] : ['pricing.cost.view', 'pricing.margin.view'],
+  });
 }
 
 /** `hasCostView` drives the gate directly — see the block comment above. */
@@ -62,14 +63,18 @@ function setup(
       inventoryStock: options.existingSuggestion
         ? []
         : [
-            anInventoryStock({
+            {
+              ...anInventoryStock({
               tenant_id: TENANT_A,
-              branch_id: BRANCH_ID,
+              warehouse_id: WAREHOUSE_ID,
               variant_id: VARIANT_ID,
               qty_on_hand: 7,
               // Comfortably past the 90-day slow-mover cutoff.
               last_sold_at: new Date(Date.now() - 200 * 86400000),
-            }),
+              }),
+              // Pre-hydrated relation (the fake has no `include`): the branch default warehouse.
+              warehouse: { branch_id: BRANCH_ID, is_default: true },
+            },
           ],
       offerSuggestion: options.existingSuggestion
         ? [
@@ -116,18 +121,20 @@ function setup(
       ],
       auditLog: [],
     },
-    { priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } } },
+    {
+      priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } },
+      inventoryStock: { warehouse: { table: 'warehouse', localKey: 'warehouse_id' } },
+    },
   );
-  const costVisibility = new CostVisibilityService({
-    hasPermission: async () => options.hasCostView,
-  } as unknown as PermissionPolicyService);
+  canSeeCost = options.hasCostView;
+  const costVisibility = new CostVisibilityService();
   return { prisma, service: new OffersService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), costVisibility) };
 }
 
 describe('OffersService — the suggestion floor is never disclosed without cost/margin visibility', () => {
   it('strips min_allowed_price from a freshly generated suggestion', async () => {
     const { service } = setup({ hasCostView: false });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).not.toHaveProperty('min_allowed_price');
@@ -138,7 +145,7 @@ describe('OffersService — the suggestion floor is never disclosed without cost
 
   it('returns min_allowed_price to an actor holding cost/margin visibility', async () => {
     const { service } = setup({ hasCostView: true });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(rows).toHaveLength(1);
     expect(Number(rows[0].min_allowed_price)).toBe(COST_PRICE);
@@ -146,7 +153,7 @@ describe('OffersService — the suggestion floor is never disclosed without cost
 
   it('still persists the true floor for audit even when the response masks it', async () => {
     const { prisma, service } = setup({ hasCostView: false });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(rows[0]).not.toHaveProperty('min_allowed_price');
     expect(prisma.offerSuggestion.rows).toHaveLength(1);
@@ -156,7 +163,7 @@ describe('OffersService — the suggestion floor is never disclosed without cost
 
   it('strips min_allowed_price from an already-pending suggestion on the read path', async () => {
     const { service } = setup({ hasCostView: false, existingSuggestion: true });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).not.toHaveProperty('min_allowed_price');
@@ -195,7 +202,7 @@ describe('OffersService — the suggestion floor is never disclosed without cost
 describe('OffersService — suggested_price is masked only where it equals the cost-derived floor', () => {
   it('strips suggested_price when it clamped to the floor and the actor lacks visibility', async () => {
     const { service } = setup({ hasCostView: false, costPrice: CLAMPING_COST_PRICE });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).not.toHaveProperty('suggested_price');
@@ -211,7 +218,7 @@ describe('OffersService — suggested_price is masked only where it equals the c
       existingSuggestion: true,
       costPrice: CLAMPING_COST_PRICE,
     });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).not.toHaveProperty('suggested_price');
@@ -219,7 +226,7 @@ describe('OffersService — suggested_price is masked only where it equals the c
 
   it('returns a clamped suggested_price to an actor holding cost/margin visibility', async () => {
     const { service } = setup({ hasCostView: true, costPrice: CLAMPING_COST_PRICE });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(Number(rows[0].suggested_price)).toBe(CLAMPING_COST_PRICE);
     expect(Number(rows[0].min_allowed_price)).toBe(CLAMPING_COST_PRICE);
@@ -227,7 +234,7 @@ describe('OffersService — suggested_price is masked only where it equals the c
 
   it('keeps suggested_price on the current_price x 0.90 branch even without visibility', async () => {
     const { service } = setup({ hasCostView: false });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     // 90 is derived from current_price alone, which the caller already holds.
     expect(Number(rows[0].suggested_price)).toBe(90);
@@ -236,14 +243,14 @@ describe('OffersService — suggested_price is masked only where it equals the c
 
   it('keeps suggested_price on the x 0.90 branch for an actor holding visibility too', async () => {
     const { service } = setup({ hasCostView: true });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(Number(rows[0].suggested_price)).toBe(90);
   });
 
   it('persists the true clamped suggested_price even when the response masks it', async () => {
     const { prisma, service } = setup({ hasCostView: false, costPrice: CLAMPING_COST_PRICE });
-    const rows: any[] = await service.suggestions(ctx, actor());
+    const { items: rows }: any = await service.suggestions(ctx, actor());
 
     expect(rows[0]).not.toHaveProperty('suggested_price');
     expect(prisma.offerSuggestion.rows).toHaveLength(1);

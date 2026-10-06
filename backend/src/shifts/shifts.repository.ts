@@ -1,3 +1,4 @@
+import { FIRST_PAGE, pageArgs, pageOf, type PageQuery } from '../common/pagination';
 import { Injectable } from '@nestjs/common';
 import type { Prisma, Shift } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,12 +25,13 @@ export class ShiftsRepository {
     });
   }
 
-  async list(context: TenantScope, branchId?: string): Promise<Shift[]> {
-    return this.prisma.shift.findMany({
-      where: { tenant_id: context.tenantId, ...(branchId ? { branch_id: branchId } : {}) },
-      orderBy: { opened_at: 'desc' },
-      take: 50,
-    });
+  async list(context: TenantScope, branchId?: string, paging: PageQuery = FIRST_PAGE) {
+    const where = { tenant_id: context.tenantId, ...(branchId ? { branch_id: branchId } : {}) };
+    const [items, total] = await Promise.all([
+      this.prisma.shift.findMany({ where, orderBy: [{ opened_at: 'desc' }, { id: 'desc' }], ...pageArgs(paging) }),
+      this.prisma.shift.count({ where }),
+    ]);
+    return pageOf(items, total, paging);
   }
 
   async findActiveBranch(context: TenantScope, branchId: string, db: Db = this.prisma) {
@@ -61,14 +63,21 @@ export class ShiftsRepository {
   }
 
   async sumCashSales(context: TenantScope, shiftId: string) {
-    return this.prisma.salesInvoice.aggregate({
+    return this.prisma.salesPayment.aggregate({
       where: {
         tenant_id: context.tenantId,
-        shift_id: shiftId,
-        status: 'completed',
-        payment_method: 'cash',
+        method: 'cash',
+        invoice: { tenant_id: context.tenantId, shift_id: shiftId, status: 'completed' },
       },
-      _sum: { total: true },
+      _sum: { amount: true },
+    });
+  }
+
+  /** Cash taken against customers' debts at this shift's till (ledger payments, stored negative). */
+  async sumCashCollections(context: TenantScope, shiftId: string) {
+    return this.prisma.customerLedgerEntry.aggregate({
+      where: { tenant_id: context.tenantId, shift_id: shiftId, type: 'payment', method: 'cash' },
+      _sum: { amount: true },
     });
   }
 
@@ -78,7 +87,7 @@ export class ShiftsRepository {
         tenant_id: context.tenantId,
         shift_id: shiftId,
         status: 'completed',
-        original_invoice: { payment_method: 'cash', tenant_id: context.tenantId },
+        refund_method: 'cash',
       },
       _sum: { refund_total: true },
     });

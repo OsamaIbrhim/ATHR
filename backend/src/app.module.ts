@@ -6,11 +6,16 @@ import { BranchesModule } from './branches/branches.module';
 import { ProductsModule } from './products/products.module';
 import { BrandsModule } from './brands/brands.module';
 import { UomModule } from './uom/uom.module';
+import { CatalogModule } from './catalog/catalog.module';
 import { AssortmentModule } from './assortment/assortment.module';
 import { PricingModule } from './pricing/pricing.module';
 import { TaxModule } from './tax/tax.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { OpeningBalanceModule } from './opening-balance/opening-balance.module';
+import { AdjustmentsModule } from './adjustments/adjustments.module';
+import { StockCountsModule } from './stock-counts/stock-counts.module';
+import { ProductImportModule } from './product-import/product-import.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchasingModule } from './purchasing/purchasing.module';
 import { CustomersModule } from './customers/customers.module';
@@ -23,7 +28,6 @@ import { SyncModule } from './sync/sync.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
-import { RolesGuard } from './auth/roles.guard';
 import { TerminalsModule } from './terminals/terminals.module';
 import { PerformanceInterceptor } from './common/performance.interceptor';
 import { HealthModule } from './health/health.module';
@@ -32,6 +36,9 @@ import { UpdatesModule } from './updates/updates.module';
 import { IdentityModule } from './identity/identity.module';
 import { TenantContextGuard } from './identity/tenant-context.guard';
 import { PermissionGuard } from './identity/permission.guard';
+import { EntitlementsModule } from './entitlements/entitlements.module';
+import { PublicModule } from './entitlements/public.module';
+import { EntitlementGuard } from './entitlements/entitlement.guard';
 
 @Module({
   imports: [
@@ -40,6 +47,7 @@ import { PermissionGuard } from './identity/permission.guard';
     UsersModule,
     BranchesModule,
     ProductsModule,
+    CatalogModule,
     BrandsModule,
     UomModule,
     AssortmentModule,
@@ -47,6 +55,10 @@ import { PermissionGuard } from './identity/permission.guard';
     TaxModule,
     PromotionsModule,
     InventoryModule,
+    OpeningBalanceModule,
+    AdjustmentsModule,
+    StockCountsModule,
+    ProductImportModule,
     SuppliersModule,
     PurchasingModule,
     CustomersModule,
@@ -62,15 +74,18 @@ import { PermissionGuard } from './identity/permission.guard';
     SellersModule,
     UpdatesModule,
     IdentityModule,
+    EntitlementsModule,
+    PublicModule,
   ],
   // Guard order is significant and matches the Permission Matrix §74 denial
   // precedence: authenticate (JwtAuthGuard) → resolve tenant context
-  // (TenantContextGuard, which needs `req.user`) → legacy role/capability
-  // check (RolesGuard) → Matrix permission check (PermissionGuard).
+  // (TenantContextGuard, which needs `req.user`) → tenant access mode and
+  // plan feature (EntitlementGuard) → permission check (PermissionGuard, the
+  // only authorization guard). Plan limits are checked at creation points.
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: TenantContextGuard },
-    { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: EntitlementGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: PerformanceInterceptor },
   ],

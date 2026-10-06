@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma, SellerCommissionSettings } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { primaryBranchId, toScopeSet } from '../auth/branch-access';
 import type { TenantScope } from '../identity/tenant-context.type';
 
 /**
@@ -28,33 +29,46 @@ import type { TenantScope } from '../identity/tenant-context.type';
 export class SellersRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Scoped through the Membership join — `User` has no `tenant_id` (ADR-0003). */
-  private tenantMembers(context: TenantScope): Prisma.UserWhereInput {
-    return { memberships: { some: { tenantId: context.tenantId } } };
-  }
-
+  /** Sellers are the tenant's `seller` Memberships; branch comes from their location scope. */
   async listSellers(context: TenantScope, branchId?: string, sellerId?: string) {
-    return this.prisma.user.findMany({
+    const memberships = await this.prisma.membership.findMany({
       where: {
-        ...this.tenantMembers(context),
+        tenant_id: context.tenantId,
         role: 'seller',
-        ...(branchId ? { branch_id: branchId } : {}),
-        ...(sellerId ? { id: sellerId } : {}),
+        ...(sellerId ? { user_id: sellerId } : {}),
+        ...(branchId
+          ? { access_scope_assignments: { some: { scope_type: 'location', scope_ref_id: branchId } } }
+          : {}),
       },
       select: {
-        id: true, name: true, branch_id: true, is_active: true,
-        branch: { select: { id: true, code: true, name_ar: true } },
-        seller_commission_override: true,
+        access_scope_assignments: true,
+        user: { select: { id: true, name: true, is_active: true, seller_commission_override: true } },
       },
-      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      orderBy: [{ user: { name: 'asc' } }, { user_id: 'asc' }],
+    });
+    const branchOf = (scopes: (typeof memberships)[number]['access_scope_assignments']) =>
+      primaryBranchId({ scope_set: toScopeSet(scopes) });
+    const branchIds = [
+      ...new Set(memberships.map((m) => branchOf(m.access_scope_assignments)).filter((id): id is string => !!id)),
+    ];
+    const branches = branchIds.length
+      ? await this.prisma.branch.findMany({
+          where: { id: { in: branchIds }, tenant_id: context.tenantId },
+          select: { id: true, code: true, name_ar: true },
+        })
+      : [];
+    return memberships.map(({ user, access_scope_assignments }) => {
+      const branch_id = branchOf(access_scope_assignments);
+      return { ...user, branch_id, branch: branches.find((b) => b.id === branch_id) ?? null };
     });
   }
 
   async findSeller(context: TenantScope, sellerId: string) {
-    return this.prisma.user.findFirst({
-      where: { id: sellerId, role: 'seller', ...this.tenantMembers(context) },
-      select: { id: true },
+    const membership = await this.prisma.membership.findFirst({
+      where: { user_id: sellerId, role: 'seller', tenant_id: context.tenantId },
+      select: { user_id: true },
     });
+    return membership && { id: membership.user_id };
   }
 
   async listAttributedSales(
@@ -101,43 +115,23 @@ export class SellersRepository {
     });
   }
 
-  /**
-   * Per-tenant commission settings on a table whose primary key defaults to
-   * the constant 1. Reads by `tenant_id`; on first use for a tenant it
-   * allocates the next free integer key rather than colliding on id=1.
-   *
-   * The allocate-on-miss path can race two concurrent first-ever requests for
-   * the same tenant; the loser's unique-violation is retried as a read. There
-   * is no per-tenant unique index to lean on until Phase B.
-   */
+  /** One settings row per tenant (its primary key); created with the defaults on first use. */
   async getSettings(context: TenantScope): Promise<SellerCommissionSettings> {
-    const existing = await this.prisma.sellerCommissionSettings.findFirst({
+    return this.prisma.sellerCommissionSettings.upsert({
       where: { tenant_id: context.tenantId },
+      update: {},
+      create: { tenant_id: context.tenantId },
     });
-    if (existing) return existing;
-
-    const highest = await this.prisma.sellerCommissionSettings.aggregate({ _max: { id: true } });
-    try {
-      return await this.prisma.sellerCommissionSettings.create({
-        data: { id: (highest._max.id ?? 0) + 1, tenant_id: context.tenantId },
-      });
-    } catch (error: unknown) {
-      const raced = await this.prisma.sellerCommissionSettings.findFirst({
-        where: { tenant_id: context.tenantId },
-      });
-      if (raced) return raced;
-      throw error;
-    }
   }
 
   async updateSettings(
     context: TenantScope,
-    data: Omit<Prisma.SellerCommissionSettingsUncheckedUpdateInput, 'id' | 'tenant_id'>,
+    data: Omit<Prisma.SellerCommissionSettingsUncheckedUpdateInput, 'tenant_id'>,
   ) {
-    const settings = await this.getSettings(context);
-    return this.prisma.sellerCommissionSettings.update({
-      where: { id: settings.id },
-      data,
+    return this.prisma.sellerCommissionSettings.upsert({
+      where: { tenant_id: context.tenantId },
+      update: data,
+      create: { ...(data as Prisma.SellerCommissionSettingsUncheckedCreateInput), tenant_id: context.tenantId },
     });
   }
 
@@ -146,11 +140,17 @@ export class SellersRepository {
       where: {
         tenant_id: context.tenantId,
         seller: {
-          ...this.tenantMembers(context),
-          ...(branchId ? { branch_id: branchId } : {}),
+          memberships: {
+            some: {
+              tenant_id: context.tenantId,
+              ...(branchId
+                ? { access_scope_assignments: { some: { scope_type: 'location' as const, scope_ref_id: branchId } } }
+                : {}),
+            },
+          },
         },
       },
-      include: { seller: { select: { id: true, name: true, branch_id: true } } },
+      include: { seller: { select: { id: true, name: true } } },
       orderBy: { seller: { name: 'asc' } },
     });
   }

@@ -13,9 +13,9 @@ type FactoryResetDependencies = {
   getSecureState: () => any
   query: (sql: string, params?: any[]) => any[]
   getMeta: (key: string) => string
-  saveDb: () => void
   closeDb: () => void
   reopenDb: () => void
+  invalidateSecureState: () => void
   decommission: (payload: {
     device_id: string
     terminal_code: string
@@ -89,7 +89,6 @@ export function cleanupFactoryResetArtifacts() {
   for (const name of names) {
     if (
       name.startsWith('athr_pos.sqlite.factory-reset-') ||
-      name.startsWith('bold_pos.sqlite.factory-reset-') ||
       name.startsWith('secure-state.bin.factory-reset-')
     ) {
       bestEffortRemove(path.join(directory, name))
@@ -144,8 +143,9 @@ export function registerFactoryResetIpc(
             if (error?.code !== 'TERMINAL_REVOKED') throw error
           }
 
-          dependencies.saveDb()
+          // Closing checkpoints the WAL so the database file is complete.
           dependencies.closeDb()
+          dependencies.invalidateSecureState()
 
           const database = dependencies.dbPath()
           const secureState = dependencies.secureStatePath()
@@ -185,6 +185,10 @@ export function registerFactoryResetIpc(
           bestEffortRemove(path.join(app.getPath('userData'), 'updates'))
           if (secureMoved) bestEffortRemove(stagedSecure)
           if (databaseMoved) bestEffortRemove(stagedDatabase)
+          // A confirmed wipe also removes the WAL sidecar files, so no customer data is left behind.
+          for (const leftover of ['-wal', '-shm']) {
+            bestEffortRemove(`${database}${leftover}`)
+          }
 
           app.relaunch()
           setImmediate(() => app.exit(0))

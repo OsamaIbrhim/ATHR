@@ -93,6 +93,8 @@ const CATALOG_PERMISSIONS = [
   // WP-008 Phase D: Bundle is catalog composition (Matrix §16), not a
   // Promotion/Coupon key (Matrix §19) -- see `catalog/bundle.entity` note.
   'catalog.bundle.manage',
+  // W2a: product types (the attribute definitions variants carry).
+  'catalog.product-type.manage',
   'promotion.view',
   'promotion.create',
   'promotion.update-draft',
@@ -186,6 +188,8 @@ const SALES_PERMISSIONS = [
   'sales.sale.complete',
   'sales.sale.view-cost-margin',
   'sales.sale.reprint-receipt',
+  'sales.discount.apply',
+  'sales.discount.override',
   'returns.return.view',
   'returns.return.request',
   'returns.return.approve-standard',
@@ -241,6 +245,9 @@ const CUSTOMER_PERMISSIONS = [
   'customer.profile.create',
   'customer.profile.update',
   'customer.export',
+  'customer.account.view',
+  'customer.account.collect',
+  'customer.credit.manage',
 ] as const;
 
 /** Matrix §15 Devices and Terminals, §34 Shifts. */
@@ -284,6 +291,14 @@ const TENANT_STRUCTURE_PERMISSIONS = [
   'location.update',
   'location.close',
   'tenant.membership.view',
+  'tenant.settings.manage',
+] as const;
+
+/** Seller commission reporting and settings (no Matrix section; W1a). */
+const SELLER_PERMISSIONS = [
+  'sellers.report.view',
+  'sellers.commission.manage',
+  'sellers.period.close',
 ] as const;
 
 export const BUSINESS_PERMISSIONS = [
@@ -298,6 +313,7 @@ export const BUSINESS_PERMISSIONS = [
   ...TERMINAL_SHIFT_PERMISSIONS,
   ...REPORTING_PERMISSIONS,
   ...TENANT_STRUCTURE_PERMISSIONS,
+  ...SELLER_PERMISSIONS,
 ] as const;
 
 export type BusinessPermission = (typeof BUSINESS_PERMISSIONS)[number];
@@ -320,16 +336,19 @@ const CASHIER_GRANTS: readonly BusinessPermission[] = [
   'sales.sale.create',
   'sales.sale.complete',
   'sales.sale.reprint-receipt',
+  'sales.discount.apply',
   'returns.return.view',
   'returns.return.request',
   'customer.profile.view',
   'customer.profile.search',
+  'customer.account.view',
+  'customer.account.collect',
   'shift.view',
   'shift.open-own',
   'shift.close-own',
   // The enrolled terminal reports its own sync/health state via
   // POST /terminals/heartbeat regardless of which role is logged in on the
-  // till. `@Roles` already allows `cashier` on that route; without this grant
+  // till. Cashiers are allowed on that route; without this grant
   // every cashier-operated terminal fails the permission check on every
   // heartbeat and can never advance past it to pull catalog updates.
   'terminal.view-health',
@@ -369,6 +388,7 @@ const WAREHOUSE_MANAGER_GRANTS: readonly BusinessPermission[] = [
   // sellability -- an inventory-facing concern, same grouping as the
   // Assortment keys immediately above).
   'catalog.bundle.manage',
+  'catalog.product-type.manage',
   'inventory.position.view',
   'inventory.position.view-cost',
   'inventory.movement.view',
@@ -452,6 +472,8 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'sales.sale.complete',
   'sales.sale.view-cost-margin',
   'sales.sale.reprint-receipt',
+  'sales.discount.apply',
+  'sales.discount.override',
   'returns.return.view',
   'returns.return.request',
   'returns.return.approve-standard',
@@ -461,6 +483,9 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'customer.profile.search',
   'customer.profile.create',
   'customer.profile.update',
+  'customer.account.view',
+  'customer.account.collect',
+  'customer.credit.manage',
   'terminal.view',
   'terminal.view-health',
   'terminal.provision',
@@ -481,6 +506,7 @@ const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   'location.view',
   // Legacy `branch_manager` can already list its branch's users today.
   'tenant.membership.view',
+  'sellers.report.view',
 ];
 
 /**
@@ -596,8 +622,31 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
  * quote path (`PricingController.calculate`) folds promotion evaluation into
  * the existing `pricing.price-book.view` gate rather than requiring a new
  * key, and neither role manages promotions/coupons/bundles.
+ *
+ * v7 -> v8: W1a folds the legacy capability list into this catalog. Adds
+ * `sellers.*` (report view for `location_manager`, commission/period close
+ * owner-only) and `tenant.settings.manage` (owner-only), which the legacy
+ * `seller_*`/`settings.manage` capabilities expressed. Effective permissions
+ * are now computed in code (`effectivePermissions`) from the role defaults plus
+ * the Membership's granted/revoked keys; the snapshot only carries the version.
+ *
+ * v8 -> v9: W2a adds `catalog.product-type.manage` (owner via the blanket
+ * grant, `warehouse_manager` explicitly).
+ *
+ * v9 -> v10: W3 adds `sales.discount.apply` (cashier, location_manager, owner:
+ * a discount up to the tenant's `sales.max_discount_percent`) and
+ * `sales.discount.override` (location_manager, owner: above it). A POS sale is
+ * never refused over a discount: one above the actor's limit is accepted with
+ * DISCOUNT_ABOVE_LIMIT.
+ *
+ * v10 -> v11: W3 adds the customer account keys: `customer.account.view`
+ * (balances, debtors list, statement) and `customer.account.collect` (take a
+ * payment against a debt) for cashier, location_manager and owner, and
+ * `customer.credit.manage` (set a customer's credit limit) for location_manager
+ * and owner. A credit sale over the limit is accepted with
+ * CUSTOMER_CREDIT_LIMIT_EXCEEDED.
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 7;
+export const PERMISSION_POLICY_CURRENT_VERSION = 11;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(
@@ -609,3 +658,25 @@ export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly Athr
       ]),
     ]),
   ) as Record<MembershipRole, readonly AthrPermission[]>;
+
+const VALID_PERMISSIONS: ReadonlySet<string> = new Set(ALL_PERMISSIONS);
+
+export function isPermission(key: string): key is AthrPermission {
+  return VALID_PERMISSIONS.has(key);
+}
+
+/**
+ * A Membership's effective permissions: role defaults + granted - revoked.
+ * Unknown keys are ignored. A tenant owner keeps every default (a revoke
+ * cannot lock the owner out of its own tenant).
+ */
+export function effectivePermissions(
+  role: MembershipRole,
+  granted: readonly string[] = [],
+  revoked: readonly string[] = [],
+): ReadonlySet<AthrPermission> {
+  const result = new Set<AthrPermission>(ALL_ROLE_PERMISSIONS[role]);
+  for (const key of granted) if (isPermission(key)) result.add(key);
+  if (role !== 'tenant_owner') for (const key of revoked) result.delete(key as AthrPermission);
+  return result;
+}

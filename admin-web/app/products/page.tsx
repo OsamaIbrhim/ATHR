@@ -1,62 +1,139 @@
 'use client'
+import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
-import { apiDelete, apiGet, apiPost, getStoredUser } from '@/lib/api'
-import { hasCapability } from '@/lib/permissions'
-import { parseProductCost } from '@/lib/product-cost'
+import { toast } from 'sonner'
+import { apiDelete, apiGet } from '@/lib/api'
+import { useSessionUser } from '@/components/AuthGate'
+import BarcodeChips from '@/components/products/BarcodeChips'
+import DataTable, { type Column } from '@/components/ui/DataTable'
+import ConfirmDialog from '@/components/ui/ConfirmDialog'
+import PageHeader from '@/components/ui/PageHeader'
+import Num from '@/components/ui/Num'
+import StatusBadge from '@/components/ui/StatusBadge'
+import { loadUoms, type UomInfo } from '@/lib/items'
+import { hasPermission } from '@/lib/permissions'
 
-type ProductResponse = { items:any[]; page:number; page_size:number; total:number; total_pages:number; suggestions?:{value:string;label:string}[] }
+type ProductResponse = { items: any[]; page: number; page_size: number; total: number; total_pages: number; suggestions?: { value: string; label: string }[] }
 
-export default function ProductsPage(){
-  const canManage = hasCapability(getStoredUser(), 'products.manage')
-  const [query,setQuery] = useState('')
-  const [appliedQuery,setAppliedQuery] = useState('')
-  const [page,setPage] = useState(1)
-  const [data,setData] = useState<ProductResponse>({items:[],page:1,page_size:20,total:0,total_pages:1})
-  const [loading,setLoading] = useState(true)
-  const [error,setError] = useState('')
+export default function ProductsPage() {
+  const user = useSessionUser()
+  const canCreate = hasPermission(user, 'catalog.product.create')
+  const canEdit = hasPermission(user, 'catalog.product.update')
+  const canArchive = hasPermission(user, 'catalog.product.archive')
+  const [query, setQuery] = useState('')
+  const [appliedQuery, setAppliedQuery] = useState('')
+  const [page, setPage] = useState(1)
+  const [data, setData] = useState<ProductResponse>({ items: [], page: 1, page_size: 20, total: 0, total_pages: 1 })
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [target, setTarget] = useState<string | null>(null)
+  const [deactivating, setDeactivating] = useState(false)
+  const [uoms, setUoms] = useState<Map<string, UomInfo>>(new Map())
+  useEffect(() => { void loadUoms().then(setUoms) }, [])
+  const unitOf = (row: any) => uoms.get(String(row.product?.base_uom_id ?? row.base_uom_id ?? ''))
+  const stockOf = (row: any) => (row.stock_by_branch || []).reduce((sum: number, x: any) => sum + Number(x.qty_on_hand), 0)
 
-  const load = useCallback(async()=>{
+  const load = useCallback(async () => {
     setLoading(true); setError('')
     try { setData(await apiGet(`/products?q=${encodeURIComponent(appliedQuery)}&page=${page}&page_size=20`)) }
-    catch(e:any){ setError(e.message || 'تعذر تحميل المنتجات') }
+    catch (e: any) { setError(e.message || 'تعذر تحميل المنتجات') }
     finally { setLoading(false) }
-  },[appliedQuery,page])
-  useEffect(()=>{ load() },[load])
+  }, [appliedQuery, page])
+  useEffect(() => { load() }, [load])
 
-  const [name_en,setName] = useState(''), [sku,setSku] = useState('')
-  const [barcode_ean,setEan] = useState(''), [barcode_int,setInt] = useState('')
-  const [size,setSize] = useState(''), [color,setColor] = useState(''), [cost,setCost] = useState('')
-  const [zeroCostConfirmed,setZeroCostConfirmed] = useState(false)
-  const [msg,setMsg] = useState('')
-
-  const create = async()=>{
-    const parsedCost = parseProductCost(cost, zeroCostConfirmed)
-    if ('error' in parsedCost) { setMsg(parsedCost.error); return }
-    try {
-      const result = await apiPost('/products',{name_en,sku,barcode_ean13:barcode_ean||undefined,barcode_internal:barcode_int||undefined,size:size||undefined,color:color||undefined,cost_price:parsedCost.value})
-      setMsg('تم الحفظ ✓ '+(result.variants?.[0]?.sku || sku)); setName(''); setSku(''); setEan(''); setInt(''); setSize(''); setColor(''); setCost(''); setZeroCostConfirmed(false); setPage(1); load()
-    } catch(e:any){ setMsg('خطأ: '+e.message) }
+  const deactivate = async () => {
+    if (!target) return
+    setDeactivating(true)
+    try { await apiDelete(`/products/variants/${target}`); toast.success('تم تعطيل الصنف'); setTarget(null); load() }
+    catch (e: any) { toast.error('فشل التعطيل: ' + e.message) }
+    finally { setDeactivating(false) }
   }
-  const del = async(id:string)=>{ if(!confirm('حذف الصنف؟')) return; try{ await apiDelete(`/products/variants/${id}`); load() }catch(e:any){ alert('فشل الحذف: '+e.message) } }
-  const search = ()=>{ setPage(1); setAppliedQuery(query.trim()) }
+  const search = () => { setPage(1); setAppliedQuery(query.trim()) }
+  const applySuggestion = (value: string) => { setQuery(value); setAppliedQuery(value); setPage(1) }
 
-  return <div className="space-y-4">
-    <div className="flex items-center justify-between"><h1 className="text-2xl font-bold">المنتجات / المتغيرات</h1><span className="text-sm text-gray-500">{data.total} منتج</span></div>
-    {canManage && <div className="card"><h2 className="font-bold mb-2">إضافة منتج سريع</h2><div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-      <input className="input" placeholder="Name EN*" value={name_en} onChange={e=>setName(e.target.value)}/><input className="input" placeholder="SKU*" value={sku} onChange={e=>setSku(e.target.value)}/>
-      <input className="input" placeholder="EAN-13 مورد" value={barcode_ean} onChange={e=>setEan(e.target.value)}/><input className="input" placeholder="باركود داخلي ATHR" value={barcode_int} onChange={e=>setInt(e.target.value)}/>
-      <input className="input" placeholder="المقاس" value={size} onChange={e=>setSize(e.target.value)}/><input className="input" placeholder="اللون" value={color} onChange={e=>setColor(e.target.value)}/>
-      <label><span className="text-sm">سعر التكلفة EGP*</span><input className="input mt-1" type="number" min="0" step="0.01" value={cost} onChange={e=>{setCost(e.target.value);if(Number(e.target.value)!==0)setZeroCostConfirmed(false)}}/></label><button className="btn-accent self-end" onClick={create} disabled={!name_en||!sku||!cost.trim()}>حفظ</button>
-    </div>{cost.trim()!==''&&Number(cost)===0&&<label className="flex items-center gap-2 mt-3 text-sm"><input type="checkbox" checked={zeroCostConfirmed} onChange={event=>setZeroCostConfirmed(event.target.checked)}/>أؤكد أن تكلفة هذا المنتج صفر فعلًا، وليست تكلفة مفقودة.</label>}<div className={`text-xs mt-2 ${msg.startsWith('خطأ')||msg.includes('التكلفة')?'text-red-700':'text-gray-500'}`}>{msg || 'الاسم بالإنجليزية – تكلفة البداية مطلوبة – يدعم Simple و Variant'}</div></div>}
-    <div className="card"><form className="flex gap-2" onSubmit={e=>{e.preventDefault();search()}}><input className="input" placeholder="ابحث بالباركود / SKU / الاسم، أو اتركه فارغاً لعرض الكل" value={query} onChange={e=>setQuery(e.target.value)}/><button className="btn">بحث</button><button type="button" className="btn-secondary" onClick={()=>{setQuery('');setAppliedQuery('');setPage(1)}}>الكل</button></form></div>
-    <div className="card overflow-auto">
-      {error && <div className="text-red-700 py-4">{error} <button className="underline" onClick={load}>إعادة المحاولة</button></div>}
-      <table><thead><tr><th>SKU</th><th>الاسم</th><th>المقاس</th><th>اللون</th><th>EAN-13</th><th>داخلي</th><th>التكلفة</th><th>المخزون</th><th></th></tr></thead><tbody>
-        {data.items.map(r=><tr key={r.id}><td>{r.sku}</td><td>{r.product?.name_ar||r.product?.name_en}</td><td>{r.size||'-'}</td><td>{r.color||'-'}</td><td>{r.barcode_ean13||'-'}</td><td>{r.barcode_internal||'-'}</td><td>{r.cost_price!==undefined?`${Number(r.cost_price)} ج`:'—'}</td><td>{(r.stock_by_branch||[]).reduce((s:number,x:any)=>s+x.qty_on_hand,0)}</td><td>{canManage&&<button className="text-red-600 text-sm" onClick={()=>del(r.id)}>حذف</button>}</td></tr>)}
-        {!loading&&!data.items.length&&<tr><td colSpan={9} className="text-center text-gray-500 py-8"><div>لا توجد منتجات مطابقة. راجع الاسم أو SKU أو الباركود.</div>{!!data.suggestions?.length&&<div className="mt-3">هل تقصد: {data.suggestions.map(item=><button key={item.value} className="text-blue-700 underline mx-1" onClick={()=>{setQuery(item.value);setAppliedQuery(item.value);setPage(1)}}>{item.label}</button>)}</div>}</td></tr>}
-        {loading&&<tr><td colSpan={9} className="text-center text-gray-500 py-8">جارٍ تحميل المنتجات…</td></tr>}
-      </tbody></table>
-      <div className="flex items-center justify-center gap-3 mt-4"><button className="btn-secondary" disabled={page<=1||loading} onClick={()=>setPage(p=>p-1)}>السابق</button><span>صفحة {data.page} من {data.total_pages}</span><button className="btn-secondary" disabled={page>=data.total_pages||loading} onClick={()=>setPage(p=>p+1)}>التالي</button></div>
+  const noProductsAtAll = !loading && !error && !appliedQuery && data.total === 0
+  const columns: Column<any>[] = [
+    { header: 'SKU', cell: row => <span className="font-mono text-xs" dir="ltr">{row.sku}</span> },
+    {
+      header: 'المنتج',
+      cell: row => (
+        <Link href={`/products/${row.product_id}`} className="font-medium text-gray-900 hover:text-blue-700">
+          {row.product?.name_ar || row.product?.name_en}
+        </Link>
+      ),
+    },
+    { header: 'الصنف', cell: row => row.label ? <StatusBadge tone="neutral" icon={false}>{row.label}</StatusBadge> : <span className="text-gray-400">—</span> },
+    { header: 'الباركود', cell: row => <BarcodeChips barcodes={row.barcodes} /> },
+    { header: 'التكلفة', cell: row => row.cost_price !== undefined ? `${Number(row.cost_price)} ج` : '—' },
+    { header: 'المخزون', cell: row => <Num value={stockOf(row)} kind="qty" precision={unitOf(row)?.precision ?? 0} unit={unitOf(row)?.name} /> },
+    {
+      header: '',
+      cell: row => (
+        <div className="flex justify-end gap-3 text-sm">
+          {canEdit && <Link href={`/products/${row.product_id}`} className="text-blue-700 hover:underline">تعديل</Link>}
+          {canArchive && <button className="text-red-600" onClick={() => setTarget(row.id)}>تعطيل</button>}
+        </div>
+      ),
+    },
+  ]
+
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        title="المنتجات"
+        subtitle={`${data.total} صنف`}
+        actions={canCreate && <><Link href="/products/import" className="btn-secondary">استيراد من Excel</Link><Link href="/products/new" className="btn">+ منتج جديد</Link></>}
+      />
+      <div className="card">
+        <form className="flex gap-2" onSubmit={e => { e.preventDefault(); search() }}>
+          <input className="input" placeholder="ابحث بالباركود / SKU / الاسم، أو اتركه فارغاً لعرض الكل" value={query} onChange={e => setQuery(e.target.value)} />
+          <button className="btn">بحث</button>
+          <button type="button" className="btn-secondary" onClick={() => { setQuery(''); setAppliedQuery(''); setPage(1) }}>الكل</button>
+        </form>
+      </div>
+      <div className="card p-2">
+        {error && <div className="p-3 text-red-700">{error} <button className="underline" onClick={load}>إعادة المحاولة</button></div>}
+        <DataTable
+          columns={columns} rows={data.items} rowKey={row => row.id} loading={loading}
+          mobileCard={row => (
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <Link href={`/products/${row.product_id}`} className="font-medium text-gray-900">{row.product?.name_ar || row.product?.name_en}</Link>
+                {row.label && <StatusBadge tone="neutral" icon={false}>{row.label}</StatusBadge>}
+              </div>
+              <bdi dir="ltr" className="block font-mono text-xs text-gray-600">{row.sku}</bdi>
+              <BarcodeChips barcodes={row.barcodes} />
+              <div className="flex items-center justify-between text-sm">
+                <span>المخزون: <Num value={stockOf(row)} kind="qty" precision={unitOf(row)?.precision ?? 0} unit={unitOf(row)?.name} /></span>
+                <span className="flex items-center gap-2">
+                  {canEdit && <Link href={`/products/${row.product_id}`} className="btn-secondary min-h-11">تعديل</Link>}
+                  {canArchive && <button type="button" className="btn-secondary ms-4 min-h-11 border-red-300 text-red-700" onClick={() => setTarget(row.id)}>تعطيل</button>}
+                </span>
+              </div>
+            </div>
+          )}
+          empty={noProductsAtAll ? {
+            title: 'لا توجد منتجات بعد',
+            hint: 'ابدأ بملف Excel لتوفير الوقت.',
+            action: canCreate ? <div className="flex flex-wrap justify-center gap-2"><Link href="/products/import" className="btn">استيراد من Excel</Link><Link href="/products/new" className="btn-secondary">إضافة منتج</Link></div> : undefined,
+          } : {
+            title: 'لا توجد منتجات مطابقة',
+            hint: 'راجع الاسم أو SKU أو الباركود.',
+            action: data.suggestions?.length ? (
+              <div className="text-sm">هل تقصد: {data.suggestions.map(item => (
+                <button key={item.value} className="mx-1 text-blue-700 underline" onClick={() => applySuggestion(item.value)}>{item.label}</button>
+              ))}</div>
+            ) : undefined,
+          }}
+        />
+        <div className="mt-3 flex items-center justify-center gap-3 pb-2 text-sm">
+          <button className="btn-secondary" disabled={page <= 1 || loading} onClick={() => setPage(p => p - 1)}>السابق</button>
+          <span>صفحة {data.page} من {data.total_pages}</span>
+          <button className="btn-secondary" disabled={page >= data.total_pages || loading} onClick={() => setPage(p => p + 1)}>التالي</button>
+        </div>
+      </div>
+      <ConfirmDialog open={!!target} title="تعطيل هذا الصنف؟" tone="danger" confirmLabel="تعطيل" loading={deactivating}
+        onClose={() => setTarget(null)} onConfirm={deactivate}>لن يظهر في البيع.</ConfirmDialog>
     </div>
-  </div>
+  )
 }

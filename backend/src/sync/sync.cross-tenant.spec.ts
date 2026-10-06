@@ -21,6 +21,8 @@ const VARIANT_A = randomUUID();
 const VARIANT_B = randomUUID();
 const BRANCH_A = randomUUID();
 const BRANCH_B = randomUUID();
+const WAREHOUSE_A = randomUUID();
+const WAREHOUSE_B = randomUUID();
 const PRICE_BOOK_A = randomUUID();
 const PRICE_BOOK_B = randomUUID();
 
@@ -36,10 +38,15 @@ function setup() {
       aTaxCode({ tenant_id: TENANT_A }),
       aTaxCode({ tenant_id: TENANT_B }),
     ],
-    syncChange: [
-      { sequence: 1n, tenant_id: TENANT_A, kind: 'product', branch_id: null, entity_key: null },
-      { sequence: 2n, tenant_id: TENANT_B, kind: 'product', branch_id: null, entity_key: null },
+    tenant: [
+      { id: TENANT_A, settings: {}, sync_floor: '0:0' },
+      { id: TENANT_B, settings: {}, sync_floor: '0:0' },
     ],
+    productBarcode: [
+      { id: randomUUID(), tenant_id: TENANT_A, code: 'A-CODE', variant_id: VARIANT_A, pack_qty: 1, kind: 'standard', created_at: new Date() },
+      { id: randomUUID(), tenant_id: TENANT_B, code: 'B-CODE', variant_id: VARIANT_B, pack_qty: 1, kind: 'standard', created_at: new Date() },
+    ],
+    unitOfMeasure: [],
     product: [productA, productB],
     productVariant: [
       aProductVariant({
@@ -61,8 +68,8 @@ function setup() {
       }),
     ],
     inventoryStock: [
-      anInventoryStock({ tenant_id: TENANT_A, branch_id: BRANCH_A, variant_id: VARIANT_A, qty_on_hand: 3 }),
-      anInventoryStock({ tenant_id: TENANT_B, branch_id: BRANCH_B, variant_id: VARIANT_B, qty_on_hand: 7 }),
+      anInventoryStock({ tenant_id: TENANT_A, warehouse_id: WAREHOUSE_A, variant_id: VARIANT_A, qty_on_hand: 3 }),
+      anInventoryStock({ tenant_id: TENANT_B, warehouse_id: WAREHOUSE_B, variant_id: VARIANT_B, qty_on_hand: 7 }),
     ],
     priceBook: [
       { id: PRICE_BOOK_A, tenant_id: TENANT_A, status: 'active', is_default: true },
@@ -83,18 +90,23 @@ function setup() {
       },
     ],
     pricingRule: [],
-    user: [],
+    membership: [],
   }, {
     productVariant: { product: { table: 'product', localKey: 'product_id' } },
     priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } },
   });
-  prisma.syncChange.aggregate = async ({ where }: any) => {
-    const rows = prisma.syncChange.rows.filter(
-      (row: any) => !where?.tenant_id || row.tenant_id === where.tenant_id,
-    );
-    return { _max: { sequence: rows.at(-1)?.sequence ?? 0n } };
+  // Raw change-stream reads: record what each statement is bound to.
+  const rawCalls: Array<{ sql: string; values: unknown[] }> = [];
+  prisma.$queryRaw = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    rawCalls.push({ sql: strings.join('?'), values });
+    return [];
   };
-  return { prisma, service: new SyncService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), new TaxResolutionService(prisma)) };
+  // The default warehouse of a branch (the stock a POS syncs).
+  const inventory = {
+    defaultWarehouseId: async (_db: unknown, _tenantId: string, branchId: string) =>
+      branchId === BRANCH_A ? WAREHOUSE_A : WAREHOUSE_B,
+  } as any;
+  return { prisma, rawCalls, service: new SyncService(prisma, new PricingService(prisma, new TaxResolutionService(prisma)), new TaxResolutionService(prisma), inventory) };
 }
 
 describe('sync — cross-tenant isolation (Blueprint §123)', () => {
@@ -115,14 +127,21 @@ describe('sync — cross-tenant isolation (Blueprint §123)', () => {
     expect(forB.products.map((p: any) => p.id)).not.toContain(VARIANT_A);
   });
 
-  it('advances the delta cursor over the calling tenant\'s changes only', async () => {
+  it('never sends another tenant\'s barcodes onto a device', async () => {
     const { service } = setup();
-    const forA: any = await service.pull(contextFor(TENANT_A), BRANCH_A, '0');
+    const forA: any = await service.pull(contextFor(TENANT_A), BRANCH_A);
+    expect(forA.products.flatMap((p: any) => p.barcodes.map((b: any) => b.code))).toEqual(['A-CODE']);
+  });
 
-    // Tenant B's sequence-2 change must not appear in tenant A's delta.
-    expect(forA.mode).toBe('delta');
-    expect(forA.cursor).toBe('1');
-    expect(forA.products.map((p: any) => p.sku)).toEqual(['A-1']);
+  it('binds the calling tenant (and branch) on every change-stream read', async () => {
+    const { service, rawCalls } = setup();
+    await service.pull(contextFor(TENANT_A), BRANCH_A, { cursor: '0:0' });
+    const read = rawCalls.find((call) => call.sql.includes('ORDER BY "txid", "sequence"'))!;
+
+    expect(read.sql).toContain('"tenant_id" =');
+    expect(read.values).toContain(TENANT_A);
+    expect(read.values).toContain(BRANCH_A);
+    expect(read.values).not.toContain(TENANT_B);
   });
 
   it('does not return another tenant\'s stock for a foreign branch', async () => {
