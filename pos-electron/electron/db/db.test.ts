@@ -38,7 +38,7 @@ describe('migrations', () => {
   it('builds the full schema, indexes and WAL on a fresh database', () => {
     const db = openDatabase(file)
     expect(db.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION)
-    expect(LATEST_SCHEMA_VERSION).toBe(1)
+    expect(LATEST_SCHEMA_VERSION).toBe(2)
     expect(db.pragma('application_id', { simple: true })).toBe(APPLICATION_ID)
     expect(db.pragma('journal_mode', { simple: true })).toBe('wal')
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1)

@@ -20,6 +20,8 @@ export function wireProduct(over: Record<string, unknown> = {}) {
     barcodes: [{ code: '6221234567890', pack_qty: 1, kind: 'standard' }],
     selling_price: 100,
     unit_tax: 14,
+    tax_rate: 14,
+    tax_mode: 'exclusive',
     price_issued_at: '2026-01-01T00:00:00.000Z',
     ...over,
   }

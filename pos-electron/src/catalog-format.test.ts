@@ -7,7 +7,7 @@ import {
   requiresFullCatalogRefresh,
 } from '../electron/catalog-format'
 
-describe('offline sales v3 catalog', () => {
+describe('offline sales v4 catalog', () => {
   const product = {
     id: 'variant-1',
     sku: 'SKU-1',
@@ -15,6 +15,8 @@ describe('offline sales v3 catalog', () => {
     name_en: 'Product',
     selling_price: 150,
     unit_tax: 21,
+    tax_rate: 14,
+    tax_mode: 'exclusive',
     catalog_version: 3,
   }
 
@@ -32,8 +34,17 @@ describe('offline sales v3 catalog', () => {
     expect(isValidCatalogProduct({ ...product, catalog_version: 1 })).toBe(false)
   })
 
+  it('needs the tax rate and mode (the till recomputes tax after a discount)', () => {
+    expect(isValidCatalogProduct({ ...product, tax_rate: '14.0000' })).toBe(true)
+    expect(isValidCatalogProduct({ ...product, tax_rate: undefined })).toBe(false)
+    expect(isValidCatalogProduct({ ...product, tax_rate: null })).toBe(false)
+    expect(isValidCatalogProduct({ ...product, tax_rate: 101 })).toBe(false)
+    expect(isValidCatalogProduct({ ...product, tax_mode: 'both' })).toBe(false)
+    expect(isValidCatalogProduct({ ...product, tax_mode: 'inclusive' })).toBe(true)
+  })
+
   it('a v2 catalog (older tills) forces the full refresh', () => {
-    expect(CATALOG_FORMAT_VERSION).toBe('offline-sales-v3')
+    expect(CATALOG_FORMAT_VERSION).toBe('offline-sales-v4')
     expect(requiresFullCatalogRefresh('offline-sales-v2', 0)).toBe(true)
     expect(isValidCatalogProduct({ ...product, catalog_version: 2 })).toBe(false)
   })

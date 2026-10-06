@@ -2,7 +2,7 @@ import { isValidQuantity, quantityToMilli } from './quantity'
 
 // The catalog format identifies the locally cached data contract. Prices are
 // historical sale inputs, not credentials that can expire after checkout.
-export const CATALOG_FORMAT_VERSION = 'offline-sales-v3'
+export const CATALOG_FORMAT_VERSION = 'offline-sales-v4'
 
 /** The wire `catalog_version` this POS understands. */
 export const CATALOG_PRODUCT_VERSION = 3
@@ -14,6 +14,9 @@ export type CatalogProduct = {
   name_ar?: unknown
   selling_price?: unknown
   unit_tax?: unknown
+  /** Percent, e.g. 14. */
+  tax_rate?: unknown
+  tax_mode?: unknown
   catalog_version?: unknown
 }
 
@@ -32,6 +35,12 @@ function nonEmptyString(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+/** The tax rate in percent, as the server sends it (a number or a decimal string). */
+function isValidTaxRate(value: unknown) {
+  const rate = Number(value)
+  return value !== null && value !== '' && Number.isFinite(rate) && rate >= 0 && rate <= 100
+}
+
 /** A cached product row (or the common part of a wire product). */
 export function isValidCatalogProduct(product: CatalogProduct) {
   const price = Number(product.selling_price)
@@ -45,6 +54,8 @@ export function isValidCatalogProduct(product: CatalogProduct) {
     price >= 0 &&
     Number.isFinite(tax) &&
     tax >= 0 &&
+    isValidTaxRate(product.tax_rate) &&
+    (product.tax_mode === 'inclusive' || product.tax_mode === 'exclusive') &&
     Number(product.catalog_version) === CATALOG_PRODUCT_VERSION
   )
 }

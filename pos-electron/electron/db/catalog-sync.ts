@@ -61,14 +61,15 @@ function upsertProduct(p: any) {
   run(
     `INSERT OR REPLACE INTO products (
       id,sku,name_en,name_ar,label,attributes,uom_code,uom_name_ar,uom_precision,
-      selling_price_minor_units,unit_tax_minor_units,catalog_version
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      selling_price_minor_units,unit_tax_minor_units,catalog_version,tax_rate,tax_mode
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       p.id, p.sku, p.name_en || '', p.name_ar || '',
       p.label || null,
       p.attributes ? JSON.stringify(p.attributes) : null,
       p.uom_code || null, p.uom_name_ar || null, Number(p.uom_precision || 0),
       decimalToMinorUnits(p.selling_price || 0), decimalToMinorUnits(p.unit_tax || 0), Number(p.catalog_version),
+      String(p.tax_rate), p.tax_mode,
     ],
   )
   // A barcode belongs to one variant: replace by code, drop the ones removed upstream.

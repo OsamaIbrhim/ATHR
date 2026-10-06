@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
-import { SCHEMA_V1 } from './schema'
+import { legacyPaymentMethod, upgradeLegacySaleCommand } from '../legacy-sale-command'
+import { SCHEMA_V1, SCHEMA_V2_STEPS } from './schema'
 
 type Db = Database.Database
 
@@ -10,6 +11,33 @@ interface Migration {
   version: number
   name: string
   up(db: Db): void
+}
+
+/**
+ * Adds the W3 columns, then rewrites every sale still waiting to be uploaded
+ * (and the payment of every local sale) from the single legacy
+ * `payment_method` to `payments[]`. Runs inside the migration transaction: all or nothing.
+ */
+function upgradeToSalesV2(db: Db) {
+  for (const step of SCHEMA_V2_STEPS) db.exec(step)
+  const unsent = db
+    .prepare(
+      `SELECT o.id,o.payload,s.invoice_number AS printed
+       FROM outbox o LEFT JOIN sales_local s ON s.sync_id=o.id
+       WHERE o.type='sale' AND o.sync_status IN ('pending','sending','quarantined')`,
+    )
+    .all() as { id: string; payload: string; printed: string | null }[]
+  const rewrite = db.prepare(`UPDATE outbox SET payload=? WHERE id=?`)
+  for (const row of unsent) {
+    const upgraded = upgradeLegacySaleCommand({ payload: row.payload, printedNumber: row.printed })
+    if (upgraded) rewrite.run(upgraded, row.id)
+  }
+  const legacy = db.prepare(`SELECT sync_id,payment_method,total_minor_units FROM sales_local WHERE payments_json IS NULL`).all() as any[]
+  const store = db.prepare(`UPDATE sales_local SET payments_json=? WHERE sync_id=?`)
+  for (const sale of legacy) {
+    const amount = Number(sale.total_minor_units ?? 0) / 100
+    store.run(JSON.stringify([{ method: legacyPaymentMethod(sale.payment_method), amount }]), sale.sync_id)
+  }
 }
 
 /**
@@ -26,6 +54,7 @@ const MIGRATIONS: readonly Migration[] = [
       db.pragma(`application_id = ${APPLICATION_ID}`)
     },
   },
+  { version: 2, name: 'w3-sales', up: upgradeToSalesV2 },
 ]
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version
