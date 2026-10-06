@@ -19,7 +19,7 @@ function sale(overrides: Record<string, unknown> = {}) {
     sync_id: syncId,
     branch_id: branch,
     seller_id: sellerId,
-    payment_method: 'cash',
+    payments: [{ method: 'cash', amount: 114 }],
     local_total: 114,
     items: [
       {
@@ -45,7 +45,8 @@ describe('local sale IPC validation', () => {
       syncId,
       branchId: branch,
       sellerId,
-      paymentMethod: 'cash',
+      payments: [{ method: 'cash', amount: 114 }],
+      invoiceDiscount: null,
       localTotal: 114,
     })
   })
@@ -70,6 +71,7 @@ describe('local sale IPC validation', () => {
       name_ar_snapshot: 'منتج',
       name_en_snapshot: 'Product',
       variant_label_snapshot: 'M · Black',
+      discount: undefined,
     })
     expect(command).not.toHaveProperty('size_snapshot')
     expect(command).not.toHaveProperty('color_snapshot')

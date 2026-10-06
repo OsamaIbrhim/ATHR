@@ -24,6 +24,7 @@ import {
   writeSecureState,
   type AuthenticatedSession,
 } from '../secure-state'
+import { seedSequenceFromEnrollment } from '../sale-sequence'
 
 function offlineCashierLogin(
   phone: string,
@@ -162,6 +163,7 @@ export function registerAuthIpc() {
         }
         state.device = enrolled
         writeSecureState(state)
+        seedSequenceFromEnrollment(result?.terminal?.last_sale_sequence)
         return publicDevice(enrolled)
       }),
   )

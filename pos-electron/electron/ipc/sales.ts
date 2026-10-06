@@ -1,14 +1,18 @@
 import { ipcMain } from 'electron'
 import { assertQuantityPrecision, commitLocalSale, findSaleBySyncId } from '../db/sales'
+import { posSettings } from '../db/tenant-settings'
 import { get, getMeta, q } from '../db/queries'
 import { assertFactoryResetIdle } from '../factory-reset-runtime'
-import { fromCents, lineCents, sameMoney, toCents } from '../money'
+import { toCents } from '../money'
 import { minorUnitsToDecimal } from '../money-codec'
 import {
   nextTerminalSequence,
   offlineAccountingContextMatches,
 } from '../offline-accounting'
-import { saleItemCommand, validateLocalSaleInput } from '../sale-validation'
+import { invoiceNumberFor } from '../invoice-number'
+import { buildSaleCommand, priceAndCheckSale } from '../sale-command'
+import { assertPayments } from '../sale-payments'
+import { validateLocalSaleInput } from '../sale-validation'
 import { readSecureState } from '../secure-state'
 
 function listLocalSales() {
@@ -24,6 +28,8 @@ function listLocalSales() {
        s.created_at,
        COALESCE(s.occurred_at,s.created_at) AS occurred_at,
        s.payment_method,
+       s.payments_json,
+       s.discount_minor_units,
        s.customer_phone,
        s.cashier_id,
        s.seller_id,
@@ -56,8 +62,8 @@ function recordSale(sale: any) {
   const device = secure.device
   if (!device) throw new Error('This POS terminal is not enrolled')
 
-  const { syncId, items, localTotal, paymentMethod, customerPhone, sellerId, language } =
-    validateLocalSaleInput(sale, device.branch_id)
+  const validated = validateLocalSaleInput(sale, device.branch_id)
+  const { syncId, items, sellerId } = validated
   const seller = get(`SELECT id,name FROM sellers WHERE id=?`, [sellerId])
   if (!seller) {
     throw new Error(
@@ -83,49 +89,45 @@ function recordSale(sale: any) {
     )
   }
 
-  const calculatedTotalCents = items.reduce(
-    (sum: number, item: any) =>
-      sum + lineCents(item.unit_price, item.qty) + lineCents(item.unit_tax, item.qty),
-    0,
-  )
-  if (
-    toCents(localTotal) < 0 ||
-    !sameMoney(localTotal, fromCents(calculatedTotalCents))
-  ) {
-    throw new Error('Sale total does not match the immutable local price snapshots')
-  }
+  const settings = posSettings()
+  const priced = priceAndCheckSale(validated, {
+    role: authSession.user.role,
+    maxDiscountPercent: settings.sales.max_discount_percent,
+  })
+  assertPayments(validated.payments, {
+    totalCents: toCents(priced.total),
+    enabled: settings.sales.payment_methods,
+    customerPhone: validated.customerPhone,
+  })
+
   const occurredAt = new Date().toISOString()
   const terminalSequence = nextTerminalSequence(
     getMeta('terminal_sale_sequence'),
     context.server_last_sale_sequence,
   )
-  const invoiceNumber = `LOCAL-${device.terminal_code}-${terminalSequence}`
-  const command = {
-    event_version: 2,
-    sync_id: syncId,
-    branch_id: device.branch_id,
-    shift_id: context.shift_id,
-    origin_cashier_id: context.user_id,
-    cashier_name_snapshot: String(authSession.user.name || '').trim(),
-    seller_id: sellerId,
-    seller_name_snapshot: String(seller.name || '').trim(),
-    offline_session_id: context.session_id,
-    terminal_sequence: terminalSequence,
-    occurred_at: occurredAt,
-    customer_phone: customerPhone,
-    items: items.map(saleItemCommand),
-    payment_method: paymentMethod,
-    language,
-    local_total: localTotal,
-  }
+  const invoiceNumber = invoiceNumberFor(device.terminal_code, terminalSequence)
+  const command = buildSaleCommand({
+    sale: validated,
+    payments: validated.payments,
+    branchId: device.branch_id,
+    shiftId: context.shift_id,
+    cashierId: context.user_id,
+    cashierName: String(authSession.user.name || '').trim(),
+    sellerName: String(seller.name || '').trim(),
+    offlineSessionId: context.session_id,
+    terminalSequence,
+    invoiceNumber,
+    occurredAt,
+  })
 
   commitLocalSale({
     syncId,
     invoiceNumber,
-    localTotal,
+    localTotal: validated.localTotal,
     occurredAt,
-    paymentMethod: command.payment_method,
-    customerPhone: command.customer_phone || null,
+    payments: validated.payments,
+    discountTotal: priced.discount,
+    customerPhone: validated.customerPhone || null,
     cashierId: context.user_id,
     sellerId,
     shiftId: context.shift_id,

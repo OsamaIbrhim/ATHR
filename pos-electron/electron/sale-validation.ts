@@ -1,30 +1,14 @@
+import { cleanDiscount, type Discount } from './sale-math'
 import { isValidQuantity } from './quantity'
+import { PosSaleValidationError } from './sale-error'
+import { parsePayments } from './sale-payments'
 
-export const PAYMENT_METHODS = [
-  'cash',
-  'card',
-  'instapay',
-  'vodafone_cash',
-  'installment',
-] as const
-
-export type PaymentMethod =
-  typeof PAYMENT_METHODS[number]
+export { PosSaleValidationError }
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const EGYPTIAN_PHONE =
   /^(?:\+20|0)1[0125]\d{8}$/
-
-export class PosSaleValidationError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'PosSaleValidationError'
-  }
-}
 
 export function validateLocalSaleInput(
   sale: any,
@@ -33,9 +17,6 @@ export function validateLocalSaleInput(
   const syncId = String(sale?.sync_id || '')
   const branchId = String(sale?.branch_id || '')
   const sellerId = String(sale?.seller_id || '')
-  const paymentMethod = String(
-    sale?.payment_method || '',
-  ) as PaymentMethod
   const customerPhone = sale?.customer_phone
     ? String(sale.customer_phone)
         .trim()
@@ -61,12 +42,6 @@ export function validateLocalSaleInput(
     throw new PosSaleValidationError(
       'SELLER_REQUIRED',
       'اختر البائع قبل إتمام الفاتورة.',
-    )
-  }
-  if (!PAYMENT_METHODS.includes(paymentMethod)) {
-    throw new PosSaleValidationError(
-      'PAYMENT_METHOD_INVALID',
-      'اختر طريقة دفع صحيحة.',
     )
   }
   if (
@@ -100,6 +75,9 @@ export function validateLocalSaleInput(
       name_ar: String(item?.name_ar || '').trim(),
       name_en: String(item?.name_en || '').trim(),
       label: item?.label ? String(item.label).trim() : undefined,
+      tax_rate: item?.tax_rate === undefined || item?.tax_rate === null ? null : String(item.tax_rate),
+      tax_mode: item?.tax_mode === 'inclusive' || item?.tax_mode === 'exclusive' ? (item.tax_mode as 'inclusive' | 'exclusive') : null,
+      discount: parseDiscount(item?.discount),
     }
     if (
       !UUID.test(normalized.variant_id) ||
@@ -130,12 +108,23 @@ export function validateLocalSaleInput(
     syncId,
     branchId,
     sellerId,
-    paymentMethod,
     customerPhone,
+    invoiceDiscount: parseDiscount(sale?.discount),
+    payments: parsePayments(sale?.payments),
     language: sale?.language === 'en' ? 'en' as const : 'ar' as const,
     localTotal: Number(sale?.local_total),
     items,
   }
+}
+
+/** A discount as the register sends it: absent, or a positive amount / a percent up to 100. Anything else is refused. */
+function parseDiscount(raw: any): Discount | null {
+  if (raw === undefined || raw === null) return null
+  const discount = cleanDiscount(String(raw?.type), raw?.value)
+  if (!discount) {
+    throw new PosSaleValidationError('DISCOUNT_INVALID', 'قيمة الخصم غير صحيحة.')
+  }
+  return discount
 }
 
 type ValidatedSaleItem = ReturnType<typeof validateLocalSaleInput>['items'][number]
@@ -151,5 +140,6 @@ export function saleItemCommand(item: ValidatedSaleItem) {
     name_ar_snapshot: item.name_ar,
     name_en_snapshot: item.name_en || undefined,
     variant_label_snapshot: item.label || undefined,
+    discount: item.discount ?? undefined,
   }
 }
